@@ -28,13 +28,25 @@ This file records what's already done so a fresh Claude Code session (started in
   connection feature and Step 3's sync need those tables to exist. Confirm with the user.
 
 ## Execution plan (pause for user confirmation after each step)
-1. scaffolder — DONE (see above).
-2. auth-builder — login (magic link / Google / email+password) + connection handshake UI.  <-- NEXT
-3. sync-engine — replace localStorage with Supabase reads/writes + realtime.
+1. scaffolder — DONE.
+2. auth-builder — DONE. Login (magic link / Google / email+password) in src/auth/AuthScreen.jsx;
+   AuthProvider/AuthGate/Connections/useConnections in src/auth/. main.jsx wraps App in
+   <AuthProvider><AuthGate>. Email lookup uses RPC find_profile_by_email (db/03), not a direct
+   profiles query (RLS hides strangers). Sign-in redirect uses origin+pathname (APP_URL) so it
+   works under the GitHub Pages /repo/ subpath.
+6. deployer — DONE (brought forward at user request). PUBLIC repo (free Pages needs public):
+   https://github.com/Raviknight/expense-splitter — live at
+   https://raviknight.github.io/expense-splitter/ . .env is gitignored; docs/ is committed.
+3. sync-engine — replace localStorage with Supabase reads/writes + realtime.  <-- NEXT
 4. ghost-members — add non-platform people by name; existing equal/full/personal split modes.
 5. pwa-builder — manifest, service worker (app shell only), icons (180/192/512), iOS meta.
-6. deployer — git init, .gitignore, PRIVATE repo via gh, push to main, Pages from `/docs`.
 7. iPhone install instructions; restate the run-once SQL reminder.
+
+## BLOCKING: one-time Supabase setup the user must do before sign-in works
+- Run db/01_schema.sql (tables + RLS + profile-on-signup trigger). STATUS: unconfirmed.
+- Run db/03_find_profile_by_email.sql (lets "add a connection by email" find people).
+- Authentication > URL Configuration: set Site URL AND add Redirect URL =
+  https://raviknight.github.io/expense-splitter/  (without this the magic link is rejected).
 
 ## Reminders to restate to the user at the end
 - `db/01_schema.sql` runs ONCE in the Supabase SQL Editor (creates tables + RLS + realtime).

@@ -1,8 +1,11 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Plus, Pencil, Trash2, X, ArrowDownUp, Receipt, Users, PieChart, Search,
-  ChevronDown, ChevronRight, Check, Wallet, ArrowLeft, Handshake, User,
+  ChevronDown, ChevronRight, Check, ArrowLeft, Handshake, User,
+  AlertCircle, RefreshCw,
 } from 'lucide-react';
+import { useAuth } from './auth/AuthProvider.jsx';
+import { useExpenseStore } from './data/store.js';
 
 /* ============ Categories & auto-categorization ============ */
 
@@ -57,86 +60,20 @@ const SPLIT_MODES = [
   { id: 'personal', label: 'Personal', desc: 'No split — payer keeps it' },
 ];
 
-/* ============ Seed data ============ */
-
-const ME = 'Ravi';
-
-const SEED_TRIP_EXPENSES = [
-  { id: 's1',  date: '2026-05-30', name: 'AMNH (Museum of Natural History)',        amount: 172.00, category: 'Attractions', paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's2',  date: '2026-05-30', name: 'Empire State Observatory',                amount: 423.52, category: 'Attractions', paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's3',  date: '2026-05-30', name: 'Hudson Toyota Jersey City',               amount: 110.35, category: 'Auto Service', paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's4',  date: '2026-05-30', name: 'Starbucks NYC',                           amount: 11.65,  category: 'Restaurants', paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's5',  date: '2026-05-31', name: "America's Natl Parks (Liberty Island)",   amount: 25.96,  category: 'Attractions', paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's6',  date: '2026-05-31', name: 'Metropolis Parking',                      amount: 7.99,   category: 'Parking',     paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's7',  date: '2026-05-31', name: 'NYCDOT ParkNYC',                          amount: 3.20,   category: 'Parking',     paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's8',  date: '2026-05-31', name: 'NYCDOT ParkNYC',                          amount: 14.70,  category: 'Parking',     paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's9',  date: '2026-05-31', name: 'Seabra Foods Harrison',                   amount: 26.22,  category: 'Groceries',   paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's10', date: '2026-06-04', name: 'Airbnb (Niagara stay)',                   amount: 531.24, category: 'Lodging',     paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's11', date: '2026-06-04', name: 'Budget Car Rental — GMC Yukon (net)',     amount: 699.02, category: 'Car Rental',  paidBy: 'Ravi', splitMode: 'equal', note: 'Net of -$739.32 refund and +$739.32 charge from statement' },
-  { id: 's12', date: '2026-06-06', name: 'WM Supercenter Kearny',                   amount: 2.33,   category: 'Groceries',   paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's13', date: '2026-06-07', name: 'Wal-Mart #2107 Lockport',                 amount: 26.77,  category: 'Shopping',    paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's14', date: '2026-06-07', name: '7-Eleven Oakfield (snacks)',              amount: 3.00,   category: 'Convenience', paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's15', date: '2026-06-07', name: '7-Eleven Oakfield (gas)',                 amount: 101.38, category: 'Fuel',        paidBy: 'Ravi', splitMode: 'equal', note: 'Re-categorized — large amount suggests fuel fill-up' },
-  { id: 's16', date: '2026-06-07', name: '7-Eleven Niagara Falls',                  amount: 17.46,  category: 'Convenience', paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's17', date: '2026-06-07', name: '777 Food Bazaar Niagara Falls',           amount: 10.00,  category: 'Groceries',   paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's18', date: '2026-06-07', name: 'Watkins Glen State Park',                 amount: 10.00,  category: 'Attractions', paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's19', date: '2026-06-08', name: '7-Eleven Niagara Falls',                  amount: 13.69,  category: 'Convenience', paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's20', date: '2026-06-08', name: '7-Eleven Niagara Falls',                  amount: 18.95,  category: 'Convenience', paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's21', date: '2026-06-08', name: 'Maid of the Mist (store)',                amount: 33.45,  category: 'Attractions', paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's22', date: '2026-06-08', name: 'Maid of the Mist (tickets)',              amount: 181.50, category: 'Attractions', paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's23', date: '2026-06-08', name: 'Niagara Falls State Park',                amount: 30.00,  category: 'Attractions', paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's24', date: '2026-06-08', name: 'Niagara Falls State Park',                amount: 138.00, category: 'Attractions', paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's25', date: '2026-06-08', name: 'Niagra Tandoori Hut',                     amount: 20.41,  category: 'Restaurants', paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's26', date: '2026-06-08', name: 'NJ EZPass',                               amount: 25.00,  category: 'Tolls',       paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's27', date: '2026-06-09', name: 'Hannaford Lake Placid',                   amount: 31.24,  category: 'Groceries',   paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's28', date: '2026-06-09', name: 'Lake Placid Inn',                         amount: 216.41, category: 'Lodging',     paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's29', date: '2026-06-09', name: 'Letchworth Concessions',                  amount: 10.25,  category: 'Attractions', paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's30', date: '2026-06-09', name: 'Letchworth State Park entry',             amount: 10.00,  category: 'Attractions', paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's31', date: '2026-06-09', name: 'Subway Rochester',                        amount: 5.38,   category: 'Restaurants', paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's32', date: '2026-06-09', name: 'Subway Rochester',                        amount: 37.38,  category: 'Restaurants', paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's33', date: '2026-06-09', name: 'Walgreens Niagara Falls',                 amount: 9.99,   category: 'Pharmacy',    paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's34', date: '2026-06-09', name: 'Refuel Fulton',                           amount: 5.18,   category: 'Convenience', paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's35', date: '2026-06-10', name: 'ExxonMobil Lake Placid',                  amount: 106.85, category: 'Fuel',        paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's36', date: '2026-06-10', name: 'ExxonMobil New Paltz',                    amount: 3.77,   category: 'Fuel',        paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's37', date: '2026-06-10', name: 'Lake George Parking',                     amount: 2.00,   category: 'Parking',     paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's38', date: '2026-06-10', name: 'Subway Queensbury',                       amount: 3.29,   category: 'Restaurants', paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's39', date: '2026-06-10', name: 'Subway Queensbury',                       amount: 37.61,  category: 'Restaurants', paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's40', date: '2026-06-10', name: 'Whiteface Mountain',                      amount: 7.56,   category: 'Attractions', paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's41', date: '2026-06-10', name: 'Whiteface Mountain',                      amount: 85.00,  category: 'Attractions', paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's42', date: '2026-06-10', name: 'Refuel Fulton NY',                        amount: 5.38,   category: 'Convenience', paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 's43', date: '2026-06-11', name: 'WM Supercenter Kearny',                   amount: 88.71,  category: 'Groceries',   paidBy: 'Ravi', splitMode: 'equal', note: '' },
-  { id: 'p1',  date: '2026-06-12', name: 'Uber',                                    amount: 25.97,  category: 'Transportation', paidBy: 'Ravi', splitMode: 'equal', note: 'Pending' },
-  { id: 'p2',  date: '2026-06-12', name: 'Sunoco',                                  amount: 100.00, category: 'Fuel',        paidBy: 'Ravi', splitMode: 'equal', note: 'Pending — placeholder ~$100 (settled amount TBD)' },
-  { id: 'p3',  date: '2026-06-12', name: 'NJ Harrison Municipal',                   amount: 41.20,  category: 'Government',  paidBy: 'Ravi', splitMode: 'equal', note: 'Pending' },
-  { id: 'p4',  date: '2026-06-12', name: 'Dunkin',                                  amount: 29.79,  category: 'Restaurants', paidBy: 'Ravi', splitMode: 'equal', note: 'Pending' },
-  { id: 'p5',  date: '2026-06-12', name: 'Union Kitchen Eckington',                 amount: 28.43,  category: 'Restaurants', paidBy: 'Ravi', splitMode: 'equal', note: 'Pending' },
-  { id: 'p6',  date: '2026-06-12', name: 'DC Park Meter',                           amount: 4.60,   category: 'Parking',     paidBy: 'Ravi', splitMode: 'equal', note: 'Pending' },
-  { id: 'p7',  date: '2026-06-12', name: 'Walmart Store 01985',                     amount: 33.82,  category: 'Shopping',    paidBy: 'Ravi', splitMode: 'equal', note: 'Pending' },
-  { id: 'p8',  date: '2026-06-12', name: 'Aksharpith Robbinsville',                 amount: 11.73,  category: 'Restaurants', paidBy: 'Ravi', splitMode: 'equal', note: 'Pending — BAPS food court' },
-  { id: 'p9',  date: '2026-06-12', name: '7-Eleven 44753',                          amount: 100.00, category: 'Fuel',        paidBy: 'Ravi', splitMode: 'equal', note: 'Pending — placeholder ~$100 (settled amount TBD)' },
-  { id: 'p10', date: '2026-06-12', name: 'Booking.com (Partners on Booking BV)',    amount: 254.13, category: 'Lodging',     paidBy: 'Ravi', splitMode: 'equal', note: 'Pending' },
-];
-
-const SEED_DATA = {
-  version: 2,
-  me: ME,
-  activeGroupId: 'g_seed_trip',
-  groups: [
-    { id: 'g_seed_trip', name: 'NY · Niagara · Adirondacks', people: ['Ravi', 'Shailja'], expenses: SEED_TRIP_EXPENSES },
-    { id: 'g_seed_solo', name: 'My personal',                people: ['Ravi'],            expenses: [] },
-  ],
-};
-
-const STORAGE_KEY = 'trip_data_v2';
-const LEGACY_KEY = 'trip_expenses_v1';
 const fmt = (n) => '$' + Number(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-const makeId = (prefix = 'e') => prefix + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
 /* ============ App ============ */
 
 export default function App() {
-  const [data, setData] = useState(null);
-  const [loaded, setLoaded] = useState(false);
+  // Get the signed-in user's id and profile from the auth layer.
+  const { user, profile } = useAuth();
+
+  // Load all data from Supabase. The store returns the same shape the UI
+  // already knows how to render, so minimal UI changes are needed.
+  const { groups, activeGroupId, loading, error, actions } = useExpenseStore(
+    user?.id,
+    profile,
+  );
 
   const [tab, setTab] = useState('expenses');
   const [search, setSearch] = useState('');
@@ -146,63 +83,99 @@ export default function App() {
   const [editing, setEditing] = useState(null);
   const [showGroups, setShowGroups] = useState(false);
   const [showSettle, setShowSettle] = useState(false);
-  const [confirmReset, setConfirmReset] = useState(false);
   const [confirmDeleteGroup, setConfirmDeleteGroup] = useState(null);
 
-  /* ----- Load with migration ----- */
-  useEffect(() => {
-    (async () => {
-      // Try v2 first
-      try {
-        const v2 = await window.storage.get(STORAGE_KEY);
-        if (v2 && v2.value) {
-          setData(JSON.parse(v2.value));
-          setLoaded(true);
-          return;
-        }
-      } catch {}
-      // Migrate from v1 if present
-      try {
-        const v1 = await window.storage.get(LEGACY_KEY);
-        if (v1 && v1.value) {
-          const old = JSON.parse(v1.value);
-          setData({
-            version: 2,
-            me: ME,
-            activeGroupId: 'g_migrated',
-            groups: [
-              { id: 'g_migrated', name: 'NY · Niagara · Adirondacks', people: ['Ravi', 'Shailja'], expenses: old },
-              { id: 'g_seed_solo', name: 'My personal', people: ['Ravi'], expenses: [] },
-            ],
-          });
-          setLoaded(true);
-          return;
-        }
-      } catch {}
-      // Fresh start with seed
-      setData(SEED_DATA);
-      setLoaded(true);
-    })();
-  }, []);
-
-  /* ----- Save on changes ----- */
-  useEffect(() => {
-    if (!loaded || !data) return;
-    window.storage.set(STORAGE_KEY, JSON.stringify(data)).catch(() => {});
-  }, [data, loaded]);
-
-  if (!loaded || !data) {
+  // ── Loading state ─────────────────────────────────────────────────────────
+  if (loading) {
     return (
       <div className="min-h-screen bg-[#FAFAF7] flex items-center justify-center">
-        <div className="text-stone-500 text-sm">Loading...</div>
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-8 h-8 rounded-full border-2 border-stone-200 border-t-stone-600 animate-spin" />
+          <div className="text-stone-500 text-sm">Loading your groups…</div>
+        </div>
       </div>
     );
   }
 
-  const activeGroup = data.groups.find(g => g.id === data.activeGroupId) || data.groups[0];
-  const people = activeGroup.people;
+  // ── Error state ───────────────────────────────────────────────────────────
+  if (error && groups.length === 0) {
+    return (
+      <div className="min-h-screen bg-[#FAFAF7] flex items-center justify-center p-6">
+        <div className="max-w-sm w-full bg-white border border-red-200 rounded-2xl p-6 text-center shadow-sm">
+          <AlertCircle className="w-10 h-10 text-red-500 mx-auto mb-3" />
+          <div className="font-semibold text-stone-900 mb-1">Something went wrong</div>
+          <div className="text-sm text-stone-600 mb-4">{error}</div>
+          <button
+            onClick={actions.retry}
+            className="flex items-center gap-2 justify-center w-full py-2.5 rounded-lg bg-stone-900 text-white text-sm font-medium hover:bg-stone-800"
+          >
+            <RefreshCw className="w-4 h-4" />
+            Try again
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Empty state: signed-in user with no groups yet ────────────────────────
+  if (!loading && groups.length === 0) {
+    return (
+      <div className="min-h-screen bg-[#FAFAF7] flex items-center justify-center p-6">
+        <div className="max-w-sm w-full text-center">
+          <div className="text-5xl mb-4">🗂️</div>
+          <div className="font-semibold text-stone-900 text-lg mb-2">No groups yet</div>
+          <div className="text-sm text-stone-500 mb-6">
+            Create your first group to start tracking shared expenses.
+          </div>
+          <button
+            onClick={() => setShowGroups(true)}
+            className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-stone-900 text-white text-sm font-medium hover:bg-stone-800"
+          >
+            <Plus className="w-4 h-4" />
+            Create a group
+          </button>
+
+          {/* Still render the GroupsModal so the user can create from here */}
+          {showGroups && (
+            <GroupsModal
+              groups={groups}
+              activeGroupId={activeGroupId}
+              myName={profile?.display_name || 'Me'}
+              onClose={() => setShowGroups(false)}
+              onSwitch={(id) => { actions.switchGroup(id); setShowGroups(false); }}
+              onCreateGroup={async (name, type, extraPeople) => {
+                await actions.createGroup(name, type, extraPeople);
+                setShowGroups(false);
+              }}
+              onUpdateGroup={async (groupId, name, type) => {
+                await actions.updateGroup(groupId, name, type);
+              }}
+              onRequestDelete={(g) => setConfirmDeleteGroup(g)}
+            />
+          )}
+
+          {confirmDeleteGroup && (
+            <ConfirmDialog
+              title={`Delete "${confirmDeleteGroup.name}"?`}
+              message={`This will permanently remove the group and all its expenses.`}
+              confirmLabel="Delete group"
+              onCancel={() => setConfirmDeleteGroup(null)}
+              onConfirm={async () => {
+                await actions.deleteGroup(confirmDeleteGroup.id);
+                setConfirmDeleteGroup(null);
+              }}
+            />
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ── Normal state: at least one group exists ────────────────────────────────
+  const activeGroup = groups.find(g => g.id === activeGroupId) || groups[0];
+  const people = activeGroup?.people || [];
   const isSolo = people.length === 1;
-  const expenses = activeGroup.expenses || [];
+  const expenses = activeGroup?.expenses || [];
   const realExpenses = expenses.filter(e => e.type !== 'settlement');
 
   /* ----- Derived ----- */
@@ -261,78 +234,36 @@ export default function App() {
     return Object.entries(g).sort((a, b) => b[0].localeCompare(a[0]));
   })();
 
-  /* ----- Mutations ----- */
-  const updateActiveGroup = (mutator) => {
-    setData(prev => ({
-      ...prev,
-      groups: prev.groups.map(g => g.id === activeGroup.id ? mutator(g) : g),
-    }));
+  /* ----- Mutations — delegate to store actions ----- */
+
+  const upsertExpense = async (uiExpense) => {
+    await actions.upsertExpense(activeGroup.id, uiExpense);
+    setEditing(null);
   };
 
-  const upsertExpense = (exp) => {
-    updateActiveGroup(g => {
-      const idx = g.expenses.findIndex(e => e.id === exp.id);
-      if (idx === -1) return { ...g, expenses: [...g.expenses, exp] };
-      const next = [...g.expenses]; next[idx] = exp;
-      return { ...g, expenses: next };
-    });
-  };
-
-  const removeExpense = (id) => {
-    updateActiveGroup(g => ({ ...g, expenses: g.expenses.filter(e => e.id !== id) }));
+  const removeExpense = async (id) => {
+    // Work out whether this id belongs to a settlement or a regular expense.
+    const item = expenses.find(e => e.id === id);
+    const isSettlement = item?.type === 'settlement';
+    await actions.deleteExpense(activeGroup.id, id, isSettlement);
   };
 
   const switchGroup = (groupId) => {
-    setData(prev => ({ ...prev, activeGroupId: groupId }));
+    actions.switchGroup(groupId);
     setShowGroups(false);
     setFilterCat('All');
     setSearch('');
     setTab('expenses');
   };
 
-  const upsertGroup = (group) => {
-    setData(prev => {
-      const idx = prev.groups.findIndex(g => g.id === group.id);
-      if (idx === -1) {
-        return { ...prev, groups: [...prev.groups, group], activeGroupId: group.id };
-      }
-      const next = [...prev.groups]; next[idx] = group;
-      return { ...prev, groups: next };
-    });
-  };
-
-  const deleteGroup = (groupId) => {
-    setData(prev => {
-      const remaining = prev.groups.filter(g => g.id !== groupId);
-      if (remaining.length === 0) return prev;
-      return {
-        ...prev,
-        groups: remaining,
-        activeGroupId: prev.activeGroupId === groupId ? remaining[0].id : prev.activeGroupId,
-      };
-    });
-    setConfirmDeleteGroup(null);
-  };
-
-  const recordSettlement = ({ from, to, amount, note }) => {
-    const settlement = {
-      id: makeId('stl'),
-      type: 'settlement',
-      date: new Date().toISOString().slice(0, 10),
-      name: `Settlement: ${from} paid ${to}`,
-      amount,
-      category: 'Other',
-      paidBy: from,
-      splitMode: 'full',
-      note: note || '',
-    };
-    upsertExpense(settlement);
+  const recordSettlement = async ({ from, to, amount, note }) => {
+    await actions.recordSettlement(activeGroup.id, { from, to, amount, note });
     setShowSettle(false);
   };
 
-  const resetTripData = () => {
-    setData(SEED_DATA);
-    setConfirmReset(false);
+  const deleteGroup = async (groupId) => {
+    await actions.deleteGroup(groupId);
+    setConfirmDeleteGroup(null);
   };
 
   /* ----- Tabs (conditional on solo) ----- */
@@ -349,6 +280,21 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#FAFAF7] text-stone-900" style={{ fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif' }}>
+
+      {/* Non-blocking error banner — shown when a write fails but data is loaded */}
+      {error && (
+        <div className="bg-red-50 border-b border-red-200 px-4 py-2 flex items-center gap-3 max-w-3xl mx-auto">
+          <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />
+          <div className="text-sm text-red-800 flex-1">{error}</div>
+          <button
+            onClick={actions.clearError}
+            className="text-xs text-red-600 underline shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       <header className="sticky top-0 z-20 bg-[#FAFAF7]/95 backdrop-blur border-b border-stone-200">
         <div className="max-w-3xl mx-auto px-4 pt-4 pb-3">
           <div className="flex items-start justify-between gap-3">
@@ -420,7 +366,6 @@ export default function App() {
             total={total}
             people={people}
             onSettle={() => setShowSettle(true)}
-            onReset={() => setConfirmReset(true)}
           />
         )}
       </main>
@@ -440,16 +385,24 @@ export default function App() {
           people={people}
           isSolo={isSolo}
           onClose={() => setEditing(null)}
-          onSave={(e) => { upsertExpense(e); setEditing(null); }}
+          onSave={upsertExpense}
         />
       )}
 
       {showGroups && (
         <GroupsModal
-          data={data}
+          groups={groups}
+          activeGroupId={activeGroupId}
+          myName={profile?.display_name || 'Me'}
           onClose={() => setShowGroups(false)}
           onSwitch={switchGroup}
-          onUpsert={upsertGroup}
+          onCreateGroup={async (name, type, extraPeople) => {
+            await actions.createGroup(name, type, extraPeople);
+            setShowGroups(false);
+          }}
+          onUpdateGroup={async (groupId, name, type) => {
+            await actions.updateGroup(groupId, name, type);
+          }}
           onRequestDelete={(g) => setConfirmDeleteGroup(g)}
         />
       )}
@@ -463,20 +416,12 @@ export default function App() {
         />
       )}
 
-      {confirmReset && (
-        <ConfirmDialog
-          title="Reset to original seed data?"
-          message="This replaces ALL groups and expenses with the seeded trip. Any edits, additions, deletions, or other groups you've created will be lost."
-          confirmLabel="Reset everything"
-          onCancel={() => setConfirmReset(false)}
-          onConfirm={resetTripData}
-        />
-      )}
-
       {confirmDeleteGroup && (
         <ConfirmDialog
           title={`Delete "${confirmDeleteGroup.name}"?`}
-          message={`This will permanently remove the group and all ${confirmDeleteGroup.expenses.length} expense${confirmDeleteGroup.expenses.length === 1 ? '' : 's'} in it.`}
+          message={`This will permanently remove the group and all ${
+            (confirmDeleteGroup.expenses || []).length
+          } expense${(confirmDeleteGroup.expenses || []).length === 1 ? '' : 's'} in it.`}
           confirmLabel="Delete group"
           onCancel={() => setConfirmDeleteGroup(null)}
           onConfirm={() => deleteGroup(confirmDeleteGroup.id)}
@@ -489,10 +434,8 @@ export default function App() {
 /* ============ Header strips ============ */
 
 function BalanceStrip({ balances }) {
-  const a = balances[0]; // first person (Ravi)
-  const b = balances[1]; // second person
-  // a.net positive = a is owed; negative = a owes
-  // For "who pays whom": if a.net > 0, b pays a |a.net|. If a.net < 0, a pays b |a.net|.
+  const a = balances[0];
+  const b = balances[1];
   const settleAmt = Math.abs(a.net);
 
   return (
@@ -576,8 +519,9 @@ function ExpensesTab({ grouped, count, visibleTotal, search, setSearch, filterCa
 
       {grouped.length === 0 ? (
         <div className="text-center py-16 text-stone-500">
-          <div className="text-sm">No expenses yet.</div>
-          <div className="text-xs mt-1">Tap the + button to add one.</div>
+          <div className="text-4xl mb-3">🧾</div>
+          <div className="text-sm font-medium">No expenses yet</div>
+          <div className="text-xs mt-1">Tap the + button to add your first one.</div>
         </div>
       ) : grouped.map(([date, list]) => (
         <section key={date} className="mb-4">
@@ -661,7 +605,12 @@ function CategoriesTab({ expenses, total, onPick }) {
     return Object.entries(m).sort((a, b) => b[1] - a[1]);
   }, [expenses]);
 
-  if (total === 0) return <div className="text-center py-12 text-stone-500 text-sm">No data yet.</div>;
+  if (total === 0) return (
+    <div className="text-center py-12 text-stone-500">
+      <div className="text-sm">No expenses yet.</div>
+      <div className="text-xs mt-1">Add expenses to see category breakdown.</div>
+    </div>
+  );
   return (
     <div className="space-y-2">
       <div className="text-[11px] uppercase tracking-wider text-stone-500 font-medium px-1 pb-1">
@@ -696,7 +645,7 @@ function CategoriesTab({ expenses, total, onPick }) {
   );
 }
 
-function SummaryTab({ expenses, settlements, balances, sharedPool, total, people, onSettle, onReset }) {
+function SummaryTab({ expenses, settlements, balances, sharedPool, total, people, onSettle }) {
   const a = balances[0];
   const settleAmt = Math.abs(a.net);
   const personalTotal = total - sharedPool;
@@ -780,24 +729,15 @@ function SummaryTab({ expenses, settlements, balances, sharedPool, total, people
           ))}
         </div>
       )}
-
-      <div className="pt-2">
-        <button
-          onClick={onReset}
-          className="w-full text-xs text-stone-500 hover:text-red-600 py-2 border border-stone-200 rounded-lg bg-white"
-        >
-          Reset all data to original seed
-        </button>
-      </div>
     </div>
   );
 }
 
 /* ============ Groups modal ============ */
 
-function GroupsModal({ data, onClose, onSwitch, onUpsert, onRequestDelete }) {
+function GroupsModal({ groups, activeGroupId, myName, onClose, onSwitch, onCreateGroup, onUpdateGroup, onRequestDelete }) {
   const [view, setView] = useState('list'); // 'list' | 'form'
-  const [editingGroup, setEditingGroup] = useState(null); // null or group
+  const [editingGroup, setEditingGroup] = useState(null);
 
   return (
     <div className="fixed inset-0 z-40 flex items-end sm:items-center justify-center bg-stone-900/40 backdrop-blur-sm" onClick={onClose}>
@@ -822,9 +762,18 @@ function GroupsModal({ data, onClose, onSwitch, onUpsert, onRequestDelete }) {
         {view === 'list' ? (
           <>
             <div className="p-3 space-y-2">
-              {data.groups.map(g => {
-                const isActive = g.id === data.activeGroupId;
+              {groups.length === 0 && (
+                <div className="text-center py-8 text-stone-500 text-sm">
+                  No groups yet. Create one below.
+                </div>
+              )}
+              {groups.map(g => {
+                const isActive = g.id === activeGroupId;
                 const isSolo = g.people.length === 1;
+                const expenseCount = (g.expenses || []).filter(e => e.type !== 'settlement').length;
+                const expenseTotal = (g.expenses || [])
+                  .filter(e => e.type !== 'settlement')
+                  .reduce((s, e) => s + Number(e.amount || 0), 0);
                 return (
                   <div
                     key={g.id}
@@ -839,7 +788,7 @@ function GroupsModal({ data, onClose, onSwitch, onUpsert, onRequestDelete }) {
                         </div>
                         <div className="font-medium mt-0.5 truncate">{g.name}</div>
                         <div className="text-xs text-stone-500 mt-0.5 tabular-nums">
-                          {g.expenses.length} {g.expenses.length === 1 ? 'item' : 'items'} · {fmt(g.expenses.filter(e => e.type !== 'settlement').reduce((s, e) => s + Number(e.amount || 0), 0))}
+                          {expenseCount} {expenseCount === 1 ? 'item' : 'items'} · {fmt(expenseTotal)}
                         </div>
                       </button>
                       <div className="flex flex-col gap-1 shrink-0">
@@ -853,7 +802,7 @@ function GroupsModal({ data, onClose, onSwitch, onUpsert, onRequestDelete }) {
                       >
                         <Pencil className="w-3 h-3" /> Edit
                       </button>
-                      {data.groups.length > 1 && (
+                      {groups.length > 1 && (
                         <button
                           onClick={() => onRequestDelete(g)}
                           className="text-xs text-stone-600 hover:text-red-600 flex items-center gap-1"
@@ -888,8 +837,18 @@ function GroupsModal({ data, onClose, onSwitch, onUpsert, onRequestDelete }) {
         ) : (
           <GroupForm
             group={editingGroup}
-            myName={data.me}
-            onSave={(g) => { onUpsert(g); setView('list'); setEditingGroup(null); }}
+            myName={myName}
+            onSave={async (groupData) => {
+              if (editingGroup) {
+                // Editing an existing group — only name and type can change.
+                await onUpdateGroup(editingGroup.id, groupData.name, groupData.type);
+              } else {
+                // Creating a new group.
+                await onCreateGroup(groupData.name, groupData.type, groupData.extraPeople || []);
+              }
+              setView('list');
+              setEditingGroup(null);
+            }}
             onCancel={() => { setView('list'); setEditingGroup(null); }}
           />
         )}
@@ -901,21 +860,23 @@ function GroupsModal({ data, onClose, onSwitch, onUpsert, onRequestDelete }) {
 function GroupForm({ group, myName, onSave, onCancel }) {
   const isNew = !group;
   const [name, setName] = useState(group?.name || '');
-  const initialType = group ? (group.people.length === 1 ? 'solo' : 'shared') : 'shared';
+  // For an existing group, derive the type from how many people it has.
+  const initialType = group ? (group.type || (group.people?.length === 1 ? 'solo' : 'shared')) : 'shared';
   const [type, setType] = useState(initialType);
-  const initialPartner = group?.people.find(p => p !== myName) || 'Shailja';
+  // The partner field: find the first person that is NOT myName, default 'Shailja'.
+  const initialPartner = group?.people?.find(p => p !== myName) || '';
   const [partner, setPartner] = useState(initialPartner);
 
+  const hasExpenses = (group?.expenses?.length || 0) > 0;
   const valid = name.trim() && (type === 'solo' || partner.trim());
 
   const save = () => {
     if (!valid) return;
-    const people = type === 'solo' ? [myName] : [myName, partner.trim()];
     onSave({
-      id: group?.id || makeId('g'),
       name: name.trim(),
-      people,
-      expenses: group?.expenses || [],
+      type,
+      // Extra people beyond the owner — only relevant for new groups.
+      extraPeople: type === 'shared' ? [partner.trim()] : [],
     });
   };
 
@@ -937,7 +898,7 @@ function GroupForm({ group, myName, onSave, onCancel }) {
           <div className="grid grid-cols-2 gap-2">
             <button
               onClick={() => setType('shared')}
-              disabled={!isNew && group?.expenses?.length > 0}
+              disabled={!isNew && hasExpenses}
               className={`py-3 rounded-lg border text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed ${
                 type === 'shared' ? 'bg-stone-900 text-white border-stone-900' : 'bg-white border-stone-300 text-stone-700 hover:border-stone-500'
               }`}
@@ -947,7 +908,7 @@ function GroupForm({ group, myName, onSave, onCancel }) {
             </button>
             <button
               onClick={() => setType('solo')}
-              disabled={!isNew && group?.expenses?.length > 0}
+              disabled={!isNew && hasExpenses}
               className={`py-3 rounded-lg border text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed ${
                 type === 'solo' ? 'bg-stone-900 text-white border-stone-900' : 'bg-white border-stone-300 text-stone-700 hover:border-stone-500'
               }`}
@@ -959,7 +920,7 @@ function GroupForm({ group, myName, onSave, onCancel }) {
           <div className="text-[11px] text-stone-500 mt-1.5 leading-snug">
             {type === 'shared' && 'Track shared expenses with one other person and settle up.'}
             {type === 'solo' && 'Just your own spending. No splits, no settlement.'}
-            {!isNew && group?.expenses?.length > 0 && (
+            {!isNew && hasExpenses && (
               <span className="block text-amber-700 mt-1">Type is locked because this group already has expenses.</span>
             )}
           </div>
@@ -973,8 +934,13 @@ function GroupForm({ group, myName, onSave, onCancel }) {
               onChange={(e) => setPartner(e.target.value)}
               placeholder="Name"
               className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm focus:outline-none focus:border-stone-500"
+              // Disable if editing an existing group — members are managed separately
+              disabled={!isNew}
             />
-            <div className="text-[11px] text-stone-500 mt-1">You are <span className="font-medium">{myName}</span>.</div>
+            <div className="text-[11px] text-stone-500 mt-1">
+              You are <span className="font-medium">{myName}</span>.
+              {!isNew && <span className="block text-amber-700 mt-1">Member list is managed separately for existing groups.</span>}
+            </div>
           </Field>
         )}
       </div>
@@ -1079,6 +1045,7 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
   const [note, setNote] = useState(expense?.note || '');
   const [splitMode, setSplitMode] = useState(expense?.splitMode || (isSolo ? 'personal' : 'equal'));
   const [catManuallySet, setCatManuallySet] = useState(!isNew);
+  const [saving, setSaving] = useState(false);
   const nameRef = useRef(null);
 
   useEffect(() => {
@@ -1093,10 +1060,14 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
 
   const valid = name.trim() && parseFloat(amount) > 0 && date;
 
-  const save = () => {
-    if (!valid) return;
-    onSave({
-      id: expense?.id || makeId(),
+  const save = async () => {
+    if (!valid || saving) return;
+    setSaving(true);
+    await onSave({
+      // Pass the expense id if editing; undefined for new (store decides insert vs update).
+      id: expense?.id,
+      // Flag so the store knows this is definitely a DB row (not a client temp id).
+      _isExistingDbRow: !isNew,
       name: name.trim(),
       amount: parseFloat(amount),
       date,
@@ -1105,6 +1076,7 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
       note: note.trim(),
       splitMode: isSolo ? 'personal' : splitMode,
     });
+    setSaving(false);
   };
 
   const otherPerson = isSolo ? null : people.find(p => p !== paidBy);
@@ -1225,8 +1197,8 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
           <button onClick={onClose} className="flex-1 py-2.5 rounded-lg border border-stone-300 text-sm font-medium text-stone-700 hover:bg-stone-50">
             Cancel
           </button>
-          <button onClick={save} disabled={!valid} className="flex-1 py-2.5 rounded-lg bg-stone-900 text-white text-sm font-medium hover:bg-stone-800 disabled:bg-stone-300">
-            {isNew ? 'Add' : 'Save'}
+          <button onClick={save} disabled={!valid || saving} className="flex-1 py-2.5 rounded-lg bg-stone-900 text-white text-sm font-medium hover:bg-stone-800 disabled:bg-stone-300">
+            {saving ? 'Saving…' : isNew ? 'Add' : 'Save'}
           </button>
         </div>
       </div>
