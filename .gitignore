@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Environment variables (local Supabase values — never commit)
+.env
+.env.local
+.env.*.local
+
+# Keep .env.example tracked — it is a safe public template
+# (no negation needed; the above patterns don't match .env.example)
+
+# OS cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor folders
+.vscode/
+.idea/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Build intermediates (docs/ is intentionally tracked for GitHub Pages)
