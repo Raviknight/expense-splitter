@@ -308,6 +308,55 @@ export function useExpenseStore(userId, profile) {
       await fetchRef.current();
     },
 
+    // ── Bulk import expenses (from CSV) ──────────────────────────────────────
+    // rows  : array of { name, amount, date, category, note } built by csv.js.
+    // opts  : { paidByName, splitMode } — applied to EVERY imported row.
+    //
+    // We resolve the single payer name → group_members.id once, build all DB
+    // rows, then insert them in ONE batch for speed. Returns { inserted } on
+    // success or { error } so the UI can report the outcome.
+    async importExpenses(groupId, rows, { paidByName, splitMode }) {
+      const group = findGroup(groupId);
+      if (!group) return { error: 'Group not found.' };
+
+      // Resolve the payer's display name → group_members.id (UUID).
+      const paidByMemberId = group._nameToMemberId[paidByName];
+      if (!paidByMemberId) {
+        const msg = `Member "${paidByName}" not found in this group.`;
+        setError(msg);
+        return { error: msg };
+      }
+
+      if (!rows || rows.length === 0) {
+        return { inserted: 0 };
+      }
+
+      // Build DB rows using EXACT schema column names.
+      const dbRows = rows.map(r => ({
+        group_id:   groupId,
+        name:       r.name,
+        amount:     Number(r.amount),       // numeric(12,2) — must be a Number
+        date:       r.date,                 // 'YYYY-MM-DD'
+        category:   r.category || 'Other',
+        paid_by:    paidByMemberId,         // group_members.id (UUID)
+        split_mode: splitMode,              // 'equal' | 'full' | 'personal'
+        note:       r.note || null,
+      }));
+
+      // One batch insert for all rows.
+      const { error: dbError } = await supabase
+        .from('expenses')
+        .insert(dbRows);
+
+      if (dbError) {
+        setError('Could not import expenses: ' + dbError.message);
+        return { error: dbError.message };
+      }
+
+      await fetchRef.current();
+      return { inserted: dbRows.length };
+    },
+
     // ── Delete an expense ────────────────────────────────────────────────────
     async deleteExpense(groupId, expenseId, isSettlement) {
       let dbError;

@@ -2,10 +2,11 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Plus, Pencil, Trash2, X, ArrowDownUp, Receipt, Users, PieChart, Search,
   ChevronDown, ChevronRight, Check, ArrowLeft, Handshake, User,
-  AlertCircle, RefreshCw, UserPlus, Ghost,
+  AlertCircle, RefreshCw, UserPlus, Ghost, Upload, FileSpreadsheet,
 } from 'lucide-react';
 import { useAuth } from './auth/AuthProvider.jsx';
 import { useExpenseStore } from './data/store.js';
+import { parseCsv, PROVIDER_PRESETS, buildExpenses } from './data/csv.js';
 
 /* ============ Categories & auto-categorization ============ */
 
@@ -83,6 +84,7 @@ export default function App() {
   const [editing, setEditing] = useState(null);
   const [showGroups, setShowGroups] = useState(false);
   const [showSettle, setShowSettle] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [confirmDeleteGroup, setConfirmDeleteGroup] = useState(null);
 
   // ── Loading state ─────────────────────────────────────────────────────────
@@ -376,14 +378,25 @@ export default function App() {
         )}
       </main>
 
-      {/* FAB */}
-      <button
-        onClick={() => setEditing('new')}
-        className="fixed bottom-6 right-6 z-30 w-14 h-14 rounded-full bg-stone-900 text-white shadow-lg hover:bg-stone-800 active:scale-95 transition flex items-center justify-center"
-        aria-label="Add expense"
-      >
-        <Plus className="w-6 h-6" />
-      </button>
+      {/* Floating action buttons: Import CSV (secondary) + Add expense (primary).
+          Both only appear here in the normal state where a group exists. */}
+      <div className="fixed bottom-6 right-6 z-30 flex flex-col items-end gap-3">
+        <button
+          onClick={() => setShowImport(true)}
+          className="w-12 h-12 rounded-full bg-white border border-stone-300 text-stone-700 shadow-md hover:bg-stone-50 active:scale-95 transition flex items-center justify-center"
+          aria-label="Import CSV"
+          title="Import expenses from a CSV file"
+        >
+          <Upload className="w-5 h-5" />
+        </button>
+        <button
+          onClick={() => setEditing('new')}
+          className="w-14 h-14 rounded-full bg-stone-900 text-white shadow-lg hover:bg-stone-800 active:scale-95 transition flex items-center justify-center"
+          aria-label="Add expense"
+        >
+          <Plus className="w-6 h-6" />
+        </button>
+      </div>
 
       {editing && (
         <ExpenseModal
@@ -425,6 +438,16 @@ export default function App() {
           people={people}
           onClose={() => setShowSettle(false)}
           onConfirm={recordSettlement}
+        />
+      )}
+
+      {showImport && (
+        <ImportModal
+          people={people}
+          isSolo={isSolo}
+          myName={profile?.display_name || 'Me'}
+          onClose={() => setShowImport(false)}
+          onImport={(rows, opts) => actions.importExpenses(activeGroup.id, rows, opts)}
         />
       )}
 
@@ -1452,6 +1475,297 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
             {saving ? 'Saving…' : isNew ? 'Add' : 'Save'}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============ Import CSV modal ============ */
+
+// A single-modal wizard for importing a CSV of expenses into the active group.
+// Steps (all stacked in one scrollable modal):
+//   1. Pick a .csv file        → parse it into headers + rows.
+//   2. Choose a provider preset → pre-fills the column mapping below.
+//   3. Map columns             → which header is Date / Description / Amount / Category.
+//   4. Defaults                → who paid (member) and how to split every row.
+//   5. Preview                 → first 8 built expenses + "N to import, M skipped".
+//   6. Import                  → batch-insert via the store action.
+//
+// All the heavy lifting (parsing, normalizing, building) lives in csv.js so this
+// component just collects choices and shows results.
+function ImportModal({ people, isSolo, myName, onClose, onImport }) {
+  // Raw parse results.
+  const [fileName, setFileName] = useState('');
+  const [headers, setHeaders] = useState([]);
+  const [rows, setRows] = useState([]);
+  const [parseError, setParseError] = useState('');
+
+  // Mapping + options (start from the first preset = Generic).
+  const [presetId, setPresetId] = useState('generic');
+  const [mapping, setMapping] = useState({ date: '', description: '', amount: '', category: '' });
+  const [options, setOptions] = useState(PROVIDER_PRESETS[0].options);
+
+  // Defaults applied to every imported row.
+  // Default payer = the current user if they're in the group, else first person.
+  const [paidByName, setPaidByName] = useState(
+    people.includes(myName) ? myName : (people[0] || '')
+  );
+  const [splitMode, setSplitMode] = useState(isSolo ? 'personal' : 'equal');
+
+  // Outcome state.
+  const [importing, setImporting] = useState(false);
+  const [result, setResult] = useState(null); // { inserted } on success
+  const [importError, setImportError] = useState('');
+
+  // ── Step 1: read & parse the chosen file ──────────────────────────────────
+  const handleFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setParseError('');
+    setResult(null);
+    setFileName(file.name);
+    try {
+      const parsed = await parseCsv(file);
+      setHeaders(parsed.headers);
+      setRows(parsed.rows);
+      // If a non-generic preset is already chosen, re-apply it to the new headers.
+      if (presetId !== 'generic') applyPreset(presetId, parsed.headers);
+    } catch (err) {
+      setParseError('Could not read that file. Is it a valid CSV?');
+      setHeaders([]);
+      setRows([]);
+    }
+  };
+
+  // ── Step 2: choosing a preset pre-fills the mapping dropdowns ──────────────
+  // We match the preset's expected header names against the file's real headers
+  // case-insensitively, so "cost" matches "Cost".
+  const applyPreset = (id, hdrs = headers) => {
+    const preset = PROVIDER_PRESETS.find(p => p.id === id) || PROVIDER_PRESETS[0];
+    setOptions(preset.options);
+    const matchHeader = (wanted) => {
+      if (!wanted) return '';
+      const found = hdrs.find(h => h.toLowerCase() === wanted.toLowerCase());
+      return found || '';
+    };
+    setMapping({
+      date:        matchHeader(preset.mapping.date),
+      description: matchHeader(preset.mapping.description),
+      amount:      matchHeader(preset.mapping.amount),
+      category:    matchHeader(preset.mapping.category),
+    });
+  };
+
+  const onPresetChange = (id) => {
+    setPresetId(id);
+    applyPreset(id);
+  };
+
+  // ── Step 5: build the preview whenever inputs change ───────────────────────
+  // Reuse the app's autoCategorize so categorization stays consistent.
+  const built = useMemo(() => {
+    if (rows.length === 0 || !mapping.amount) return { expenses: [], skipped: 0 };
+    return buildExpenses(rows, mapping, options, autoCategorize);
+  }, [rows, mapping, options]);
+
+  const canImport = built.expenses.length > 0 && paidByName && !importing;
+
+  const doImport = async () => {
+    if (!canImport) return;
+    setImporting(true);
+    setImportError('');
+    const res = await onImport(built.expenses, { paidByName, splitMode });
+    setImporting(false);
+    if (res?.error) {
+      setImportError(res.error);
+    } else {
+      setResult(res);
+      // Auto-close shortly after success so the user sees the confirmation.
+      setTimeout(onClose, 1200);
+    }
+  };
+
+  // A small reusable mapping dropdown (maps one field to a file header).
+  const MapSelect = ({ field, label, optional }) => (
+    <Field label={label + (optional ? ' (optional)' : '')}>
+      <select
+        value={mapping[field]}
+        onChange={(e) => setMapping(m => ({ ...m, [field]: e.target.value }))}
+        className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm bg-white focus:outline-none focus:border-stone-500"
+      >
+        <option value="">{optional ? '— none —' : '— choose column —'}</option>
+        {headers.map(h => <option key={h} value={h}>{h}</option>)}
+      </select>
+    </Field>
+  );
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-end sm:items-center justify-center bg-stone-900/40 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-white w-full sm:max-w-md sm:rounded-2xl rounded-t-2xl shadow-2xl max-h-[92vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="sticky top-0 bg-white border-b border-stone-200 px-4 py-3 flex items-center justify-between">
+          <h2 className="font-semibold flex items-center gap-2">
+            <FileSpreadsheet className="w-4 h-4 text-stone-500" /> Import CSV
+          </h2>
+          <button onClick={onClose} className="p-1 text-stone-400 hover:text-stone-700"><X className="w-5 h-5" /></button>
+        </div>
+
+        <div className="p-4 space-y-4">
+
+          {/* Success confirmation replaces the form once imported. */}
+          {result ? (
+            <div className="text-center py-6">
+              <div className="w-12 h-12 mx-auto rounded-full bg-emerald-50 border border-emerald-200 flex items-center justify-center mb-3">
+                <Check className="w-6 h-6 text-emerald-600" />
+              </div>
+              <div className="font-semibold text-stone-900">Imported {result.inserted} expense{result.inserted === 1 ? '' : 's'}</div>
+              <div className="text-sm text-stone-500 mt-1">Closing…</div>
+            </div>
+          ) : (
+            <>
+              {/* ── Step 1: file picker ─────────────────────────────────── */}
+              <Field label="1. Choose a CSV file">
+                <input
+                  type="file"
+                  accept=".csv"
+                  onChange={handleFile}
+                  className="w-full text-sm text-stone-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border file:border-stone-300 file:bg-stone-50 file:text-sm file:font-medium hover:file:bg-stone-100"
+                />
+                {fileName && !parseError && (
+                  <div className="text-[11px] text-stone-500 mt-1">{fileName} — {rows.length} row{rows.length === 1 ? '' : 's'} found.</div>
+                )}
+                {parseError && <div className="text-[11px] text-red-600 mt-1">{parseError}</div>}
+              </Field>
+
+              {headers.length > 0 && (
+                <>
+                  {/* ── Step 2: provider preset ─────────────────────────── */}
+                  <Field label="2. Provider preset">
+                    <select
+                      value={presetId}
+                      onChange={(e) => onPresetChange(e.target.value)}
+                      className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm bg-white focus:outline-none focus:border-stone-500"
+                    >
+                      {PROVIDER_PRESETS.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+                    </select>
+                    <div className="text-[11px] text-stone-500 mt-1">Pre-fills the columns below. You can still change them.</div>
+                  </Field>
+
+                  {/* ── Step 3: column mapping ──────────────────────────── */}
+                  <div className="space-y-3 rounded-xl border border-stone-200 bg-stone-50/60 p-3">
+                    <div className="text-[11px] uppercase tracking-wider text-stone-500 font-medium">3. Map columns</div>
+                    <MapSelect field="date" label="Date" />
+                    <MapSelect field="description" label="Description" />
+                    <MapSelect field="amount" label="Amount" />
+                    <MapSelect field="category" label="Category" optional />
+                    <Field label="Amount style">
+                      <select
+                        value={options.amountStyle}
+                        onChange={(e) => setOptions(o => ({ ...o, amountStyle: e.target.value }))}
+                        className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm bg-white focus:outline-none focus:border-stone-500"
+                      >
+                        <option value="absolute">Plain numbers</option>
+                        <option value="negative-expense">Negatives are expenses (bank)</option>
+                      </select>
+                    </Field>
+                    <Field label="Date format">
+                      <select
+                        value={options.dateFormat}
+                        onChange={(e) => setOptions(o => ({ ...o, dateFormat: e.target.value }))}
+                        className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm bg-white focus:outline-none focus:border-stone-500"
+                      >
+                        <option value="YYYY-MM-DD">YYYY-MM-DD</option>
+                        <option value="MM/DD/YYYY">MM/DD/YYYY</option>
+                        <option value="DD/MM/YYYY">DD/MM/YYYY</option>
+                      </select>
+                    </Field>
+                  </div>
+
+                  {/* ── Step 4: defaults (paid by + split) ──────────────── */}
+                  <div className="space-y-3">
+                    <div className="text-[11px] uppercase tracking-wider text-stone-500 font-medium">4. Defaults for every row</div>
+                    <Field label="Paid by">
+                      <select
+                        value={paidByName}
+                        onChange={(e) => setPaidByName(e.target.value)}
+                        className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm bg-white focus:outline-none focus:border-stone-500"
+                      >
+                        {people.map(p => <option key={p} value={p}>{p}</option>)}
+                      </select>
+                    </Field>
+                    {!isSolo && (
+                      <Field label="Split">
+                        <div className="grid grid-cols-3 gap-2">
+                          {SPLIT_MODES.map(m => (
+                            <button
+                              key={m.id}
+                              onClick={() => setSplitMode(m.id)}
+                              className={`py-2 px-1 rounded-lg border text-xs font-medium transition ${
+                                splitMode === m.id ? 'bg-stone-900 text-white border-stone-900' : 'bg-white border-stone-300 text-stone-700 hover:border-stone-500'
+                              }`}
+                            >
+                              {m.label}
+                            </button>
+                          ))}
+                        </div>
+                      </Field>
+                    )}
+                  </div>
+
+                  {/* ── Step 5: preview ─────────────────────────────────── */}
+                  <div className="space-y-2">
+                    <div className="text-[11px] uppercase tracking-wider text-stone-500 font-medium">5. Preview</div>
+                    {!mapping.amount ? (
+                      <div className="text-sm text-stone-500">Map the Amount column to see a preview.</div>
+                    ) : (
+                      <>
+                        <div className="rounded-xl border border-stone-200 overflow-hidden">
+                          <table className="w-full text-xs">
+                            <thead className="bg-stone-50 text-stone-500">
+                              <tr>
+                                <th className="text-left font-medium px-2 py-1.5">Name</th>
+                                <th className="text-right font-medium px-2 py-1.5">Amount</th>
+                                <th className="text-left font-medium px-2 py-1.5">Date</th>
+                                <th className="text-left font-medium px-2 py-1.5">Category</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {built.expenses.slice(0, 8).map((ex, i) => (
+                                <tr key={i} className={`border-t border-stone-100 ${ex._warning ? 'bg-amber-50' : ''}`}>
+                                  <td className="px-2 py-1.5 truncate max-w-[120px]" title={ex._warning || ''}>{ex.name}</td>
+                                  <td className="px-2 py-1.5 text-right tabular-nums">{fmt(ex.amount)}</td>
+                                  <td className="px-2 py-1.5 tabular-nums">{ex.date}{ex._warning ? ' ⚠️' : ''}</td>
+                                  <td className="px-2 py-1.5">{ex.category}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                        <div className="text-[11px] text-stone-500">
+                          Importing {built.expenses.length} expense{built.expenses.length === 1 ? '' : 's'}
+                          {built.skipped > 0 && ` (${built.skipped} row${built.skipped === 1 ? '' : 's'} skipped — no valid amount)`}.
+                          {built.expenses.some(e => e._warning) && ' Highlighted rows had an unreadable date set to today.'}
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {importError && <div className="text-sm text-red-600">{importError}</div>}
+                </>
+              )}
+            </>
+          )}
+        </div>
+
+        {!result && (
+          <div className="sticky bottom-0 bg-white border-t border-stone-200 px-4 py-3 flex gap-2">
+            <button onClick={onClose} className="flex-1 py-2.5 rounded-lg border border-stone-300 text-sm font-medium text-stone-700 hover:bg-stone-50">
+              Cancel
+            </button>
+            <button onClick={doImport} disabled={!canImport} className="flex-1 py-2.5 rounded-lg bg-stone-900 text-white text-sm font-medium hover:bg-stone-800 disabled:bg-stone-300">
+              {importing ? 'Importing…' : `Import${built.expenses.length ? ` ${built.expenses.length}` : ''}`}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
