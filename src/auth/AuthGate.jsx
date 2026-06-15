@@ -16,9 +16,10 @@ import { useAuth } from './AuthProvider.jsx';
 import AuthScreen from './AuthScreen.jsx';
 import Connections from './Connections.jsx';
 import Profile from './Profile.jsx';
+import ResetPassword from './ResetPassword.jsx';
 
 export default function AuthGate({ children }) {
-  const { session, profile, user, loading, signOut } = useAuth();
+  const { session, profile, user, loading, signOut, recoveryMode } = useAuth();
   const [showConnections, setShowConnections] = useState(false);
   // Profile overlay — same pattern as Connections.
   const [showProfile, setShowProfile] = useState(false);
@@ -39,12 +40,22 @@ export default function AuthGate({ children }) {
     );
   }
 
-  // ---- 2. Not signed in ----
+  // ---- 2. Password-recovery mode ----
+  // The user clicked a reset link in their email. Supabase fired the
+  // PASSWORD_RECOVERY event, which set recoveryMode = true in AuthProvider.
+  // Show the set-new-password screen regardless of whether a session exists.
+  // (A temporary recovery session is always present at this point, but we
+  // check recoveryMode rather than the session type so the branch is explicit.)
+  if (recoveryMode) {
+    return <ResetPassword />;
+  }
+
+  // ---- 3. Not signed in ----
   if (!session) {
     return <AuthScreen />;
   }
 
-  // ---- 3. Signed in ----
+  // ---- 4. Signed in ----
 
   // Derive a friendly display name from the profile or fall back to the email.
   const displayName = profile?.display_name || user?.email || 'You';

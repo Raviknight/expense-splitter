@@ -166,6 +166,12 @@ function EmailPasswordForm() {
   const [error, setError]       = useState('');
   const [success, setSuccess]   = useState('');
 
+  // ---- Forgot-password state ----
+  // resetSent: true after the reset email has been dispatched successfully.
+  // resetBusy: true while the request is in-flight.
+  const [resetSent, setResetSent] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
+
   async function handleSubmit(e) {
     e.preventDefault();
     setError(''); setSuccess('');
@@ -182,6 +188,63 @@ function EmailPasswordForm() {
       if (err) { setError(err.message); return; }
       // On success AuthProvider's onAuthStateChange fires and the gate swaps to the app.
     }
+  }
+
+  // handleForgotPassword: sends a Supabase password-reset email.
+  // The reset link in the email redirects back to APP_URL, where
+  // supabase-js detects the recovery tokens and fires PASSWORD_RECOVERY
+  // in onAuthStateChange, which sets recoveryMode = true in AuthProvider.
+  async function handleForgotPassword() {
+    setError('');
+    // Require an email address to be typed first.
+    if (!email.trim()) {
+      setError('Enter your email address above, then click "Forgot password?".');
+      return;
+    }
+    setResetBusy(true);
+    const { error: err } = await supabase.auth.resetPasswordForEmail(
+      email.trim(),
+      { redirectTo: APP_URL }   // same base URL used by magic-link and Google
+    );
+    setResetBusy(false);
+    if (err) { setError(err.message); return; }
+    // Show the "check your email" confirmation state.
+    setResetSent(true);
+  }
+
+  // ---- "Check your email" confirmation for the reset link ----
+  // Mirrors the MagicLinkForm's sent state in look and feel.
+  if (resetSent) {
+    return (
+      <div className="flex flex-col gap-3 mt-3">
+        {/* Collapsible header stays visible so the user knows what section this is */}
+        <button
+          onClick={() => setOpen(o => !o)}
+          className="flex items-center justify-between w-full text-sm text-stone-500 hover:text-stone-700 transition py-1"
+        >
+          <span className="flex items-center gap-1.5">
+            <KeyRound className="w-4 h-4" />
+            Email &amp; password
+            <span className="text-[10px] uppercase tracking-widest text-stone-400 ml-1">optional</span>
+          </span>
+          {open ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+        </button>
+        <div className="flex flex-col items-center gap-3 py-4 text-center">
+          <CheckCircle className="w-10 h-10 text-emerald-500" />
+          <p className="font-semibold text-stone-800">Check your email</p>
+          <p className="text-sm text-stone-500 max-w-xs">
+            We sent a password-reset link to <strong>{email}</strong>.
+            Click it to set a new password.
+          </p>
+          <button
+            onClick={() => { setResetSent(false); setEmail(''); setError(''); }}
+            className="text-xs text-stone-400 underline underline-offset-2 mt-1"
+          >
+            Use a different email
+          </button>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -248,6 +311,7 @@ function EmailPasswordForm() {
             </button>
           </div>
 
+          {/* Submit button */}
           <button
             type="submit"
             disabled={busy}
@@ -255,6 +319,20 @@ function EmailPasswordForm() {
           >
             {busy ? (isSignUp ? 'Creating account…' : 'Signing in…') : (isSignUp ? 'Create account' : 'Sign in')}
           </button>
+
+          {/* "Forgot password?" — only shown on the Sign in tab, not Sign up.
+              The user must have their email typed in already (validation above
+              will remind them if not). */}
+          {!isSignUp && (
+            <button
+              type="button"
+              onClick={handleForgotPassword}
+              disabled={resetBusy}
+              className="text-xs text-stone-400 hover:text-stone-600 underline underline-offset-2 self-start disabled:opacity-50 transition"
+            >
+              {resetBusy ? 'Sending reset link…' : 'Forgot password?'}
+            </button>
+          )}
 
           <ErrorMsg msg={error} />
           {success && (

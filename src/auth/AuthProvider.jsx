@@ -4,8 +4,8 @@
 // listens for sign-in / sign-out events from Supabase and updates
 // automatically. It also loads the user's row from the `profiles` table.
 //
-// Other components get access to { session, user, profile, loading, signOut }
-// by calling the useAuth() hook (exported at the bottom).
+// Other components get access to { session, user, profile, loading, signOut,
+// refreshProfile, recoveryMode, endRecovery } by calling the useAuth() hook.
 
 import { createContext, useContext, useEffect, useState } from 'react';
 import { supabase } from '../supabaseClient.js';
@@ -14,14 +14,18 @@ import { supabase } from '../supabaseClient.js';
 const AuthContext = createContext({});
 
 export function AuthProvider({ children }) {
-  // session  = Supabase auth session (contains tokens). null when signed out.
-  // user     = Supabase auth user object (id, email, etc.)
-  // profile  = The matching row from our `profiles` table (display_name, email, …)
-  // loading  = true while we're still checking whether someone is signed in.
-  const [session, setSession] = useState(null);
-  const [user, setUser]       = useState(null);
-  const [profile, setProfile] = useState(null);
-  const [loading, setLoading] = useState(true);
+  // session      = Supabase auth session (contains tokens). null when signed out.
+  // user         = Supabase auth user object (id, email, etc.)
+  // profile      = The matching row from our `profiles` table (display_name, email, …)
+  // loading      = true while we're still checking whether someone is signed in.
+  // recoveryMode = true when the user arrived via a password-reset email link.
+  //                While true, AuthGate shows the ResetPassword screen instead of
+  //                the normal app, so the user can set their new password.
+  const [session, setSession]           = useState(null);
+  const [user, setUser]                 = useState(null);
+  const [profile, setProfile]           = useState(null);
+  const [loading, setLoading]           = useState(true);
+  const [recoveryMode, setRecoveryMode] = useState(false);
 
   // Fetch the profiles row for a given auth user id.
   // Columns used here: id, display_name, email, created_at — matching 01_schema.sql exactly.
@@ -56,7 +60,19 @@ export function AuthProvider({ children }) {
 
     // 2. Subscribe to future sign-in / sign-out events.
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (_event, s) => {
+      async (event, s) => {
+        // PASSWORD_RECOVERY fires when the user clicks their reset-link email.
+        // Supabase exchanges the one-time token for a temporary session and
+        // tells us about it here — BEFORE any normal SIGNED_IN event.
+        // We flip recoveryMode on so AuthGate shows the set-new-password screen.
+        //
+        // IMPORTANT: a normal sign-in fires SIGNED_IN (not PASSWORD_RECOVERY),
+        // so recoveryMode is only ever set by this one specific event. That
+        // prevents everyday logins from accidentally entering recovery mode.
+        if (event === 'PASSWORD_RECOVERY') {
+          setRecoveryMode(true);
+        }
+
         setSession(s);
         setUser(s?.user ?? null);
         await loadProfile(s?.user ?? null);
@@ -74,6 +90,15 @@ export function AuthProvider({ children }) {
   async function signOut() {
     await supabase.auth.signOut();
     // onAuthStateChange fires automatically and clears session/user/profile.
+    // Also make sure recovery mode is cleared on explicit sign-out.
+    setRecoveryMode(false);
+  }
+
+  // endRecovery: called by ResetPassword after a successful password update.
+  // Clears the recovery flag so AuthGate goes back to the normal signed-in view.
+  // The user is already signed in at this point (Supabase keeps the session).
+  function endRecovery() {
+    setRecoveryMode(false);
   }
 
   // refreshProfile: re-runs the same SELECT that loadProfile uses and updates
@@ -86,10 +111,10 @@ export function AuthProvider({ children }) {
     await loadProfile(currentSession?.user ?? null);
   }
 
-  // NOTE: refreshProfile is added here; all existing consumers of useAuth()
-  // that destructure only { session, user, profile, loading, signOut } are
-  // unaffected — adding a key to the context object is non-breaking.
-  const value = { session, user, profile, loading, signOut, refreshProfile };
+  // NOTE: recoveryMode and endRecovery are added here; all existing consumers
+  // of useAuth() that destructure only { session, user, profile, loading,
+  // signOut, refreshProfile } are unaffected — adding keys is non-breaking.
+  const value = { session, user, profile, loading, signOut, refreshProfile, recoveryMode, endRecovery };
 
   return (
     <AuthContext.Provider value={value}>
