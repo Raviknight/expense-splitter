@@ -2,48 +2,81 @@
 // The Profile / Settings screen.
 //
 // What this screen lets the signed-in user do:
-//   - See their email address (read-only — email changes go through Supabase
-//     dashboard; we do not support them in-app yet).
-//   - Edit their display name and save it to the `profiles` table.
-//   - See when they joined ("Member since").
+//   1. See their email address (read-only).
+//   2. Edit their display name — saved to profiles.display_name.
+//   3. Change their preferred currency — saved to profiles.preferred_currency.
+//      NOTE: the preferred_currency column is added by db/04_add_currency.sql.
+//      If that script hasn't been run yet, the save shows a friendly nudge
+//      rather than crashing.
+//   4. Change their password in-app (no email link needed — user is signed in).
+//      Calls supabase.auth.updateUser({ password }).
 //
-// Table: profiles — columns used here: id, display_name, email, created_at
-// (all names match 01_schema.sql exactly)
+// Table: profiles — columns used: id, display_name, email, created_at,
+//   preferred_currency   (added by db/04; handled gracefully if absent)
+// All names match 01_schema.sql exactly.
 //
 // After a successful save we call refreshProfile() from AuthProvider so the
-// new name propagates to the top bar and to store.js (which re-runs its data
-// fetch when `profile` changes).
+// new values propagate to the top bar and to store.js.
 
 import { useState, useEffect } from 'react';
-import { X, User, Mail, Save, Check, AlertCircle, Settings } from 'lucide-react';
+import {
+  X, User, Mail, Save, Check, AlertCircle, Settings,
+  Lock, Eye, EyeOff, DollarSign,
+} from 'lucide-react';
 import { supabase } from '../supabaseClient.js';
 import { useAuth } from './AuthProvider.jsx';
 
+// ── Supported currencies ──────────────────────────────────────────────────────
+// Each entry: { code, symbol, label } used to build the <select> options.
+// Codes stored in profiles.preferred_currency must match these exactly.
+const CURRENCIES = [
+  { code: 'USD', symbol: '$',   label: '$ USD'  },
+  { code: 'EUR', symbol: '€',   label: '€ EUR'  },
+  { code: 'GBP', symbol: '£',   label: '£ GBP'  },
+  { code: 'INR', symbol: '₹',   label: '₹ INR'  },
+  { code: 'CAD', symbol: 'CA$', label: 'CA$ CAD' },
+  { code: 'AUD', symbol: 'A$',  label: 'A$ AUD'  },
+  { code: 'JPY', symbol: '¥',   label: '¥ JPY'  },
+];
+
 export default function Profile({ onClose }) {
   // Pull what we need from the auth context.
-  // refreshProfile is our new helper (added in AuthProvider.jsx).
+  // refreshProfile re-fetches the profiles row and updates the whole app.
   const { user, profile, refreshProfile } = useAuth();
 
-  // Local copy of the name the user is currently typing.
-  // Initialise from the profile that was already loaded.
+  // ── Display name state ────────────────────────────────────────────────────
   const [displayName, setDisplayName] = useState(profile?.display_name || '');
+  const [saving, setSaving]   = useState(false);
+  const [saved, setSaved]     = useState(false);
+  const [error, setError]     = useState(null);
 
-  // UI state for the save operation.
-  const [saving, setSaving]   = useState(false);   // true while awaiting Supabase
-  const [saved, setSaved]     = useState(false);   // true for 2 s after success
-  const [error, setError]     = useState(null);    // error string, or null
+  // ── Currency picker state ─────────────────────────────────────────────────
+  // Default to 'USD' when the profile has no preferred_currency yet.
+  const [currency, setCurrency]           = useState(profile?.preferred_currency || 'USD');
+  const [currencySaving, setCurrencySaving] = useState(false);
+  const [currencySaved, setCurrencySaved]   = useState(false);
+  const [currencyError, setCurrencyError]   = useState(null);
 
-  // If the profile prop changes from the outside (e.g. first load), sync the field.
+  // ── Password change state ─────────────────────────────────────────────────
+  const [newPassword, setNewPassword]   = useState('');
+  const [confirmPw, setConfirmPw]       = useState('');
+  const [showNewPw, setShowNewPw]       = useState(false);
+  const [showConfirmPw, setShowConfirmPw] = useState(false);
+  const [pwSaving, setPwSaving]         = useState(false);
+  const [pwSaved, setPwSaved]           = useState(false);
+  const [pwError, setPwError]           = useState(null);
+
+  // Sync fields when the profile prop arrives from context (first load).
   useEffect(() => {
-    if (profile?.display_name) {
-      setDisplayName(profile.display_name);
-    }
-  }, [profile?.display_name]);
+    if (profile?.display_name) setDisplayName(profile.display_name);
+    // Only update currency picker if the column exists on the profile object.
+    if (profile?.preferred_currency) setCurrency(profile.preferred_currency);
+  }, [profile?.display_name, profile?.preferred_currency]);
 
   // Guard: if somehow no user, render nothing.
   if (!user) return null;
 
-  // ── Format created_at as a human-readable date ──────────────────────────────
+  // ── Date formatter ────────────────────────────────────────────────────────
   function formatDate(ts) {
     if (!ts) return null;
     try {
@@ -55,13 +88,12 @@ export default function Profile({ onClose }) {
     }
   }
 
-  // ── Save handler ─────────────────────────────────────────────────────────────
+  // ── Save display name ─────────────────────────────────────────────────────
   async function handleSave(e) {
     e.preventDefault();
     setError(null);
     setSaved(false);
 
-    // Validation: display_name is NOT NULL in the schema — block saving empty string.
     const trimmedName = displayName.trim();
     if (!trimmedName) {
       setError('Display name cannot be empty.');
@@ -69,13 +101,10 @@ export default function Profile({ onClose }) {
     }
 
     setSaving(true);
-
-    // Update the profiles row. Column names match 01_schema.sql.
     const { error: updateErr } = await supabase
-      .from('profiles')                         // table: profiles
-      .update({ display_name: trimmedName })    // column: display_name
-      .eq('id', user.id);                       // column: id (= auth user uuid)
-
+      .from('profiles')
+      .update({ display_name: trimmedName })   // column: display_name
+      .eq('id', user.id);                      // column: id
     setSaving(false);
 
     if (updateErr) {
@@ -83,13 +112,83 @@ export default function Profile({ onClose }) {
       return;
     }
 
-    // Success — reload the profile in context so the rest of the app updates.
-    // refreshProfile() re-runs the same SELECT that AuthProvider uses on sign-in.
     await refreshProfile();
-
-    // Show a brief "Saved" confirmation tick, then clear it after 2 seconds.
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
+  }
+
+  // ── Save preferred currency ───────────────────────────────────────────────
+  // The preferred_currency column is added by db/04_add_currency.sql.
+  // If that script hasn't been run yet, Supabase returns an error whose message
+  // mentions the column name or "schema cache". We catch that and show a
+  // friendly nudge instead of a raw error.
+  async function handleCurrencySave() {
+    setCurrencyError(null);
+    setCurrencySaved(false);
+    setCurrencySaving(true);
+
+    const { error: updateErr } = await supabase
+      .from('profiles')
+      .update({ preferred_currency: currency })  // column: preferred_currency
+      .eq('id', user.id);
+
+    setCurrencySaving(false);
+
+    if (updateErr) {
+      // Detect "column does not exist" / "schema cache" errors from PostgREST.
+      const msg = updateErr.message || '';
+      if (
+        msg.toLowerCase().includes('preferred_currency') ||
+        msg.toLowerCase().includes('schema cache') ||
+        msg.toLowerCase().includes('column')
+      ) {
+        setCurrencyError(
+          'Currency needs a one-time database update — ask to run db/04.'
+        );
+      } else {
+        setCurrencyError(msg || 'Could not save currency. Please try again.');
+      }
+      return;
+    }
+
+    // Refresh so the rest of the app (header, store.js) picks up the new currency.
+    await refreshProfile();
+    setCurrencySaved(true);
+    setTimeout(() => setCurrencySaved(false), 2000);
+  }
+
+  // ── Change password ───────────────────────────────────────────────────────
+  // The user is already signed in, so no email is needed.
+  // supabase.auth.updateUser({ password }) works directly with the live session.
+  function validatePassword() {
+    if (!newPassword)             return 'Please enter a new password.';
+    if (newPassword.length < 6)   return 'Password must be at least 6 characters.';
+    if (newPassword !== confirmPw) return 'Passwords do not match.';
+    return '';
+  }
+
+  async function handlePasswordSave(e) {
+    e.preventDefault();
+    setPwError(null);
+    setPwSaved(false);
+
+    const validationError = validatePassword();
+    if (validationError) { setPwError(validationError); return; }
+
+    setPwSaving(true);
+    const { error: updateErr } = await supabase.auth.updateUser({ password: newPassword });
+    setPwSaving(false);
+
+    if (updateErr) {
+      setPwError(updateErr.message || 'Could not update password. Please try again.');
+      return;
+    }
+
+    // Success — clear the fields and show a brief confirmation.
+    setNewPassword('');
+    setConfirmPw('');
+    setPwSaved(true);
+    setTimeout(() => setPwSaved(false), 3000);
   }
 
   const memberSince = formatDate(profile?.created_at);
@@ -99,10 +198,9 @@ export default function Profile({ onClose }) {
       className="min-h-screen bg-[#FAFAF7] text-stone-900"
       style={{ fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif' }}
     >
-      {/* ── Header — mirrors Connections.jsx style ── */}
+      {/* ── Header ── */}
       <header className="sticky top-0 z-20 bg-[#FAFAF7]/95 backdrop-blur border-b border-stone-200">
         <div className="max-w-3xl mx-auto px-4 pt-4 pb-3 flex items-center gap-3">
-          {/* Back button */}
           {onClose && (
             <button
               onClick={onClose}
@@ -126,8 +224,7 @@ export default function Profile({ onClose }) {
 
         {/* Avatar / name hero card */}
         <div className="bg-white border border-stone-200 rounded-2xl p-5 shadow-sm flex items-center gap-4">
-          {/* Simple initial avatar — same style as Connections accepted list */}
-          <div className="w-14 h-14 rounded-full bg-stone-100 flex items-center justify-center text-stone-600 text-2xl font-semibold shrink-0">
+          <div className="w-14 h-14 rounded-full bg-indigo-50 flex items-center justify-center text-indigo-600 text-2xl font-semibold shrink-0">
             {(profile?.display_name || user?.email || '?')[0].toUpperCase()}
           </div>
           <div className="min-w-0">
@@ -141,7 +238,7 @@ export default function Profile({ onClose }) {
           </div>
         </div>
 
-        {/* Edit form card */}
+        {/* ── Section 1: Edit display name ── */}
         <section className="bg-white border border-stone-200 rounded-2xl p-5 shadow-sm">
           <div className="flex items-center gap-2 mb-4">
             <User className="w-4 h-4 text-stone-500" />
@@ -158,19 +255,19 @@ export default function Profile({ onClose }) {
               >
                 Display name
               </label>
+              {/* text-base = 16 px — prevents iOS zoom on focus */}
               <input
                 id="display-name"
                 type="text"
                 value={displayName}
                 onChange={e => {
                   setDisplayName(e.target.value);
-                  // Clear stale error/success when the user starts typing again.
                   setError(null);
                   setSaved(false);
                 }}
                 placeholder="Your name"
                 maxLength={80}
-                className="rounded-xl border border-stone-200 bg-white px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-stone-400 placeholder-stone-400"
+                className="rounded-xl border border-stone-200 bg-white px-4 py-2.5 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-stone-400"
               />
             </div>
 
@@ -203,15 +300,14 @@ export default function Profile({ onClose }) {
               </div>
             )}
 
-            {/* Save button */}
+            {/* Save button — indigo accent */}
             <button
               type="submit"
               disabled={saving}
-              className="flex items-center justify-center gap-2 rounded-xl bg-stone-900 text-white px-4 py-2.5 text-sm font-medium hover:bg-stone-700 disabled:opacity-50 transition"
+              className="flex items-center justify-center gap-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 text-sm font-medium disabled:opacity-50 transition"
             >
               {saving ? (
                 <>
-                  {/* Inline spinner — same pattern as AuthGate loading state */}
                   <span className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
                   Saving…
                 </>
@@ -219,6 +315,210 @@ export default function Profile({ onClose }) {
                 <>
                   <Save className="w-4 h-4" />
                   Save changes
+                </>
+              )}
+            </button>
+          </form>
+        </section>
+
+        {/* ── Section 2: Preferred currency ── */}
+        <section className="bg-white border border-stone-200 rounded-2xl p-5 shadow-sm">
+          <div className="flex items-center gap-2 mb-4">
+            <DollarSign className="w-4 h-4 text-stone-500" />
+            <span className="text-sm font-semibold text-stone-700">Currency</span>
+          </div>
+
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-1.5">
+              <label
+                htmlFor="currency-select"
+                className="text-xs font-medium text-stone-500 uppercase tracking-wide"
+              >
+                Preferred currency
+              </label>
+              {/*
+                text-base = 16 px prevents iOS zoom.
+                The select value is controlled by `currency` state.
+                Changing the select doesn't auto-save — the user clicks Save.
+              */}
+              <select
+                id="currency-select"
+                value={currency}
+                onChange={e => {
+                  setCurrency(e.target.value);
+                  setCurrencyError(null);
+                  setCurrencySaved(false);
+                }}
+                className="rounded-xl border border-stone-200 bg-white px-4 py-2.5 text-base text-stone-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                {CURRENCIES.map(c => (
+                  <option key={c.code} value={c.code}>{c.label}</option>
+                ))}
+              </select>
+              <p className="text-xs text-stone-400">
+                Used as the default currency when creating new expenses.
+              </p>
+            </div>
+
+            {/* Currency error — may include the "run db/04" hint */}
+            {currencyError && (
+              <div className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600">
+                <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                <span>{currencyError}</span>
+              </div>
+            )}
+
+            {/* Currency success */}
+            {currencySaved && (
+              <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+                <Check className="w-4 h-4 shrink-0" />
+                <span>Currency saved.</span>
+              </div>
+            )}
+
+            {/* Save currency button — indigo accent */}
+            <button
+              type="button"
+              onClick={handleCurrencySave}
+              disabled={currencySaving}
+              className="flex items-center justify-center gap-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 text-sm font-medium disabled:opacity-50 transition"
+            >
+              {currencySaving ? (
+                <>
+                  <span className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                  Saving…
+                </>
+              ) : (
+                <>
+                  <Save className="w-4 h-4" />
+                  Save currency
+                </>
+              )}
+            </button>
+          </div>
+        </section>
+
+        {/* ── Section 3: Change password ── */}
+        {/*
+          The user is already authenticated, so we don't need their current
+          password or their email. supabase.auth.updateUser({ password }) works
+          directly when a session is active.
+        */}
+        <section className="bg-white border border-stone-200 rounded-2xl p-5 shadow-sm">
+          <div className="flex items-center gap-2 mb-4">
+            <Lock className="w-4 h-4 text-stone-500" />
+            <span className="text-sm font-semibold text-stone-700">Change password</span>
+          </div>
+
+          <form onSubmit={handlePasswordSave} className="flex flex-col gap-4">
+
+            {/* New password field */}
+            <div className="flex flex-col gap-1.5">
+              <label
+                htmlFor="new-password"
+                className="text-xs font-medium text-stone-500 uppercase tracking-wide"
+              >
+                New password
+              </label>
+              <div className="relative">
+                {/* text-base = 16 px — prevents iOS zoom */}
+                <input
+                  id="new-password"
+                  type={showNewPw ? 'text' : 'password'}
+                  autoComplete="new-password"
+                  placeholder="At least 6 characters"
+                  value={newPassword}
+                  onChange={e => {
+                    setNewPassword(e.target.value);
+                    setPwError(null);
+                    setPwSaved(false);
+                  }}
+                  className="w-full rounded-xl border border-stone-200 bg-white px-4 py-2.5 pr-10 text-base text-stone-900 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowNewPw(p => !p)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-700 transition"
+                  tabIndex={-1}
+                  aria-label={showNewPw ? 'Hide password' : 'Show password'}
+                >
+                  {showNewPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            {/* Confirm password field */}
+            <div className="flex flex-col gap-1.5">
+              <label
+                htmlFor="confirm-password"
+                className="text-xs font-medium text-stone-500 uppercase tracking-wide"
+              >
+                Confirm new password
+              </label>
+              <div className="relative">
+                <input
+                  id="confirm-password"
+                  type={showConfirmPw ? 'text' : 'password'}
+                  autoComplete="new-password"
+                  placeholder="Repeat your new password"
+                  value={confirmPw}
+                  onChange={e => {
+                    setConfirmPw(e.target.value);
+                    setPwError(null);
+                    setPwSaved(false);
+                  }}
+                  className="w-full rounded-xl border border-stone-200 bg-white px-4 py-2.5 pr-10 text-base text-stone-900 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowConfirmPw(p => !p)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-700 transition"
+                  tabIndex={-1}
+                  aria-label={showConfirmPw ? 'Hide password' : 'Show password'}
+                >
+                  {showConfirmPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            {/* Password error */}
+            {pwError && (
+              <div className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600">
+                <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                <span>{pwError}</span>
+              </div>
+            )}
+
+            {/* Password success */}
+            {pwSaved && (
+              <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+                <Check className="w-4 h-4 shrink-0" />
+                <span>Password updated successfully.</span>
+              </div>
+            )}
+
+            {/* Validation rules hint — visible below the fields before any error */}
+            {!pwError && !pwSaved && (
+              <p className="text-xs text-stone-400">
+                Minimum 6 characters. Both fields must match.
+              </p>
+            )}
+
+            {/* Save button — indigo accent */}
+            <button
+              type="submit"
+              disabled={pwSaving}
+              className="flex items-center justify-center gap-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 text-sm font-medium disabled:opacity-50 transition"
+            >
+              {pwSaving ? (
+                <>
+                  <span className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                  Saving…
+                </>
+              ) : (
+                <>
+                  <Lock className="w-4 h-4" />
+                  Update password
                 </>
               )}
             </button>

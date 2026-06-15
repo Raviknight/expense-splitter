@@ -3,6 +3,7 @@ import {
   Plus, Pencil, Trash2, X, ArrowDownUp, Receipt, Users, PieChart, Search,
   ChevronDown, ChevronRight, Check, ArrowLeft, Handshake, User,
   AlertCircle, RefreshCw, UserPlus, Ghost, Upload, FileSpreadsheet,
+  BarChart3,
 } from 'lucide-react';
 import { useAuth } from './auth/AuthProvider.jsx';
 import { useExpenseStore } from './data/store.js';
@@ -61,13 +62,41 @@ const SPLIT_MODES = [
   { id: 'personal', label: 'Personal', desc: 'No split — payer keeps it' },
 ];
 
-const fmt = (n) => '$' + Number(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+/* ============ Currency (display only — no FX conversion) ============ */
+
+// Map of currency code → the symbol we show in front of amounts.
+// This is SYMBOL-ONLY: we never convert money between currencies, we just
+// swap which symbol is printed. Anything missing falls back to '$' (USD).
+const CURRENCIES = {
+  USD: '$',
+  EUR: '€',
+  GBP: '£',
+  INR: '₹',
+  CAD: 'CA$',
+  AUD: 'A$',
+  JPY: '¥',
+};
+
+// The symbol currently in use. App sets this from the signed-in user's
+// preferred_currency on every render (see below). It lives at module scope so
+// the shared `fmt` helper — used by many components — can read it without every
+// component needing to thread the symbol through props.
+let currencySymbol = '$';
+
+// Format a number as money using the active currency symbol.
+const fmt = (n) => currencySymbol + Number(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 
 /* ============ App ============ */
 
 export default function App() {
   // Get the signed-in user's id and profile from the auth layer.
   const { user, profile } = useAuth();
+
+  // Pick the money symbol from the user's preferred currency (defaults to '$').
+  // We set the module-level `currencySymbol` synchronously during render so the
+  // shared `fmt` helper formats every amount with the right symbol. This is
+  // display-only — stored values and all math stay exactly the same.
+  currencySymbol = CURRENCIES[profile?.preferred_currency] || '$';
 
   // Load all data from Supabase. The store returns the same shape the UI
   // already knows how to render, so minimal UI changes are needed.
@@ -109,7 +138,7 @@ export default function App() {
           <div className="text-sm text-stone-600 mb-4">{error}</div>
           <button
             onClick={actions.retry}
-            className="flex items-center gap-2 justify-center w-full py-2.5 rounded-lg bg-stone-900 text-white text-sm font-medium hover:bg-stone-800"
+            className="flex items-center gap-2 justify-center w-full py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700"
           >
             <RefreshCw className="w-4 h-4" />
             Try again
@@ -131,7 +160,7 @@ export default function App() {
           </div>
           <button
             onClick={() => setShowGroups(true)}
-            className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-stone-900 text-white text-sm font-medium hover:bg-stone-800"
+            className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700"
           >
             <Plus className="w-4 h-4" />
             Create a group
@@ -279,10 +308,12 @@ export default function App() {
     ? [
         { id: 'expenses',   label: 'Expenses',   icon: Receipt },
         { id: 'categories', label: 'Categories', icon: PieChart },
+        { id: 'insights',   label: 'Insights',   icon: BarChart3 },
       ]
     : [
         { id: 'expenses',   label: 'Expenses',   icon: Receipt },
         { id: 'categories', label: 'Categories', icon: PieChart },
+        { id: 'insights',   label: 'Insights',   icon: BarChart3 },
         { id: 'summary',    label: 'Settle Up',  icon: Handshake },
       ];
 
@@ -333,7 +364,7 @@ export default function App() {
                 key={t.id}
                 onClick={() => setTab(t.id)}
                 className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg transition ${
-                  tab === t.id ? 'bg-stone-900 text-white' : 'text-stone-600 hover:bg-stone-100'
+                  tab === t.id ? 'bg-indigo-600 text-white' : 'text-stone-600 hover:bg-stone-100'
                 }`}
               >
                 <t.icon className="w-4 h-4" />
@@ -365,6 +396,12 @@ export default function App() {
             onPick={(c) => { setFilterCat(c); setTab('expenses'); }}
           />
         )}
+        {tab === 'insights' && (
+          <InsightsTab
+            expenses={realExpenses}
+            total={total}
+          />
+        )}
         {tab === 'summary' && !isSolo && (
           <SummaryTab
             expenses={realExpenses}
@@ -391,7 +428,7 @@ export default function App() {
         </button>
         <button
           onClick={() => setEditing('new')}
-          className="w-14 h-14 rounded-full bg-stone-900 text-white shadow-lg hover:bg-stone-800 active:scale-95 transition flex items-center justify-center"
+          className="w-14 h-14 rounded-full bg-indigo-600 text-white shadow-lg hover:bg-indigo-700 active:scale-95 transition flex items-center justify-center"
           aria-label="Add expense"
         >
           <Plus className="w-6 h-6" />
@@ -564,7 +601,7 @@ function ExpensesTab({ grouped, count, visibleTotal, search, setSearch, filterCa
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search by name or category"
-            className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-stone-200 bg-white text-sm focus:outline-none focus:border-stone-400"
+            className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-stone-200 bg-white text-sm focus:outline-none focus:border-indigo-500"
           />
         </div>
         <div className="flex gap-2 items-center overflow-x-auto -mx-1 px-1 pb-1">
@@ -717,6 +754,106 @@ function CategoriesTab({ expenses, total, onPick }) {
   );
 }
 
+/* ============ Insights tab ============
+ *
+ * A lightweight, READ-ONLY spending overview for the active group:
+ *   - Total spent (real expenses only, settlements excluded by the caller).
+ *   - A "top category" highlight.
+ *   - A by-category breakdown as simple horizontal bars (plain CSS widths —
+ *     no charting library), sorted high → low. Each bar uses that category's
+ *     own colour and emoji from CATEGORIES.
+ *
+ * We do NOT mutate anything here; it only reads the numbers it is handed.
+ */
+
+// The category tones look like "bg-violet-50 text-violet-800 border-violet-200".
+// For a solid bar we want the same colour family at a stronger shade, e.g.
+// "bg-violet-500". We pull the family out of the "text-…" part of the tone and
+// rebuild it. Tailwind's Play CDN generates classes from the DOM at runtime, so
+// these constructed class names render fine (there is no purge step to miss them).
+function barColorFromTone(tone) {
+  const match = (tone || '').match(/text-([a-z]+)-\d{3}/);
+  const family = match ? match[1] : 'stone';
+  return `bg-${family}-500`;
+}
+
+function InsightsTab({ expenses, total }) {
+  // Sum amounts per category, highest first. Memoised so we only recompute
+  // when the expense list changes.
+  const byCategory = useMemo(() => {
+    const m = {};
+    expenses.forEach(e => { m[e.category] = (m[e.category] || 0) + Number(e.amount || 0); });
+    return Object.entries(m).sort((a, b) => b[1] - a[1]);
+  }, [expenses]);
+
+  if (total === 0) return (
+    <div className="text-center py-12 text-stone-500">
+      <div className="text-sm">No expenses yet.</div>
+      <div className="text-xs mt-1">Add expenses to see spending insights.</div>
+    </div>
+  );
+
+  // The biggest category is simply the first row after the high→low sort.
+  const [topCat, topAmt] = byCategory[0];
+  const topMeta = catMeta(topCat);
+  const topPct = (topAmt / total) * 100;
+
+  return (
+    <div className="space-y-3">
+      {/* Total spent card */}
+      <div className="bg-white border border-stone-200 rounded-xl p-4">
+        <div className="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-1">Total spent</div>
+        <div className="text-3xl font-semibold tabular-nums">{fmt(total)}</div>
+        <div className="text-sm text-stone-500 mt-1">
+          {expenses.length} expense{expenses.length === 1 ? '' : 's'} across {byCategory.length} categor{byCategory.length === 1 ? 'y' : 'ies'}
+        </div>
+      </div>
+
+      {/* Top category highlight */}
+      <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-4 flex items-center gap-3">
+        <div className="text-2xl shrink-0">{topMeta.emoji}</div>
+        <div className="min-w-0 flex-1">
+          <div className="text-[11px] uppercase tracking-wider text-indigo-700 font-medium">Top category</div>
+          <div className="font-semibold text-stone-900 truncate">{topCat}</div>
+        </div>
+        <div className="text-right shrink-0">
+          <div className="font-semibold tabular-nums">{fmt(topAmt)}</div>
+          <div className="text-[10px] text-stone-500 tabular-nums">{topPct.toFixed(1)}% of total</div>
+        </div>
+      </div>
+
+      {/* By-category bars (high → low) */}
+      <div className="bg-white border border-stone-200 rounded-xl p-4 space-y-3">
+        <div className="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Where it went</div>
+        {byCategory.map(([cat, amt]) => {
+          const meta = catMeta(cat);
+          const pct = (amt / total) * 100;
+          return (
+            <div key={cat}>
+              <div className="flex items-center justify-between mb-1 text-sm">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span>{meta.emoji}</span>
+                  <span className="font-medium truncate">{cat}</span>
+                </div>
+                <div className="flex items-center gap-2 shrink-0 tabular-nums">
+                  <span className="font-semibold">{fmt(amt)}</span>
+                  <span className="text-[10px] text-stone-500 w-10 text-right">{pct.toFixed(1)}%</span>
+                </div>
+              </div>
+              <div className="h-2 bg-stone-100 rounded-full overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all ${barColorFromTone(meta.tone)}`}
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function SummaryTab({ expenses, settlements, balances, sharedPool, total, people, onSettle }) {
   const a = balances[0];
   const settleAmt = Math.abs(a.net);
@@ -860,7 +997,7 @@ function GroupsModal({ groups, activeGroupId, myName, onClose, onSwitch, onCreat
                   <div
                     key={g.id}
                     className={`border rounded-xl p-3 transition ${
-                      isActive ? 'border-stone-900 bg-stone-50' : 'border-stone-200 bg-white hover:border-stone-400'
+                      isActive ? 'border-indigo-600 bg-indigo-50' : 'border-stone-200 bg-white hover:border-stone-400'
                     }`}
                   >
                     <div className="flex items-start gap-2">
@@ -874,7 +1011,7 @@ function GroupsModal({ groups, activeGroupId, myName, onClose, onSwitch, onCreat
                         </div>
                       </button>
                       <div className="flex flex-col gap-1 shrink-0">
-                        {isActive && <span className="text-[10px] px-1.5 py-0.5 rounded bg-stone-900 text-white">Active</span>}
+                        {isActive && <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-600 text-white">Active</span>}
                       </div>
                     </div>
                     <div className="flex gap-2 mt-2 pt-2 border-t border-stone-100">
@@ -918,7 +1055,7 @@ function GroupsModal({ groups, activeGroupId, myName, onClose, onSwitch, onCreat
             <div className="sticky bottom-0 bg-white border-t border-stone-200 p-3">
               <button
                 onClick={() => { setEditingGroup(null); setView('form'); }}
-                className="w-full py-2.5 rounded-lg bg-stone-900 text-white text-sm font-medium hover:bg-stone-800 flex items-center justify-center gap-1.5"
+                className="w-full py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 flex items-center justify-center gap-1.5"
               >
                 <Plus className="w-4 h-4" />
                 New group
@@ -1088,13 +1225,13 @@ function MembersPanel({ group, myName, onAddPerson, onRequestRemove }) {
               onChange={(e) => setNewName(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') handleAdd(); }}
               placeholder="Name"
-              className="flex-1 px-3 py-2.5 rounded-lg border border-stone-300 text-sm focus:outline-none focus:border-stone-500"
+              className="flex-1 px-3 py-2.5 rounded-lg border border-stone-300 text-sm focus:outline-none focus:border-indigo-500"
               disabled={adding}
             />
             <button
               onClick={handleAdd}
               disabled={!newName.trim() || adding}
-              className="px-4 py-2.5 rounded-lg bg-stone-900 text-white text-sm font-medium hover:bg-stone-800 disabled:bg-stone-300 flex items-center gap-1.5 shrink-0"
+              className="px-4 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:bg-stone-300 flex items-center gap-1.5 shrink-0"
             >
               <UserPlus className="w-4 h-4" />
               Add
@@ -1142,7 +1279,7 @@ function GroupForm({ group, myName, onSave, onCancel }) {
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="e.g. Boston weekend, July groceries"
-            className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm focus:outline-none focus:border-stone-500"
+            className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm focus:outline-none focus:border-indigo-500"
             autoFocus
           />
         </Field>
@@ -1153,7 +1290,7 @@ function GroupForm({ group, myName, onSave, onCancel }) {
               onClick={() => setType('shared')}
               disabled={!isNew && hasExpenses}
               className={`py-3 rounded-lg border text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed ${
-                type === 'shared' ? 'bg-stone-900 text-white border-stone-900' : 'bg-white border-stone-300 text-stone-700 hover:border-stone-500'
+                type === 'shared' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white border-stone-300 text-stone-700 hover:border-stone-500'
               }`}
             >
               <Users className="w-4 h-4 inline mr-1.5" />
@@ -1163,7 +1300,7 @@ function GroupForm({ group, myName, onSave, onCancel }) {
               onClick={() => setType('solo')}
               disabled={!isNew && hasExpenses}
               className={`py-3 rounded-lg border text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed ${
-                type === 'solo' ? 'bg-stone-900 text-white border-stone-900' : 'bg-white border-stone-300 text-stone-700 hover:border-stone-500'
+                type === 'solo' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white border-stone-300 text-stone-700 hover:border-stone-500'
               }`}
             >
               <User className="w-4 h-4 inline mr-1.5" />
@@ -1186,7 +1323,7 @@ function GroupForm({ group, myName, onSave, onCancel }) {
               value={partner}
               onChange={(e) => setPartner(e.target.value)}
               placeholder="Name"
-              className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm focus:outline-none focus:border-stone-500"
+              className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm focus:outline-none focus:border-indigo-500"
               // Disable if editing an existing group — members are managed separately
               disabled={!isNew}
             />
@@ -1202,7 +1339,7 @@ function GroupForm({ group, myName, onSave, onCancel }) {
         <button onClick={onCancel} className="flex-1 py-2.5 rounded-lg border border-stone-300 text-sm font-medium text-stone-700 hover:bg-stone-50">
           Cancel
         </button>
-        <button onClick={save} disabled={!valid} className="flex-1 py-2.5 rounded-lg bg-stone-900 text-white text-sm font-medium hover:bg-stone-800 disabled:bg-stone-300">
+        <button onClick={save} disabled={!valid} className="flex-1 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:bg-stone-300">
           {isNew ? 'Create' : 'Save'}
         </button>
       </div>
@@ -1241,14 +1378,14 @@ function SettleModal({ balances, people, onClose, onConfirm }) {
 
           <Field label="Amount">
             <div className="relative">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400 text-sm">$</span>
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400 text-sm">{currencySymbol}</span>
               <input
                 type="number"
                 step="0.01"
                 inputMode="decimal"
                 value={amount}
                 onChange={(e) => setAmount(e.target.value)}
-                className="w-full pl-7 pr-3 py-2.5 rounded-lg border border-stone-300 text-sm tabular-nums focus:outline-none focus:border-stone-500"
+                className="w-full pl-7 pr-3 py-2.5 rounded-lg border border-stone-300 text-sm tabular-nums focus:outline-none focus:border-indigo-500"
               />
             </div>
             {Math.abs(parseFloat(amount) - settleAmt) > 0.005 && (
@@ -1264,7 +1401,7 @@ function SettleModal({ balances, people, onClose, onConfirm }) {
               value={note}
               onChange={(e) => setNote(e.target.value)}
               placeholder="e.g. Zelle, cash, Venmo"
-              className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm focus:outline-none focus:border-stone-500"
+              className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm focus:outline-none focus:border-indigo-500"
             />
           </Field>
         </div>
@@ -1353,7 +1490,7 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Starbucks Albany"
-              className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm focus:outline-none focus:border-stone-500"
+              className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm focus:outline-none focus:border-indigo-500"
             />
             {isNew && name.trim() && !catManuallySet && (
               <div className="text-[11px] text-stone-500 mt-1">
@@ -1365,7 +1502,7 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
           <div className="grid grid-cols-2 gap-3">
             <Field label="Amount">
               <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400 text-sm">$</span>
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400 text-sm">{currencySymbol}</span>
                 <input
                   type="number"
                   step="0.01"
@@ -1373,7 +1510,7 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
                   value={amount}
                   onChange={(e) => setAmount(e.target.value)}
                   placeholder="0.00"
-                  className="w-full pl-7 pr-3 py-2.5 rounded-lg border border-stone-300 text-sm tabular-nums focus:outline-none focus:border-stone-500"
+                  className="w-full pl-7 pr-3 py-2.5 rounded-lg border border-stone-300 text-sm tabular-nums focus:outline-none focus:border-indigo-500"
                 />
               </div>
             </Field>
@@ -1382,7 +1519,7 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
                 type="date"
                 value={date}
                 onChange={(e) => setDate(e.target.value)}
-                className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm focus:outline-none focus:border-stone-500"
+                className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm focus:outline-none focus:border-indigo-500"
               />
             </Field>
           </div>
@@ -1391,7 +1528,7 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
             <select
               value={category}
               onChange={(e) => { setCategory(e.target.value); setCatManuallySet(true); }}
-              className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm bg-white focus:outline-none focus:border-stone-500"
+              className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm bg-white focus:outline-none focus:border-indigo-500"
             >
               {CATEGORIES.map(c => <option key={c.name} value={c.name}>{c.emoji} {c.name}</option>)}
             </select>
@@ -1411,7 +1548,7 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
                       key={p}
                       onClick={() => setPaidBy(p)}
                       className={`py-2.5 rounded-lg border text-sm font-medium transition truncate ${
-                        paidBy === p ? 'bg-stone-900 text-white border-stone-900' : 'bg-white border-stone-300 text-stone-700 hover:border-stone-500'
+                        paidBy === p ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white border-stone-300 text-stone-700 hover:border-stone-500'
                       }`}
                     >
                       {p}
@@ -1432,7 +1569,7 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
                       key={m.id}
                       onClick={() => setSplitMode(m.id)}
                       className={`py-2 px-1 rounded-lg border text-xs font-medium transition ${
-                        splitMode === m.id ? 'bg-stone-900 text-white border-stone-900' : 'bg-white border-stone-300 text-stone-700 hover:border-stone-500'
+                        splitMode === m.id ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white border-stone-300 text-stone-700 hover:border-stone-500'
                       }`}
                     >
                       {m.label}
@@ -1462,7 +1599,7 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
               value={note}
               onChange={(e) => setNote(e.target.value)}
               placeholder="Any context"
-              className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm focus:outline-none focus:border-stone-500"
+              className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm focus:outline-none focus:border-indigo-500"
             />
           </Field>
         </div>
@@ -1471,7 +1608,7 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
           <button onClick={onClose} className="flex-1 py-2.5 rounded-lg border border-stone-300 text-sm font-medium text-stone-700 hover:bg-stone-50">
             Cancel
           </button>
-          <button onClick={save} disabled={!valid || saving} className="flex-1 py-2.5 rounded-lg bg-stone-900 text-white text-sm font-medium hover:bg-stone-800 disabled:bg-stone-300">
+          <button onClick={save} disabled={!valid || saving} className="flex-1 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:bg-stone-300">
             {saving ? 'Saving…' : isNew ? 'Add' : 'Save'}
           </button>
         </div>
@@ -1591,7 +1728,7 @@ function ImportModal({ people, isSolo, myName, onClose, onImport }) {
       <select
         value={mapping[field]}
         onChange={(e) => setMapping(m => ({ ...m, [field]: e.target.value }))}
-        className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm bg-white focus:outline-none focus:border-stone-500"
+        className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm bg-white focus:outline-none focus:border-indigo-500"
       >
         <option value="">{optional ? '— none —' : '— choose column —'}</option>
         {headers.map(h => <option key={h} value={h}>{h}</option>)}
@@ -1643,7 +1780,7 @@ function ImportModal({ people, isSolo, myName, onClose, onImport }) {
                     <select
                       value={presetId}
                       onChange={(e) => onPresetChange(e.target.value)}
-                      className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm bg-white focus:outline-none focus:border-stone-500"
+                      className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm bg-white focus:outline-none focus:border-indigo-500"
                     >
                       {PROVIDER_PRESETS.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
                     </select>
@@ -1661,7 +1798,7 @@ function ImportModal({ people, isSolo, myName, onClose, onImport }) {
                       <select
                         value={options.amountStyle}
                         onChange={(e) => setOptions(o => ({ ...o, amountStyle: e.target.value }))}
-                        className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm bg-white focus:outline-none focus:border-stone-500"
+                        className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm bg-white focus:outline-none focus:border-indigo-500"
                       >
                         <option value="absolute">Plain numbers</option>
                         <option value="negative-expense">Negatives are expenses (bank)</option>
@@ -1671,7 +1808,7 @@ function ImportModal({ people, isSolo, myName, onClose, onImport }) {
                       <select
                         value={options.dateFormat}
                         onChange={(e) => setOptions(o => ({ ...o, dateFormat: e.target.value }))}
-                        className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm bg-white focus:outline-none focus:border-stone-500"
+                        className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm bg-white focus:outline-none focus:border-indigo-500"
                       >
                         <option value="YYYY-MM-DD">YYYY-MM-DD</option>
                         <option value="MM/DD/YYYY">MM/DD/YYYY</option>
@@ -1687,7 +1824,7 @@ function ImportModal({ people, isSolo, myName, onClose, onImport }) {
                       <select
                         value={paidByName}
                         onChange={(e) => setPaidByName(e.target.value)}
-                        className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm bg-white focus:outline-none focus:border-stone-500"
+                        className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm bg-white focus:outline-none focus:border-indigo-500"
                       >
                         {people.map(p => <option key={p} value={p}>{p}</option>)}
                       </select>
@@ -1700,7 +1837,7 @@ function ImportModal({ people, isSolo, myName, onClose, onImport }) {
                               key={m.id}
                               onClick={() => setSplitMode(m.id)}
                               className={`py-2 px-1 rounded-lg border text-xs font-medium transition ${
-                                splitMode === m.id ? 'bg-stone-900 text-white border-stone-900' : 'bg-white border-stone-300 text-stone-700 hover:border-stone-500'
+                                splitMode === m.id ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white border-stone-300 text-stone-700 hover:border-stone-500'
                               }`}
                             >
                               {m.label}
@@ -1761,7 +1898,7 @@ function ImportModal({ people, isSolo, myName, onClose, onImport }) {
             <button onClick={onClose} className="flex-1 py-2.5 rounded-lg border border-stone-300 text-sm font-medium text-stone-700 hover:bg-stone-50">
               Cancel
             </button>
-            <button onClick={doImport} disabled={!canImport} className="flex-1 py-2.5 rounded-lg bg-stone-900 text-white text-sm font-medium hover:bg-stone-800 disabled:bg-stone-300">
+            <button onClick={doImport} disabled={!canImport} className="flex-1 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:bg-stone-300">
               {importing ? 'Importing…' : `Import${built.expenses.length ? ` ${built.expenses.length}` : ''}`}
             </button>
           </div>

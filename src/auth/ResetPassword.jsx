@@ -109,7 +109,7 @@ export default function ResetPassword() {
     >
       {/* Icon + title area — mirrors AuthScreen logo block */}
       <div className="mb-8 text-center">
-        <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-stone-900 mb-4">
+        <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-indigo-600 mb-4">
           <ShieldCheck className="w-7 h-7 text-white" />
         </div>
         <h1 className="text-2xl font-semibold text-stone-900">Set a new password</h1>
@@ -138,7 +138,7 @@ export default function ResetPassword() {
                 placeholder="At least 6 characters"
                 value={password}
                 onChange={e => { setPassword(e.target.value); setError(''); }}
-                className="w-full rounded-xl border border-stone-200 bg-white px-4 py-3 pr-10 text-base text-stone-900 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-stone-400"
+                className="w-full rounded-xl border border-stone-200 bg-white px-4 py-3 pr-10 text-base text-stone-900 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 // text-base (16 px) prevents iOS from zooming in on input focus —
                 // matches the same fix already applied to other forms in this app.
               />
@@ -170,7 +170,7 @@ export default function ResetPassword() {
                 placeholder="Repeat your new password"
                 value={confirm}
                 onChange={e => { setConfirm(e.target.value); setError(''); }}
-                className="w-full rounded-xl border border-stone-200 bg-white px-4 py-3 pr-10 text-base text-stone-900 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-stone-400"
+                className="w-full rounded-xl border border-stone-200 bg-white px-4 py-3 pr-10 text-base text-stone-900 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
               />
               <button
                 type="button"
@@ -193,10 +193,11 @@ export default function ResetPassword() {
           )}
 
           {/* ── Save button ── */}
+          {/* Save button — indigo accent, consistent with the rest of auth screens */}
           <button
             type="submit"
             disabled={busy}
-            className="flex items-center justify-center gap-2 rounded-xl bg-stone-900 text-white py-3 text-sm font-medium hover:bg-stone-700 disabled:opacity-50 transition"
+            className="flex items-center justify-center gap-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white py-3 text-sm font-medium disabled:opacity-50 transition"
           >
             {busy ? (
               <>

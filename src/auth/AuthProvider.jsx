@@ -6,6 +6,9 @@
 //
 // Other components get access to { session, user, profile, loading, signOut,
 // refreshProfile, recoveryMode, endRecovery } by calling the useAuth() hook.
+//
+// profile now contains ALL columns from the profiles table (via select('*')),
+// including preferred_currency when that column has been added by db/04.
 
 import { createContext, useContext, useEffect, useState } from 'react';
 import { supabase } from '../supabaseClient.js';
@@ -28,16 +31,29 @@ export function AuthProvider({ children }) {
   const [recoveryMode, setRecoveryMode] = useState(false);
 
   // Fetch the profiles row for a given auth user id.
-  // Columns used here: id, display_name, email, created_at — matching 01_schema.sql exactly.
+  //
+  // WHY select('*') instead of a named column list:
+  //   The schema gains new columns over time (e.g. preferred_currency added by
+  //   db/04_add_currency.sql). An explicit list like
+  //     .select('id, display_name, email, created_at')
+  //   would throw a PostgREST error if preferred_currency exists in the DB but
+  //   is listed, or would silently omit it if we forgot to add it here.
+  //   select('*') always returns whatever columns exist, so:
+  //     • sign-in never breaks due to schema drift
+  //     • new columns (preferred_currency etc.) become available in profile
+  //       automatically, with no code change needed here
+  //   Existing consumers (profile.display_name, profile.email, profile.id,
+  //   profile.created_at) keep working — we're only ADDING extra keys, never
+  //   removing ones the rest of the app already uses.
   async function loadProfile(authUser) {
     if (!authUser) {
       setProfile(null);
       return;
     }
     const { data, error } = await supabase
-      .from('profiles')           // table name matches schema
-      .select('id, display_name, email, created_at')
-      .eq('id', authUser.id)      // column: id
+      .from('profiles')   // table name matches 01_schema.sql
+      .select('*')        // select all columns — resilient to new columns being added
+      .eq('id', authUser.id)
       .single();
 
     if (error) {

@@ -8,11 +8,14 @@
 //   3. Email + password (collapsible) — traditional sign-up / sign-in.
 //      Works only if you enable the Email provider in Supabase Auth settings.
 //
-// Visual style matches App.jsx: background #FAFAF7, stone colour palette,
+// Visual style: background #FAFAF7, indigo accent for primary actions,
 // Tailwind via CDN, lucide-react icons, rounded cards, mobile-first layout.
 
 import { useState } from 'react';
-import { Mail, KeyRound, Eye, EyeOff, ChevronDown, ChevronUp, ArrowRight, CheckCircle } from 'lucide-react';
+import {
+  Mail, KeyRound, Eye, EyeOff, ChevronDown, ChevronUp,
+  ArrowRight, CheckCircle, Users, WifiOff, Smartphone,
+} from 'lucide-react';
 import { supabase } from '../supabaseClient.js';
 
 // The exact URL of this app, INCLUDING the path. On GitHub Pages the app lives
@@ -22,15 +25,6 @@ import { supabase } from '../supabaseClient.js';
 const APP_URL = window.location.origin + window.location.pathname;
 
 // ---- small helpers ----
-
-// A subtle pill badge used for the "Google" label
-function ProviderBadge({ children }) {
-  return (
-    <span className="text-[10px] uppercase tracking-widest text-stone-400 font-semibold">
-      {children}
-    </span>
-  );
-}
 
 // Generic error message strip
 function ErrorMsg({ msg }) {
@@ -42,12 +36,30 @@ function ErrorMsg({ msg }) {
   );
 }
 
+// ---- Feature highlights (shown below the hero) ----
+// Three compact bullets that communicate the app's value at a glance.
+const FEATURES = [
+  {
+    icon: Users,
+    text: 'Split with friends in real time',
+  },
+  {
+    icon: Smartphone,
+    // "ghosts" = the app's term for people added without an account
+    text: 'Add people without accounts',
+  },
+  {
+    icon: WifiOff,
+    text: 'Works on your phone, offline-ready',
+  },
+];
+
 // ---- Magic-link section (primary) ----
 function MagicLinkForm() {
-  const [email, setEmail]   = useState('');
-  const [sent, setSent]     = useState(false);
-  const [busy, setBusy]     = useState(false);
-  const [error, setError]   = useState('');
+  const [email, setEmail] = useState('');
+  const [sent, setSent]   = useState(false);
+  const [busy, setBusy]   = useState(false);
+  const [error, setError] = useState('');
 
   async function handleSend(e) {
     e.preventDefault();
@@ -77,7 +89,7 @@ function MagicLinkForm() {
         </p>
         <button
           onClick={() => { setSent(false); setEmail(''); }}
-          className="text-xs text-stone-400 underline underline-offset-2 mt-1"
+          className="text-xs text-indigo-600 underline underline-offset-2 mt-1 hover:text-indigo-800 transition"
         >
           Use a different email
         </button>
@@ -91,20 +103,22 @@ function MagicLinkForm() {
         Email address
       </label>
       <div className="flex gap-2">
+        {/* text-base = 16 px — prevents iOS from zooming on input focus */}
         <input
           type="email"
           autoComplete="email"
           placeholder="you@example.com"
           value={email}
           onChange={e => setEmail(e.target.value)}
-          className="flex-1 rounded-xl border border-stone-200 bg-white px-4 py-3 text-sm text-stone-900 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-stone-400"
+          className="flex-1 rounded-xl border border-stone-200 bg-white px-4 py-3 text-base text-stone-900 placeholder-stone-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
         />
+        {/* Primary send button — indigo accent */}
         <button
           type="submit"
           disabled={busy}
-          className="flex items-center gap-1.5 rounded-xl bg-stone-900 text-white px-4 py-3 text-sm font-medium hover:bg-stone-700 disabled:opacity-50 transition"
+          className="flex items-center gap-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-3 text-sm font-medium disabled:opacity-50 transition"
         >
-          {busy ? 'Sending…' : <><ArrowRight className="w-4 h-4" /></>}
+          {busy ? 'Sending…' : <ArrowRight className="w-4 h-4" />}
         </button>
       </div>
       <ErrorMsg msg={error} />
@@ -238,7 +252,7 @@ function EmailPasswordForm() {
           </p>
           <button
             onClick={() => { setResetSent(false); setEmail(''); setError(''); }}
-            className="text-xs text-stone-400 underline underline-offset-2 mt-1"
+            className="text-xs text-indigo-600 underline underline-offset-2 mt-1 hover:text-indigo-800 transition"
           >
             Use a different email
           </button>
@@ -264,31 +278,32 @@ function EmailPasswordForm() {
 
       {open && (
         <form onSubmit={handleSubmit} className="flex flex-col gap-3 mt-3">
-          {/* Sign in / sign up toggle */}
+          {/* Sign in / sign up toggle — indigo for active tab */}
           <div className="flex rounded-lg overflow-hidden border border-stone-200 text-sm">
             <button
               type="button"
               onClick={() => setIsSignUp(false)}
-              className={`flex-1 py-2 transition ${!isSignUp ? 'bg-stone-900 text-white font-medium' : 'text-stone-500 hover:bg-stone-50'}`}
+              className={`flex-1 py-2 transition ${!isSignUp ? 'bg-indigo-600 text-white font-medium' : 'text-stone-500 hover:bg-stone-50'}`}
             >
               Sign in
             </button>
             <button
               type="button"
               onClick={() => setIsSignUp(true)}
-              className={`flex-1 py-2 transition ${isSignUp ? 'bg-stone-900 text-white font-medium' : 'text-stone-500 hover:bg-stone-50'}`}
+              className={`flex-1 py-2 transition ${isSignUp ? 'bg-indigo-600 text-white font-medium' : 'text-stone-500 hover:bg-stone-50'}`}
             >
               Sign up
             </button>
           </div>
 
+          {/* text-base (16 px) prevents iOS zoom on input focus */}
           <input
             type="email"
             autoComplete="email"
             placeholder="Email"
             value={email}
             onChange={e => setEmail(e.target.value)}
-            className="rounded-xl border border-stone-200 bg-white px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-stone-400 placeholder-stone-400"
+            className="rounded-xl border border-stone-200 bg-white px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-stone-400"
           />
 
           <div className="relative">
@@ -298,7 +313,7 @@ function EmailPasswordForm() {
               placeholder="Password"
               value={password}
               onChange={e => setPassword(e.target.value)}
-              className="w-full rounded-xl border border-stone-200 bg-white px-4 py-3 pr-10 text-sm focus:outline-none focus:ring-2 focus:ring-stone-400 placeholder-stone-400"
+              className="w-full rounded-xl border border-stone-200 bg-white px-4 py-3 pr-10 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-stone-400"
             />
             <button
               type="button"
@@ -311,11 +326,11 @@ function EmailPasswordForm() {
             </button>
           </div>
 
-          {/* Submit button */}
+          {/* Submit button — indigo accent */}
           <button
             type="submit"
             disabled={busy}
-            className="rounded-xl bg-stone-900 text-white py-3 text-sm font-medium hover:bg-stone-700 disabled:opacity-50 transition"
+            className="rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white py-3 text-sm font-medium disabled:opacity-50 transition"
           >
             {busy ? (isSignUp ? 'Creating account…' : 'Signing in…') : (isSignUp ? 'Create account' : 'Sign in')}
           </button>
@@ -328,7 +343,7 @@ function EmailPasswordForm() {
               type="button"
               onClick={handleForgotPassword}
               disabled={resetBusy}
-              className="text-xs text-stone-400 hover:text-stone-600 underline underline-offset-2 self-start disabled:opacity-50 transition"
+              className="text-xs text-indigo-600 hover:text-indigo-800 underline underline-offset-2 self-start disabled:opacity-50 transition"
             >
               {resetBusy ? 'Sending reset link…' : 'Forgot password?'}
             </button>
@@ -349,33 +364,58 @@ function EmailPasswordForm() {
 // ---- Main screen ----
 export default function AuthScreen() {
   return (
-    <div className="min-h-screen bg-[#FAFAF7] flex flex-col items-center justify-center px-4 py-12"
-         style={{ fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif' }}>
+    <div
+      className="min-h-screen bg-[#FAFAF7] flex flex-col items-center justify-center px-4 py-12"
+      style={{ fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif' }}
+    >
 
-      {/* Logo / title area */}
+      {/* ── Hero / title area ── */}
       <div className="mb-8 text-center">
-        <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-stone-900 mb-4">
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            {/* Receipt icon drawn inline so we don't need an import here */}
+        {/* App mark — indigo background with a split/receipt icon */}
+        <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-indigo-600 mb-4 shadow-md">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            {/* Receipt icon drawn inline — no extra import needed */}
             <polyline points="1 6 1 22 23 22 23 6" />
             <path d="M1 6l11-4 11 4" />
             <line x1="8" y1="12" x2="16" y2="12" />
             <line x1="8" y1="16" x2="16" y2="16" />
           </svg>
         </div>
-        <h1 className="text-2xl font-semibold text-stone-900">Expense Splitter</h1>
-        <p className="text-sm text-stone-500 mt-1">Sign in to track and share trip expenses</p>
+
+        {/* App name */}
+        <h1 className="text-3xl font-bold text-stone-900 tracking-tight">SplitMate</h1>
+
+        {/* Tagline — value proposition in one line */}
+        <p className="text-sm text-stone-500 mt-2 max-w-xs mx-auto leading-relaxed">
+          Split trip expenses with anyone — even friends who aren't on the app.
+        </p>
+
+        {/* Three feature highlights — compact icon + text rows */}
+        <ul className="mt-5 flex flex-col gap-2 text-left max-w-[260px] mx-auto">
+          {FEATURES.map(({ icon: Icon, text }) => (
+            <li key={text} className="flex items-center gap-2.5">
+              {/* Small indigo pill icon container */}
+              <span className="flex items-center justify-center w-6 h-6 rounded-md bg-indigo-50 shrink-0">
+                <Icon className="w-3.5 h-3.5 text-indigo-600" />
+              </span>
+              <span className="text-xs text-stone-600">{text}</span>
+            </li>
+          ))}
+        </ul>
       </div>
 
-      {/* Card */}
+      {/* ── Card ── */}
       <div className="w-full max-w-sm bg-white rounded-2xl border border-stone-200 shadow-sm p-6 flex flex-col gap-6">
 
         {/* 1. Magic link (primary) */}
         <section>
           <div className="flex items-center gap-2 mb-3">
-            <Mail className="w-4 h-4 text-stone-500" />
+            <Mail className="w-4 h-4 text-indigo-500" />
             <span className="text-sm font-medium text-stone-700">Sign in with email link</span>
-            <span className="ml-auto text-[10px] uppercase tracking-widest text-emerald-600 font-semibold bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5">Recommended</span>
+            {/* "Recommended" badge — emerald to keep the positive/recommended semantic */}
+            <span className="ml-auto text-[10px] uppercase tracking-widest text-emerald-600 font-semibold bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5">
+              Recommended
+            </span>
           </div>
           <MagicLinkForm />
         </section>
@@ -389,9 +429,6 @@ export default function AuthScreen() {
 
         {/* 2. Google */}
         <section>
-          <div className="flex items-center gap-2 mb-3">
-            <ProviderBadge>Google</ProviderBadge>
-          </div>
           <GoogleButton />
           <p className="text-xs text-stone-400 mt-2">
             Requires Google OAuth to be enabled in Supabase Auth settings.
@@ -411,6 +448,7 @@ export default function AuthScreen() {
         </section>
       </div>
 
+      {/* Footer privacy line */}
       <p className="text-xs text-stone-400 mt-6 text-center max-w-xs">
         Your data is protected by Row-Level Security. Only you and your accepted connections can see your expenses.
       </p>
