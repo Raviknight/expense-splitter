@@ -19,6 +19,13 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
       html, body { background-color: #FAFAF7; }
+      /* iOS Safari auto-zooms when you focus a text field smaller than 16px,
+         and that zoom sticks in home-screen (standalone) mode — making the app
+         look slightly enlarged. Forcing 16px form text on small screens stops
+         the zoom without disabling pinch-to-zoom elsewhere. */
+      @media (max-width: 640px) {
+        input, select, textarea { font-size: 16px !important; }
+      }
     </style>
 
     <!-- Service worker registration.
