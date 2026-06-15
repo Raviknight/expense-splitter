@@ -76,7 +76,20 @@ export function AuthProvider({ children }) {
     // onAuthStateChange fires automatically and clears session/user/profile.
   }
 
-  const value = { session, user, profile, loading, signOut };
+  // refreshProfile: re-runs the same SELECT that loadProfile uses and updates
+  // the profile state. Call this after the user saves their display name so
+  // the rest of the app (top bar, store.js) picks up the new value immediately.
+  // It is a no-op when there is no signed-in user.
+  async function refreshProfile() {
+    // `user` from state may be stale inside a closure; read the live session instead.
+    const { data: { session: currentSession } } = await supabase.auth.getSession();
+    await loadProfile(currentSession?.user ?? null);
+  }
+
+  // NOTE: refreshProfile is added here; all existing consumers of useAuth()
+  // that destructure only { session, user, profile, loading, signOut } are
+  // unaffected — adding a key to the context object is non-breaking.
+  const value = { session, user, profile, loading, signOut, refreshProfile };
 
   return (
     <AuthContext.Provider value={value}>

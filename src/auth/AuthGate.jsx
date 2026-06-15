@@ -11,14 +11,17 @@
 // require any routing library.
 
 import { useState } from 'react';
-import { LogOut, Users } from 'lucide-react';
+import { LogOut, Users, Settings } from 'lucide-react';
 import { useAuth } from './AuthProvider.jsx';
 import AuthScreen from './AuthScreen.jsx';
 import Connections from './Connections.jsx';
+import Profile from './Profile.jsx';
 
 export default function AuthGate({ children }) {
   const { session, profile, user, loading, signOut } = useAuth();
   const [showConnections, setShowConnections] = useState(false);
+  // Profile overlay — same pattern as Connections.
+  const [showProfile, setShowProfile] = useState(false);
 
   // ---- 1. Initial load ----
   if (loading) {
@@ -51,6 +54,12 @@ export default function AuthGate({ children }) {
     return <Connections onClose={() => setShowConnections(false)} />;
   }
 
+  // If the Profile screen is open, render it as a full-page overlay.
+  // Same window-less pattern — no router required.
+  if (showProfile) {
+    return <Profile onClose={() => setShowProfile(false)} />;
+  }
+
   return (
     <div className="min-h-screen bg-[#FAFAF7]">
       {/* Slim auth bar — sits above App's own sticky header */}
@@ -73,6 +82,16 @@ export default function AuthGate({ children }) {
             >
               <Users className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Connections</span>
+            </button>
+
+            {/* Settings / Profile button — opens Profile overlay */}
+            <button
+              onClick={() => setShowProfile(true)}
+              className="flex items-center gap-1.5 text-xs text-stone-300 hover:text-white px-2.5 py-1.5 rounded-lg hover:bg-stone-700 transition"
+              title="Profile &amp; settings"
+            >
+              <Settings className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Profile</span>
             </button>
 
             <button
