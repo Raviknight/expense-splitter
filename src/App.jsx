@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Plus, Pencil, Trash2, X, ArrowDownUp, Receipt, Users, PieChart, Search,
   ChevronDown, ChevronRight, Check, ArrowLeft, Handshake, User,
-  AlertCircle, RefreshCw,
+  AlertCircle, RefreshCw, UserPlus, Ghost,
 } from 'lucide-react';
 import { useAuth } from './auth/AuthProvider.jsx';
 import { useExpenseStore } from './data/store.js';
@@ -151,6 +151,12 @@ export default function App() {
                 await actions.updateGroup(groupId, name, type);
               }}
               onRequestDelete={(g) => setConfirmDeleteGroup(g)}
+              onAddPerson={async (groupId, personName) => {
+                await actions.addPersonToGroup(groupId, personName);
+              }}
+              onRemovePerson={async (groupId, personName) => {
+                await actions.removePersonFromGroup(groupId, personName);
+              }}
             />
           )}
 
@@ -404,6 +410,12 @@ export default function App() {
             await actions.updateGroup(groupId, name, type);
           }}
           onRequestDelete={(g) => setConfirmDeleteGroup(g)}
+          onAddPerson={async (groupId, personName) => {
+            await actions.addPersonToGroup(groupId, personName);
+          }}
+          onRemovePerson={async (groupId, personName) => {
+            await actions.removePersonFromGroup(groupId, personName);
+          }}
         />
       )}
 
@@ -434,33 +446,70 @@ export default function App() {
 /* ============ Header strips ============ */
 
 function BalanceStrip({ balances }) {
-  const a = balances[0];
-  const b = balances[1];
-  const settleAmt = Math.abs(a.net);
-
-  return (
-    <div className="mt-3 rounded-xl border border-stone-200 bg-white px-3 py-2.5 flex items-center justify-between text-sm">
-      <div className="flex items-center gap-3">
-        <div>
-          <div className="text-[10px] uppercase tracking-wider text-stone-500">{a.name} paid</div>
-          <div className="font-semibold tabular-nums">{fmt(a.paid)}</div>
-        </div>
-        <div className="w-px h-8 bg-stone-200" />
-        <div>
-          <div className="text-[10px] uppercase tracking-wider text-stone-500">{b.name} paid</div>
-          <div className="font-semibold tabular-nums">{fmt(b.paid)}</div>
-        </div>
-      </div>
-      {settleAmt > 0.005 ? (
-        <div className="text-right">
-          <div className="text-[10px] uppercase tracking-wider text-stone-500">Settle</div>
-          <div className="font-semibold text-emerald-700 tabular-nums">
-            {a.net > 0 ? `${b.name} → ${a.name}` : `${a.name} → ${b.name}`} {fmt(settleAmt)}
+  // For exactly 2 members keep the original compact layout.
+  // For 3+ members (possible when ghost members are added) show a scrollable
+  // row of "name paid X" tiles and a "who owes most" summary on the right.
+  if (balances.length === 2) {
+    const a = balances[0];
+    const b = balances[1];
+    const settleAmt = Math.abs(a.net);
+    return (
+      <div className="mt-3 rounded-xl border border-stone-200 bg-white px-3 py-2.5 flex items-center justify-between text-sm">
+        <div className="flex items-center gap-3">
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-stone-500">{a.name} paid</div>
+            <div className="font-semibold tabular-nums">{fmt(a.paid)}</div>
+          </div>
+          <div className="w-px h-8 bg-stone-200" />
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-stone-500">{b.name} paid</div>
+            <div className="font-semibold tabular-nums">{fmt(b.paid)}</div>
           </div>
         </div>
-      ) : (
-        <div className="text-emerald-700 font-medium text-xs">Settled</div>
-      )}
+        {settleAmt > 0.005 ? (
+          <div className="text-right">
+            <div className="text-[10px] uppercase tracking-wider text-stone-500">Settle</div>
+            <div className="font-semibold text-emerald-700 tabular-nums">
+              {a.net > 0 ? `${b.name} → ${a.name}` : `${a.name} → ${b.name}`} {fmt(settleAmt)}
+            </div>
+          </div>
+        ) : (
+          <div className="text-emerald-700 font-medium text-xs">Settled</div>
+        )}
+      </div>
+    );
+  }
+
+  // Multi-member (3+): scrollable row of tiles.
+  // Find the person who owes the most (most negative net).
+  const biggestDebtor = [...balances].sort((a, b) => a.net - b.net)[0];
+  const allSettled = balances.every(b => Math.abs(b.net) < 0.005);
+  return (
+    <div className="mt-3 rounded-xl border border-stone-200 bg-white px-3 py-2.5 text-sm">
+      <div className="flex items-center gap-3 overflow-x-auto pb-1">
+        {balances.map((b, i) => (
+          <div key={b.name} className="shrink-0 flex items-center gap-3">
+            {i > 0 && <div className="w-px h-8 bg-stone-200" />}
+            <div>
+              <div className="text-[10px] uppercase tracking-wider text-stone-500 truncate max-w-[80px]">{b.name} paid</div>
+              <div className="font-semibold tabular-nums">{fmt(b.paid)}</div>
+            </div>
+          </div>
+        ))}
+        <div className="w-px h-8 bg-stone-200 shrink-0" />
+        <div className="shrink-0 text-right">
+          {allSettled ? (
+            <div className="text-emerald-700 font-medium text-xs">Settled</div>
+          ) : (
+            <>
+              <div className="text-[10px] uppercase tracking-wider text-stone-500">Most owes</div>
+              <div className="font-semibold text-red-700 tabular-nums">
+                {biggestDebtor.name} {fmt(Math.abs(biggestDebtor.net))}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -735,9 +784,14 @@ function SummaryTab({ expenses, settlements, balances, sharedPool, total, people
 
 /* ============ Groups modal ============ */
 
-function GroupsModal({ groups, activeGroupId, myName, onClose, onSwitch, onCreateGroup, onUpdateGroup, onRequestDelete }) {
-  const [view, setView] = useState('list'); // 'list' | 'form'
+function GroupsModal({ groups, activeGroupId, myName, onClose, onSwitch, onCreateGroup, onUpdateGroup, onRequestDelete, onAddPerson, onRemovePerson }) {
+  // view can be: 'list' | 'form' | 'members'
+  const [view, setView] = useState('list');
   const [editingGroup, setEditingGroup] = useState(null);
+  // managingGroup is set when the user opens the Members panel for a group.
+  const [managingGroup, setManagingGroup] = useState(null);
+  // State for confirming ghost removal.
+  const [confirmRemoveMember, setConfirmRemoveMember] = useState(null); // { group, personName }
 
   return (
     <div className="fixed inset-0 z-40 flex items-end sm:items-center justify-center bg-stone-900/40 backdrop-blur-sm" onClick={onClose}>
@@ -750,6 +804,11 @@ function GroupsModal({ groups, activeGroupId, myName, onClose, onSwitch, onCreat
             <button onClick={() => { setView('list'); setEditingGroup(null); }} className="flex items-center gap-1.5 text-sm font-medium text-stone-700">
               <ArrowLeft className="w-4 h-4" />
               {editingGroup ? 'Edit group' : 'New group'}
+            </button>
+          ) : view === 'members' ? (
+            <button onClick={() => { setView('list'); setManagingGroup(null); }} className="flex items-center gap-1.5 text-sm font-medium text-stone-700">
+              <ArrowLeft className="w-4 h-4" />
+              Members
             </button>
           ) : (
             <h2 className="font-semibold">Your groups</h2>
@@ -802,6 +861,15 @@ function GroupsModal({ groups, activeGroupId, myName, onClose, onSwitch, onCreat
                       >
                         <Pencil className="w-3 h-3" /> Edit
                       </button>
+                      {/* Show People button for shared groups so the owner can manage members */}
+                      {!isSolo && (
+                        <button
+                          onClick={() => { setManagingGroup(g); setView('members'); }}
+                          className="text-xs text-stone-600 hover:text-stone-900 flex items-center gap-1"
+                        >
+                          <Users className="w-3 h-3" /> People
+                        </button>
+                      )}
                       {groups.length > 1 && (
                         <button
                           onClick={() => onRequestDelete(g)}
@@ -834,6 +902,18 @@ function GroupsModal({ groups, activeGroupId, myName, onClose, onSwitch, onCreat
               </button>
             </div>
           </>
+        ) : view === 'members' && managingGroup ? (
+          // ── Members management panel ────────────────────────────────────────
+          // Find the freshest copy of this group from the groups list (it
+          // re-renders after each add/remove because fetchAll refetches).
+          <MembersPanel
+            group={groups.find(g => g.id === managingGroup.id) || managingGroup}
+            myName={myName}
+            onAddPerson={(name) => onAddPerson(managingGroup.id, name)}
+            onRequestRemove={(personName) =>
+              setConfirmRemoveMember({ group: managingGroup, personName })
+            }
+          />
         ) : (
           <GroupForm
             group={editingGroup}
@@ -852,6 +932,156 @@ function GroupsModal({ groups, activeGroupId, myName, onClose, onSwitch, onCreat
             onCancel={() => { setView('list'); setEditingGroup(null); }}
           />
         )}
+      </div>
+
+      {/* Confirm dialog for removing a ghost member — rendered at z-50 above the modal */}
+      {confirmRemoveMember && (
+        <ConfirmDialog
+          title={`Remove "${confirmRemoveMember.personName}"?`}
+          message={`They will no longer appear in this group. Any expenses they are part of will still show their name.`}
+          confirmLabel="Remove"
+          onCancel={() => setConfirmRemoveMember(null)}
+          onConfirm={async () => {
+            await onRemovePerson(confirmRemoveMember.group.id, confirmRemoveMember.personName);
+            setConfirmRemoveMember(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ============ Members panel (inside GroupsModal) ============
+ *
+ * Shows all members of a shared group with badges:
+ *   "you"   — the signed-in owner
+ *   (no badge) — real connected user
+ *   "not on app" — ghost member (ghost_name set, user_id null)
+ *
+ * Lets the owner:
+ *   - Add a new ghost by typing a name (calls onAddPerson)
+ *   - Remove a ghost (calls onRequestRemove, which triggers a ConfirmDialog)
+ *
+ * Real connected members (non-ghost) cannot be removed here — the remove
+ * button is absent for them, keeping the UX simple and safe.
+ */
+function MembersPanel({ group, myName, onAddPerson, onRequestRemove }) {
+  const [newName, setNewName] = useState('');
+  const [adding, setAdding] = useState(false);
+
+  const handleAdd = async () => {
+    const trimmed = newName.trim();
+    if (!trimmed) return;
+    setAdding(true);
+    await onAddPerson(trimmed);
+    setNewName('');
+    setAdding(false);
+  };
+
+  const people = group?.people || [];
+  const memberMeta = group?._memberMeta || {};
+
+  return (
+    <div>
+      <div className="p-4 space-y-4">
+        {/* Section title */}
+        <div className="text-[11px] uppercase tracking-wider text-stone-500 font-medium">
+          {people.length} {people.length === 1 ? 'member' : 'members'}
+        </div>
+
+        {/* Member list */}
+        <div className="bg-white border border-stone-200 rounded-xl divide-y divide-stone-100">
+          {people.map(personName => {
+            const meta = memberMeta[personName] || {};
+            const isMe = personName === myName;
+            const isGhost = meta.isGhost === true;
+
+            return (
+              <div key={personName} className="flex items-center gap-3 px-3 py-2.5">
+                {/* Avatar icon */}
+                <div className="w-8 h-8 rounded-full bg-stone-100 flex items-center justify-center shrink-0">
+                  {isGhost
+                    ? <Ghost className="w-4 h-4 text-stone-400" />
+                    : <User className="w-4 h-4 text-stone-500" />
+                  }
+                </div>
+
+                {/* Name and badge */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="font-medium text-sm">{personName}</span>
+                    {isMe && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-stone-900 text-white">you</span>
+                    )}
+                    {isGhost && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded border border-stone-300 text-stone-500 bg-stone-50">
+                        not on app
+                      </span>
+                    )}
+                    {/* TODO(link-ghost): Once this person signs up and the owner has an
+                     *  'accepted' connection with them (see canAddAsRealMember in
+                     *  src/auth/useConnections.js), show a "Link to account" button here.
+                     *  That flow should:
+                     *    1. Let the owner pick the matching real user from their connections.
+                     *    2. Update this group_members row: set user_id, clear ghost_name.
+                     *  Do NOT build that flow now — this comment is the seam.
+                     *  The disabled placeholder below keeps the space so future work is
+                     *  drop-in without restructuring this list item. */}
+                    {isGhost && (
+                      <span
+                        title="Link-to-account is not yet available"
+                        className="text-[10px] px-1.5 py-0.5 rounded border border-dashed border-stone-300 text-stone-400 cursor-not-allowed select-none"
+                      >
+                        Link to account (coming soon)
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Remove button — only for ghost members */}
+                {isGhost && (
+                  <button
+                    onClick={() => onRequestRemove(personName)}
+                    className="p-1.5 text-stone-400 hover:text-red-600 rounded shrink-0"
+                    title={`Remove ${personName}`}
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Add ghost member input */}
+        <div>
+          <label className="block text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-1.5">
+            Add person (no account needed)
+          </label>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleAdd(); }}
+              placeholder="Name"
+              className="flex-1 px-3 py-2.5 rounded-lg border border-stone-300 text-sm focus:outline-none focus:border-stone-500"
+              disabled={adding}
+            />
+            <button
+              onClick={handleAdd}
+              disabled={!newName.trim() || adding}
+              className="px-4 py-2.5 rounded-lg bg-stone-900 text-white text-sm font-medium hover:bg-stone-800 disabled:bg-stone-300 flex items-center gap-1.5 shrink-0"
+            >
+              <UserPlus className="w-4 h-4" />
+              Add
+            </button>
+          </div>
+          <div className="text-[11px] text-stone-500 mt-1.5 leading-snug">
+            This person does not need an account. They appear as "not on app" and
+            participate in expense splits the same as anyone else.
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -1079,7 +1309,10 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
     setSaving(false);
   };
 
-  const otherPerson = isSolo ? null : people.find(p => p !== paidBy);
+  // For split descriptions: everyone except the payer.
+  const otherPeople = isSolo ? [] : people.filter(p => p !== paidBy);
+  // Keep the old name for backwards compat with 2-person groups where it reads nicely.
+  const otherPerson = otherPeople.length === 1 ? otherPeople[0] : null;
 
   return (
     <div className="fixed inset-0 z-40 flex items-end sm:items-center justify-center bg-stone-900/40 backdrop-blur-sm" onClick={onClose}>
@@ -1143,13 +1376,18 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
 
           {!isSolo && (
             <>
+              {/* ── Paid by selector ──────────────────────────────────────────
+               *  Works for any number of members (real or ghost).
+               *  Uses 2 columns for up to 4 people, wraps naturally beyond that.
+               *  Ghost members appear here the same as real members — the store
+               *  has already resolved their display names. */}
               <Field label="Paid by">
-                <div className="grid grid-cols-2 gap-2">
+                <div className={`grid gap-2 ${people.length <= 2 ? 'grid-cols-2' : 'grid-cols-2 sm:grid-cols-3'}`}>
                   {people.map(p => (
                     <button
                       key={p}
                       onClick={() => setPaidBy(p)}
-                      className={`py-2.5 rounded-lg border text-sm font-medium transition ${
+                      className={`py-2.5 rounded-lg border text-sm font-medium transition truncate ${
                         paidBy === p ? 'bg-stone-900 text-white border-stone-900' : 'bg-white border-stone-300 text-stone-700 hover:border-stone-500'
                       }`}
                     >
@@ -1159,6 +1397,11 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
                 </div>
               </Field>
 
+              {/* ── Split mode selector ───────────────────────────────────────
+               *  The three modes (equal / full / personal) work for any number
+               *  of members. Equal divides the amount by people.length; full
+               *  means everyone EXCEPT the payer owes the full amount; personal
+               *  means no one else owes anything. */}
               <Field label="Split">
                 <div className="grid grid-cols-3 gap-2">
                   {SPLIT_MODES.map(m => (
@@ -1174,8 +1417,16 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
                   ))}
                 </div>
                 <div className="text-[11px] text-stone-500 mt-1.5 leading-snug">
-                  {splitMode === 'equal' && `Split 50/50 between ${people.join(' and ')}.`}
-                  {splitMode === 'full' && `${otherPerson} owes the full ${amount ? fmt(parseFloat(amount) || 0) : 'amount'}.`}
+                  {splitMode === 'equal' && (
+                    // Equal: divided evenly among ALL members.
+                    `Split equally among ${people.length} people (${people.join(', ')}).`
+                  )}
+                  {splitMode === 'full' && (
+                    // Full: everyone else owes the whole amount.
+                    otherPerson
+                      ? `${otherPerson} owes the full ${amount ? fmt(parseFloat(amount) || 0) : 'amount'}.`
+                      : `Everyone else (${otherPeople.join(', ')}) each owe the full ${amount ? fmt(parseFloat(amount) || 0) : 'amount'}.`
+                  )}
                   {splitMode === 'personal' && `Just ${paidBy}'s expense. No one owes anyone for this.`}
                 </div>
               </Field>

@@ -168,6 +168,18 @@ export function useExpenseStore(userId, profile) {
             _settlementId: s.id,
           }));
 
+        // Build a map from display-name → { isGhost, memberId } so the UI
+        // can tell apart real connected members from ghost members without
+        // knowing about UUIDs.
+        const memberMeta = {};
+        members.forEach(m => {
+          const displayName = memberDisplayName(m, profilesMap);
+          memberMeta[displayName] = {
+            isGhost:  m.ghost_name !== null && m.ghost_name !== undefined,
+            memberId: m.id,
+          };
+        });
+
         return {
           id:             g.id,
           name:           g.name,
@@ -178,6 +190,9 @@ export function useExpenseStore(userId, profile) {
           // Internal maps — not used by UI rendering but needed by write helpers.
           _nameToMemberId: nameToMemberId,
           _memberIdToName: memberIdToName,
+          // Per-member metadata for the UI (ghost badge, etc.).
+          // Shape: { [displayName]: { isGhost: bool, memberId: uuid } }
+          _memberMeta: memberMeta,
         };
       });
 
@@ -431,15 +446,66 @@ export function useExpenseStore(userId, profile) {
     },
 
     // ── Add a person (ghost member) to an existing group ─────────────────────
+    // Inserts a group_members row with ghost_name set and user_id null.
+    // The DB check constraint (user_id IS NOT NULL) XOR (ghost_name IS NOT NULL)
+    // is satisfied because we only set ghost_name here.
     async addPersonToGroup(groupId, personName) {
+      const trimmed = personName.trim();
+      if (!trimmed) return;
+
       const { error: mErr } = await supabase
         .from('group_members')
-        .insert({ group_id: groupId, ghost_name: personName.trim() });
+        .insert({ group_id: groupId, ghost_name: trimmed });
 
       if (mErr) {
         setError('Could not add person: ' + mErr.message);
         return;
       }
+      await fetchRef.current();
+    },
+
+    // ── Remove a person (ghost or real) from an existing group ───────────────
+    // Maps the display-name → group_members.id via the group's _nameToMemberId
+    // map, then deletes that single row.
+    //
+    // GUARD: we do NOT allow removing yourself (the current signed-in user).
+    // This prevents the owner from losing access to their own group by accident.
+    // The owner's group_members row has user_id === userId.
+    async removePersonFromGroup(groupId, personName) {
+      const group = findGroup(groupId);
+      if (!group) return;
+
+      // Look up the group_members row id for this display-name.
+      const memberId = group._nameToMemberId[personName];
+      if (!memberId) {
+        setError(`Could not find member "${personName}" to remove.`);
+        return;
+      }
+
+      // Guard: refuse to remove the current user's own member row.
+      // _memberMeta tracks isGhost; real members have user_id set.
+      // We compare memberId against the owner's own member id by checking
+      // whether the meta entry is NOT a ghost AND the name matches the profile.
+      const meta = group._memberMeta?.[personName];
+      if (meta && !meta.isGhost) {
+        // Real (connected) user — do not allow removal via this UI.
+        // The only real member the owner can manage here is other connected
+        // users; but the safest guard is to block removing ANY non-ghost,
+        // which covers the owner themselves.
+        setError('You cannot remove a real connected member this way. Only ghost members can be removed.');
+        return;
+      }
+
+      const { error: dErr } = await supabase
+        .from('group_members')
+        .delete()
+        .eq('id', memberId);
+
+      if (dErr) {
+        setError('Could not remove member: ' + dErr.message);
+        return;
+      }
+
       await fetchRef.current();
     },
 
