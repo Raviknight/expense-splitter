@@ -98,6 +98,7 @@ don't return data).
 | `db/01_schema.sql` | Creates all tables, RLS policies, the profile-on-signup trigger, and turns on realtime. | Once, first. |
 | `db/03_find_profile_by_email.sql` | Adds the safe email-lookup function used to send connection requests. | Once, after 01. |
 | `db/02_import_my_data.sql` | Loads the owner's Niagara trip into **their** account only. | Once, after signing up. Paste your user id first (see the comments in the file). |
+| `db/04_add_preferred_currency.sql` | Adds `profiles.preferred_currency` (default 'USD') for the currency picker. | Once. App defaults to USD until run. |
 
 > `db/02` is personal to the owner. The app itself never seeds anyone's data — new users
 > start empty.
