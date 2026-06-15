@@ -201,16 +201,24 @@ only path.
 
 ---
 
-## 7. Known gaps / future work
+## 7. Feature status & future work
 
-- **Password reset** flow (UI) — not built yet (the reset email template exists).
-- **Profile screen** to edit display name / basic info — not built yet.
-- **Ghost → real user linking** — seam left in `MembersPanel`; flow not built.
-- **CSV import** (Phase 2) — planned as a generic CSV engine + per-provider presets
-  (Splitwise / bank exports).
+**Built:**
+- **Profile screen** (`src/auth/Profile.jsx`) — view email, edit display name; opens from
+  the signed-in top bar. `AuthProvider` exposes `refreshProfile()`.
+- **Password reset** — "Forgot password?" on the login screen → `resetPasswordForEmail`;
+  `AuthProvider` detects the `PASSWORD_RECOVERY` event; `src/auth/ResetPassword.jsx` sets the
+  new password via `updateUser`. Needs the Email provider + custom SMTP to actually deliver.
+- **CSV import** (`src/data/csv.js` + `ImportModal` in `App.jsx`) — generic engine with
+  Splitwise / bank presets, column mapping, amount/date normalization, preview, and a batch
+  `importExpenses` action in `store.js`. Uses `papaparse`. The engine is pure logic (testable
+  without auth). Add a provider by appending to `PROVIDER_PRESETS` in `csv.js`.
+
+**Not built yet:**
+- **Ghost → real user linking** — seam left in `MembersPanel` (`TODO(link-ghost)`); flow not built.
 - **Custom domain + branded email sender** — deferred; needed for emailing non-owners
-  reliably and for a trustworthy URL.
-- **Settle-up for 3+ members** — the per-person balances are correct, but the one-click
+  reliably and for a trustworthy URL. Resend without a domain only emails the owner.
+- **Settle-up for 3+ members** — per-person balances are correct, but the one-click
   settle-up button currently handles the 2-person case.
 
 ---
