@@ -214,13 +214,24 @@ only path.
   Splitwise / bank presets, column mapping, amount/date normalization, preview, and a batch
   `importExpenses` action in `store.js`. Uses `papaparse`. The engine is pure logic (testable
   without auth). Add a provider by appending to `PROVIDER_PRESETS` in `csv.js`.
+- **Settle-up for any group size** — `computeNetBalances` + `suggestSettlements` (greedy,
+  minimal transactions) in `App.jsx`; settlements are factored as transfers. Unit-tested.
+- **Export a group** — CSV download (RFC-4180) + dependency-free print-to-PDF, in the Summary tab.
+- **Offline writes** (`src/data/offline.js` + `store.js`) — expense add/edit/delete and
+  settlements work offline via client-UUIDs + an optimistic apply + a localStorage outbox that
+  flushes on reconnect (23505 = already-synced, idempotent). A localStorage snapshot lets the
+  app open offline. Group/people changes stay online-only. Offline/syncing banner in `App.jsx`.
+  Pure helpers in `offline.js` are unit-tested. Storage keys: `slitab.snapshot.<userId>`,
+  `slitab.outbox.<userId>`.
 
 **Not built yet:**
 - **Ghost → real user linking** — seam left in `MembersPanel` (`TODO(link-ghost)`); flow not built.
 - **Custom domain + branded email sender** — deferred; needed for emailing non-owners
   reliably and for a trustworthy URL. Resend without a domain only emails the owner.
-- **Settle-up for 3+ members** — per-person balances are correct, but the one-click
-  settle-up button currently handles the 2-person case.
+- **Per-person balance DISPLAY for 3+ groups with recorded settlements** — the settle-up
+  *suggestions* use correct net-balance math, but the older balance *display* at the top of the
+  Summary still treats settlements as a `full` split (exact for 2 people only). Align it with
+  `computeNetBalances` if needed.
 
 ---
 
