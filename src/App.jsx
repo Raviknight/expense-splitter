@@ -3,7 +3,7 @@ import {
   Plus, Pencil, Trash2, X, ArrowDownUp, Receipt, Users, PieChart, Search,
   ChevronDown, ChevronRight, Check, ArrowLeft, Handshake, User,
   AlertCircle, RefreshCw, UserPlus, Ghost, Upload, FileSpreadsheet,
-  BarChart3,
+  BarChart3, Download, Printer,
 } from 'lucide-react';
 import { useAuth } from './auth/AuthProvider.jsx';
 import { useExpenseStore } from './data/store.js';
@@ -85,6 +85,257 @@ let currencySymbol = '$';
 
 // Format a number as money using the active currency symbol.
 const fmt = (n) => currencySymbol + Number(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+
+/* ============ Settle-up math (works for any group size) ============
+ *
+ * These two helpers power "who pays whom" for groups of any size (2, 3, 4…).
+ * They use the SAME split rules the rest of the app uses:
+ *   - equal:    amount / number-of-people charged to EVERY person.
+ *   - full:     everyone EXCEPT the payer owes the full amount.
+ *   - personal: only the payer "owes" it (so it nets to 0 for them) — no split.
+ * A recorded settlement is treated as a pure transfer: the payer (from) gets
+ * credited (their debt shrinks) and the receiver (to) gets debited.
+ */
+
+// Compute each person's NET balance = (what they paid) − (what they owe).
+// `entries` is the group's full expenses array (real expenses + settlements).
+// Returns an array of { name, net } in the same order as `people`.
+// net > 0  → they are owed money (a creditor).
+// net < 0  → they owe money (a debtor).
+function computeNetBalances(people, entries) {
+  // Running paid/owed totals per person, keyed by display name.
+  const paid = Object.fromEntries(people.map(p => [p, 0]));
+  const owed = Object.fromEntries(people.map(p => [p, 0]));
+
+  entries.forEach(e => {
+    const amt = Number(e.amount || 0);
+
+    // Settlements are a straight transfer, NOT a split. The payer (from)
+    // reduces their debt; the receiver (to) reduces their credit. We model
+    // that as: from "paid" the amount, to "owes" the amount.
+    if (e.type === 'settlement') {
+      const from = e._settleFrom;
+      const to   = e._settleTo;
+      if (from in paid) paid[from] += amt;
+      if (to in owed)   owed[to]   += amt;
+      return;
+    }
+
+    const mode = e.splitMode || 'equal';
+    if (e.paidBy in paid) paid[e.paidBy] += amt;
+
+    if (mode === 'personal') {
+      // Payer keeps it: they owe their own expense, nets to 0 for them.
+      if (e.paidBy in owed) owed[e.paidBy] += amt;
+    } else if (mode === 'full') {
+      // Everyone except the payer owes the full amount.
+      people.forEach(p => { if (p !== e.paidBy) owed[p] += amt; });
+    } else {
+      // Equal: divide evenly among ALL people.
+      const share = amt / people.length;
+      people.forEach(p => { owed[p] += share; });
+    }
+  });
+
+  return people.map(p => ({ name: p, net: paid[p] - owed[p] }));
+}
+
+// Greedy "minimal transactions" settle-up. Repeatedly match the biggest debtor
+// with the biggest creditor and settle the smaller of the two amounts. This
+// yields at most N−1 payments. Returns [{ from, to, amount }] with amount
+// rounded to 2 decimals; tiny floating-point residue (< 1 cent) is ignored.
+function suggestSettlements(netBalances) {
+  // Work on copies so we don't mutate the caller's data. Round to cents up
+  // front so floating-point dust doesn't create phantom 0.001 payments.
+  const debtors   = netBalances
+    .filter(b => b.net < -0.005)
+    .map(b => ({ name: b.name, amount: -b.net }))   // amount they owe (positive)
+    .sort((a, b) => b.amount - a.amount);
+  const creditors = netBalances
+    .filter(b => b.net > 0.005)
+    .map(b => ({ name: b.name, amount: b.net }))    // amount they are owed
+    .sort((a, b) => b.amount - a.amount);
+
+  const payments = [];
+  let di = 0, ci = 0;
+  while (di < debtors.length && ci < creditors.length) {
+    const d = debtors[di];
+    const c = creditors[ci];
+    const pay = Math.min(d.amount, c.amount);
+    if (pay > 0.005) {
+      payments.push({
+        from: d.name,
+        to: c.name,
+        amount: Math.round(pay * 100) / 100,   // round to cents
+      });
+    }
+    d.amount -= pay;
+    c.amount -= pay;
+    // Advance whichever side is now settled (within a cent).
+    if (d.amount < 0.005) di++;
+    if (c.amount < 0.005) ci++;
+  }
+  return payments;
+}
+
+/* ============ Export helpers (CSV + printable PDF) — no libraries ============ */
+
+// Turn a group name into a safe-ish filename fragment (letters/numbers/-/_).
+function sanitizeFilename(name) {
+  return (name || 'group').replace(/[^a-z0-9\-_]+/gi, '-').replace(/^-+|-+$/g, '') || 'group';
+}
+
+// Quote a single CSV field per RFC 4180: wrap in double-quotes and double any
+// embedded quotes, but only when the field contains a comma, quote, or newline.
+function csvField(value) {
+  const s = value == null ? '' : String(value);
+  if (/[",\n\r]/.test(s)) {
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  return s;
+}
+
+// Build the CSV text for a group's REAL expenses (settlements excluded).
+// Columns: Date, Name, Category, Amount, Paid By, Split, Note.
+function buildExpensesCsv(realExpenses) {
+  const header = ['Date', 'Name', 'Category', 'Amount', 'Paid By', 'Split', 'Note'];
+  const lines = [header.map(csvField).join(',')];
+  // Newest first to match the on-screen ordering.
+  const rows = [...realExpenses].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  rows.forEach(e => {
+    const modeLabel = (SPLIT_MODES.find(m => m.id === (e.splitMode || 'equal')) || {}).label || 'Equal';
+    lines.push([
+      csvField(e.date),
+      csvField(e.name),
+      csvField(e.category),
+      // Plain number (no currency symbol) so the CSV imports cleanly into Excel.
+      csvField(Number(e.amount || 0).toFixed(2)),
+      csvField(e.paidBy),
+      csvField(modeLabel),
+      csvField(e.note || ''),
+    ].join(','));
+  });
+  // \r\n line endings are the most spreadsheet-friendly.
+  return lines.join('\r\n');
+}
+
+// Trigger a browser download of `text` as a file named `filename`.
+// Uses a Blob + a temporary <a download> click — no library needed.
+function downloadTextFile(filename, text, mime = 'text/csv;charset=utf-8') {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  // Release the object URL after the click has been handled.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+// Open a clean, print-friendly window for the group and call print(), letting
+// the user "Save as PDF" from the browser's print dialog. No PDF library.
+// We build a small standalone HTML document (title, date range, expense table,
+// settle-up summary) so printing doesn't disturb the live app DOM.
+function printGroupReport(group, realExpenses, netBalances, suggestions, total) {
+  const esc = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  // Work out the date range from the real expenses.
+  const dates = realExpenses.map(e => e.date).filter(Boolean).sort();
+  const dateRange = dates.length
+    ? (dates[0] === dates[dates.length - 1] ? dates[0] : `${dates[0]} → ${dates[dates.length - 1]}`)
+    : '—';
+
+  const rows = [...realExpenses]
+    .sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+    .map(e => {
+      const modeLabel = (SPLIT_MODES.find(m => m.id === (e.splitMode || 'equal')) || {}).label || 'Equal';
+      return `<tr>
+        <td>${esc(e.date)}</td>
+        <td>${esc(e.name)}</td>
+        <td>${esc(e.category)}</td>
+        <td class="num">${esc(fmt(Number(e.amount || 0)))}</td>
+        <td>${esc(e.paidBy)}</td>
+        <td>${esc(modeLabel)}</td>
+        <td>${esc(e.note || '')}</td>
+      </tr>`;
+    }).join('');
+
+  // Per-person net summary.
+  const balanceRows = netBalances.map(b => {
+    const label = b.net > 0.005 ? 'is owed' : b.net < -0.005 ? 'owes' : 'even';
+    return `<tr>
+      <td>${esc(b.name)}</td>
+      <td class="num">${esc(fmt(Math.abs(b.net)))}</td>
+      <td>${esc(label)}</td>
+    </tr>`;
+  }).join('');
+
+  // "Who pays whom" suggested payments.
+  const settleRows = suggestions.length
+    ? suggestions.map(s => `<li>${esc(s.from)} pays ${esc(s.to)} <strong>${esc(fmt(s.amount))}</strong></li>`).join('')
+    : '<li>All settled — no payments needed.</li>';
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>${esc(group.name)} — Expenses</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #1c1917; margin: 32px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .meta { color: #78716c; font-size: 13px; margin-bottom: 20px; }
+  h2 { font-size: 15px; margin: 24px 0 8px; border-bottom: 1px solid #e7e5e4; padding-bottom: 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #f0efed; }
+  th { color: #78716c; text-transform: uppercase; font-size: 10px; letter-spacing: 0.05em; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  ul { padding-left: 18px; }
+  li { margin: 4px 0; font-size: 13px; }
+  .total { font-size: 18px; font-weight: 600; margin-top: 4px; }
+  @media print { body { margin: 0; } @page { margin: 16mm; } }
+</style>
+</head>
+<body>
+  <h1>${esc(group.name)}</h1>
+  <div class="meta">${esc(dateRange)} · ${realExpenses.length} expense${realExpenses.length === 1 ? '' : 's'}</div>
+  <div class="total">Total: ${esc(fmt(total))}</div>
+
+  <h2>Settle up</h2>
+  <ul>${settleRows}</ul>
+
+  <h2>Balances</h2>
+  <table>
+    <thead><tr><th>Person</th><th class="num">Amount</th><th>Status</th></tr></thead>
+    <tbody>${balanceRows}</tbody>
+  </table>
+
+  <h2>Expenses</h2>
+  <table>
+    <thead><tr><th>Date</th><th>Name</th><th>Category</th><th class="num">Amount</th><th>Paid By</th><th>Split</th><th>Note</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>
+</body>
+</html>`;
+
+  // Open a new window, write the report, and trigger the print dialog.
+  const w = window.open('', '_blank');
+  if (!w) {
+    // Pop-up blocked — fall back to downloading the HTML so nothing is lost.
+    downloadTextFile(`${sanitizeFilename(group.name)}-report.html`, html, 'text/html;charset=utf-8');
+    return;
+  }
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+  // Give the new document a tick to lay out before printing.
+  w.onload = () => { w.focus(); w.print(); };
+  // Safety net in case onload already fired.
+  setTimeout(() => { try { w.focus(); w.print(); } catch (e) {} }, 300);
+}
 
 /* ============ App ============ */
 
@@ -298,6 +549,26 @@ export default function App() {
     setShowSettle(false);
   };
 
+  // Record one suggested payment WITHOUT closing the modal. Used by the 3+
+  // settle-up list so the user can record several payments in a row; balances
+  // (and therefore the suggestions) refetch after each one.
+  const recordSettlementKeepOpen = async ({ from, to, amount, note }) => {
+    await actions.recordSettlement(activeGroup.id, { from, to, amount, note });
+  };
+
+  /* ----- Export the active group (CSV download / printable PDF) ----- */
+  const exportCsv = () => {
+    const csv = buildExpensesCsv(realExpenses);
+    downloadTextFile(`${sanitizeFilename(activeGroup.name)}-expenses.csv`, csv);
+  };
+
+  const exportPdf = () => {
+    // Use the correct net balances + greedy suggestions for the printed summary.
+    const net = computeNetBalances(people, expenses);
+    const suggestions = suggestSettlements(net);
+    printGroupReport(activeGroup, realExpenses, net, suggestions, total);
+  };
+
   const deleteGroup = async (groupId) => {
     await actions.deleteGroup(groupId);
     setConfirmDeleteGroup(null);
@@ -410,7 +681,10 @@ export default function App() {
             sharedPool={sharedPool}
             total={total}
             people={people}
+            entries={expenses}
             onSettle={() => setShowSettle(true)}
+            onExportCsv={exportCsv}
+            onExportPdf={exportPdf}
           />
         )}
       </main>
@@ -473,8 +747,10 @@ export default function App() {
         <SettleModal
           balances={balances}
           people={people}
+          entries={expenses}
           onClose={() => setShowSettle(false)}
           onConfirm={recordSettlement}
+          onRecord={recordSettlementKeepOpen}
         />
       )}
 
@@ -854,10 +1130,18 @@ function InsightsTab({ expenses, total }) {
   );
 }
 
-function SummaryTab({ expenses, settlements, balances, sharedPool, total, people, onSettle }) {
+function SummaryTab({ expenses, settlements, balances, sharedPool, total, people, entries, onSettle, onExportCsv, onExportPdf }) {
   const a = balances[0];
   const settleAmt = Math.abs(a.net);
   const personalTotal = total - sharedPool;
+
+  // Correct net balances + greedy "who pays whom" for ANY group size. For 2
+  // people this still produces the single A→B payment; for 3+ it produces the
+  // minimal set of transactions. We compute it here so the settle-up card can
+  // preview the suggestions inline.
+  const netBalances = computeNetBalances(people, entries || expenses);
+  const suggestions = suggestSettlements(netBalances);
+  const isMulti = people.length >= 3;
 
   return (
     <div className="space-y-3">
@@ -903,7 +1187,29 @@ function SummaryTab({ expenses, settlements, balances, sharedPool, total, people
 
       <div className="bg-stone-900 text-white rounded-xl p-4">
         <div className="text-[11px] uppercase tracking-wider text-stone-400 font-medium mb-2">Settle up</div>
-        {settleAmt > 0.005 ? (
+        {suggestions.length === 0 ? (
+          <div className="text-lg font-semibold">All settled.</div>
+        ) : isMulti ? (
+          // ── 3+ members: show the minimal "who pays whom" list. ──────────────
+          <>
+            <div className="space-y-1.5 mb-3">
+              {suggestions.map((s, i) => (
+                <div key={i} className="flex items-center justify-between text-sm">
+                  <span className="text-stone-200">{s.from} pays {s.to}</span>
+                  <span className="font-semibold tabular-nums">{fmt(s.amount)}</span>
+                </div>
+              ))}
+            </div>
+            <button
+              onClick={onSettle}
+              className="w-full py-2.5 rounded-lg bg-white text-stone-900 text-sm font-medium hover:bg-stone-100 active:scale-[0.99] transition flex items-center justify-center gap-1.5"
+            >
+              <Check className="w-4 h-4" />
+              Record payments
+            </button>
+          </>
+        ) : (
+          // ── 2 members: keep the original single-payment flow. ───────────────
           <>
             <div className="text-lg font-semibold">
               {a.net > 0 ? `${balances[1].name} pays ${a.name}` : `${a.name} pays ${balances[1].name}`}
@@ -917,9 +1223,33 @@ function SummaryTab({ expenses, settlements, balances, sharedPool, total, people
               Mark as settled
             </button>
           </>
-        ) : (
-          <div className="text-lg font-semibold">All settled.</div>
         )}
+      </div>
+
+      {/* ── Export the group (CSV download + printable PDF) ───────────────────
+       *  CSV downloads the expense rows; "Save as PDF" opens a print-friendly
+       *  report in a new window and triggers the browser's print dialog. */}
+      <div className="bg-white border border-stone-200 rounded-xl p-4">
+        <div className="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-2">Export</div>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={onExportCsv}
+            className="py-2.5 rounded-lg border border-stone-300 text-sm font-medium text-stone-700 hover:bg-stone-50 flex items-center justify-center gap-1.5"
+          >
+            <Download className="w-4 h-4" />
+            CSV
+          </button>
+          <button
+            onClick={onExportPdf}
+            className="py-2.5 rounded-lg border border-stone-300 text-sm font-medium text-stone-700 hover:bg-stone-50 flex items-center justify-center gap-1.5"
+          >
+            <Printer className="w-4 h-4" />
+            Save as PDF
+          </button>
+        </div>
+        <div className="text-[11px] text-stone-500 mt-1.5 leading-snug">
+          CSV downloads all expenses. "Save as PDF" opens a printable summary — choose "Save as PDF" in the print dialog.
+        </div>
       </div>
 
       {settlements.length > 0 && (
@@ -1349,7 +1679,20 @@ function GroupForm({ group, myName, onSave, onCancel }) {
 
 /* ============ Settle modal ============ */
 
-function SettleModal({ balances, people, onClose, onConfirm }) {
+function SettleModal({ balances, people, entries, onClose, onConfirm, onRecord }) {
+  // For 3+ members we show a "who pays whom" list instead of a single form.
+  if (people.length >= 3) {
+    return (
+      <MultiSettleModal
+        people={people}
+        entries={entries}
+        onClose={onClose}
+        onRecord={onRecord}
+      />
+    );
+  }
+
+  // ── 2-person flow (unchanged): one payment form. ──────────────────────────
   const a = balances[0];
   const b = balances[1];
   const settleAmt = Math.abs(a.net);
@@ -1416,6 +1759,89 @@ function SettleModal({ balances, people, onClose, onConfirm }) {
             className="flex-1 py-2.5 rounded-lg bg-emerald-700 text-white text-sm font-medium hover:bg-emerald-800 disabled:bg-stone-300"
           >
             Record payment
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============ Multi-person settle modal (3+ members) ============
+ *
+ * Shows the minimal "who pays whom" list from the greedy algorithm. Each row
+ * has a "Record" button that inserts that settlement WITHOUT closing the modal,
+ * so the user can clear several debts in a row. After each record the parent
+ * refetches, `entries` updates, and the suggestions recompute automatically.
+ */
+function MultiSettleModal({ people, entries, onClose, onRecord }) {
+  // Track which rows are mid-write so we can disable their buttons.
+  const [busyKey, setBusyKey] = useState(null);
+
+  // Recompute net balances + suggestions on every render (entries change after
+  // each recorded payment because the parent refetches).
+  const net = computeNetBalances(people, entries || []);
+  const suggestions = suggestSettlements(net);
+
+  const handleRecord = async (s) => {
+    const key = `${s.from}->${s.to}:${s.amount}`;
+    setBusyKey(key);
+    await onRecord({ from: s.from, to: s.to, amount: s.amount, note: 'Settle up' });
+    // Parent refetch will re-render with fresh suggestions; clear busy flag.
+    setBusyKey(null);
+  };
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-end sm:items-center justify-center bg-stone-900/40 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-white w-full sm:max-w-md sm:rounded-2xl rounded-t-2xl shadow-2xl max-h-[92vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="sticky top-0 bg-white border-b border-stone-200 px-4 py-3 flex items-center justify-between">
+          <h2 className="font-semibold">Settle up</h2>
+          <button onClick={onClose} className="p-1 text-stone-400 hover:text-stone-700"><X className="w-5 h-5" /></button>
+        </div>
+
+        <div className="p-4 space-y-3">
+          <div className="text-sm text-stone-600">
+            The fewest payments that clear everyone's balance:
+          </div>
+
+          {suggestions.length === 0 ? (
+            <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 text-center">
+              <div className="text-2xl mb-1">🎉</div>
+              <div className="font-semibold text-emerald-900">Everyone is settled up.</div>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {suggestions.map((s) => {
+                const key = `${s.from}->${s.to}:${s.amount}`;
+                const busy = busyKey === key;
+                return (
+                  <div
+                    key={key}
+                    className="flex items-center justify-between gap-3 border border-stone-200 rounded-xl px-3 py-2.5"
+                  >
+                    <div className="min-w-0">
+                      <div className="font-medium text-sm truncate">
+                        {s.from} pays {s.to}
+                      </div>
+                      <div className="text-lg font-semibold tabular-nums">{fmt(s.amount)}</div>
+                    </div>
+                    <button
+                      onClick={() => handleRecord(s)}
+                      disabled={busy}
+                      className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:bg-stone-300 shrink-0 flex items-center gap-1.5"
+                    >
+                      <Check className="w-4 h-4" />
+                      {busy ? 'Saving…' : 'Record'}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="border-t border-stone-200 px-4 py-3">
+          <button onClick={onClose} className="w-full py-2.5 rounded-lg border border-stone-300 text-sm font-medium text-stone-700 hover:bg-stone-50">
+            Done
           </button>
         </div>
       </div>

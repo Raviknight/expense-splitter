@@ -166,6 +166,10 @@ export function useExpenseStore(userId, profile) {
             note:      s.note || '',
             // Keep raw IDs so we can delete from the correct table.
             _settlementId: s.id,
+            // Plain from/to display names so the settle-up math can treat a
+            // settlement as a pure transfer (from -> to) for any group size.
+            _settleFrom: memberIdToName[s.from_member] || 'Unknown',
+            _settleTo:   memberIdToName[s.to_member] || 'Unknown',
           }));
 
         // Build a map from display-name → { isGhost, memberId } so the UI
