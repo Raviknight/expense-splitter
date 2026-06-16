@@ -178,6 +178,23 @@ function suggestSettlements(netBalances) {
   return payments;
 }
 
+/* ============ Avatar helpers (home dashboard) ============
+ *
+ * Build short initials from a person's name for the little avatar circles
+ * on the home screen group cards. Rule:
+ *   - "Ravi Knight" -> "RK"  (first letter of first word + first letter of last)
+ *   - "Shailja"     -> "S"   (single word -> just its first letter)
+ * Profile photos aren't available yet, so we only render initials. See the
+ * AVATAR SEAM comment in the GroupCard component below for where an <img>
+ * could later replace the initials circle.
+ */
+function initialsFromName(name) {
+  const words = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return '?';
+  if (words.length === 1) return words[0][0].toUpperCase();
+  return (words[0][0] + words[words.length - 1][0]).toUpperCase();
+}
+
 /* ============ Export helpers (CSV + printable PDF) — no libraries ============ */
 
 // Turn a group name into a safe-ish filename fragment (letters/numbers/-/_).
@@ -363,6 +380,11 @@ export default function App() {
 
   const [editing, setEditing] = useState(null);
   const [showGroups, setShowGroups] = useState(false);
+  // Which screen are we on?
+  //   'home'  → the groups dashboard (cards for every group). The app opens here.
+  //   'group' → the detail UI for the one selected (active) group.
+  // The user is NOT auto-dropped into a group on load; they pick a card first.
+  const [view, setView] = useState('home');
   const [showSettle, setShowSettle] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [confirmDeleteGroup, setConfirmDeleteGroup] = useState(null);
@@ -542,6 +564,14 @@ export default function App() {
     setFilterCat('All');
     setSearch('');
     setTab('expenses');
+    // Opening a group from anywhere moves us into the group detail view.
+    setView('group');
+  };
+
+  // Return to the groups dashboard (the "All groups" back control).
+  const goHome = () => {
+    setShowGroups(false);
+    setView('home');
   };
 
   const recordSettlement = async ({ from, to, amount, note }) => {
@@ -588,6 +618,59 @@ export default function App() {
         { id: 'summary',    label: 'Settle Up',  icon: Handshake },
       ];
 
+  // ── Home dashboard: list every group as a tappable card ───────────────────
+  // This is where the app lands on sign-in (view === 'home'). The user picks a
+  // card to drop into that group's detail UI below. Rendered here, after the
+  // helper closures (switchGroup, deleteGroup…) are defined so we can pass them.
+  if (view === 'home') {
+    return (
+      <HomeScreen
+        groups={groups}
+        myName={profile?.display_name || 'Me'}
+        online={online}
+        pendingCount={pendingCount}
+        error={error}
+        onClearError={actions.clearError}
+        onOpenGroup={switchGroup}
+        onNewGroup={() => setShowGroups(true)}
+        groupsModal={showGroups && (
+          <GroupsModal
+            groups={groups}
+            activeGroupId={activeGroupId}
+            myName={profile?.display_name || 'Me'}
+            onClose={() => setShowGroups(false)}
+            onSwitch={switchGroup}
+            onCreateGroup={async (name, type, extraPeople) => {
+              await actions.createGroup(name, type, extraPeople);
+              setShowGroups(false);
+            }}
+            onUpdateGroup={async (groupId, name, type) => {
+              await actions.updateGroup(groupId, name, type);
+            }}
+            onRequestDelete={(g) => setConfirmDeleteGroup(g)}
+            onAddPerson={async (groupId, personName) => {
+              await actions.addPersonToGroup(groupId, personName);
+            }}
+            onRemovePerson={async (groupId, personName) => {
+              await actions.removePersonFromGroup(groupId, personName);
+            }}
+          />
+        )}
+        confirmDelete={confirmDeleteGroup && (
+          <ConfirmDialog
+            title={`Delete "${confirmDeleteGroup.name}"?`}
+            message={`This will permanently remove the group and all ${
+              (confirmDeleteGroup.expenses || []).length
+            } expense${(confirmDeleteGroup.expenses || []).length === 1 ? '' : 's'} in it.`}
+            confirmLabel="Delete group"
+            onCancel={() => setConfirmDeleteGroup(null)}
+            onConfirm={() => deleteGroup(confirmDeleteGroup.id)}
+          />
+        )}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#FAFAF7] text-stone-900" style={{ fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif' }}>
 
@@ -626,6 +709,14 @@ export default function App() {
 
       <header className="sticky top-0 z-20 bg-[#FAFAF7]/95 backdrop-blur border-b border-stone-200">
         <div className="max-w-3xl mx-auto px-4 pt-4 pb-3">
+          {/* Back control: returns to the groups dashboard (view = 'home'). */}
+          <button
+            onClick={goHome}
+            className="inline-flex items-center gap-1 -ml-1 mb-2 px-1 py-0.5 text-sm text-stone-500 hover:text-stone-800 rounded"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            All groups
+          </button>
           <div className="flex items-start justify-between gap-3">
             <button onClick={() => setShowGroups(true)} className="text-left min-w-0 group">
               <div className="text-[11px] uppercase tracking-[0.18em] text-stone-500 font-medium flex items-center gap-1">
@@ -795,6 +886,146 @@ export default function App() {
         />
       )}
     </div>
+  );
+}
+
+/* ============ Home dashboard (groups landing) ============
+ *
+ * The screen the app opens to. Lists every group as a tappable card. Tapping a
+ * card calls onOpenGroup(id), which makes that group active and switches the
+ * parent's view to 'group'. A "+ New group" button reuses the existing
+ * GroupsModal (passed in as `groupsModal`) so creation stays in one place.
+ */
+function HomeScreen({
+  groups, myName, online, pendingCount, error, onClearError,
+  onOpenGroup, onNewGroup, groupsModal, confirmDelete,
+}) {
+  return (
+    <div className="min-h-screen bg-[#FAFAF7] text-stone-900" style={{ fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif' }}>
+
+      {/* Write-error banner (same as the group view) */}
+      {error && (
+        <div className="bg-red-50 border-b border-red-200 px-4 py-2 flex items-center gap-3 max-w-3xl mx-auto">
+          <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />
+          <div className="text-sm text-red-800 flex-1">{error}</div>
+          <button onClick={onClearError} className="text-xs text-red-600 underline shrink-0">Dismiss</button>
+        </div>
+      )}
+
+      {/* Offline / syncing banner */}
+      {(!online || pendingCount > 0) && (
+        <div className={`border-b px-4 py-1.5 flex items-center gap-2 max-w-3xl mx-auto ${
+          !online ? 'bg-amber-50 border-amber-200' : 'bg-stone-50 border-stone-200'
+        }`}>
+          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${!online ? 'bg-amber-500' : 'bg-indigo-500 animate-pulse'}`} />
+          <span className={`text-xs ${!online ? 'text-amber-800' : 'text-stone-600'}`}>
+            {!online
+              ? 'Offline — changes saved on this device will sync when you reconnect'
+              : `Syncing ${pendingCount} change${pendingCount === 1 ? '' : 's'}…`}
+          </span>
+        </div>
+      )}
+
+      <header className="sticky top-0 z-20 bg-[#FAFAF7]/95 backdrop-blur border-b border-stone-200">
+        <div className="max-w-3xl mx-auto px-4 pt-5 pb-4 flex items-center justify-between gap-3">
+          <h1 className="text-xl font-semibold">Your groups</h1>
+          <button
+            onClick={onNewGroup}
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700"
+          >
+            <Plus className="w-4 h-4" />
+            New group
+          </button>
+        </div>
+      </header>
+
+      <main className="max-w-3xl mx-auto px-4 py-4 pb-24">
+        <div className="grid gap-3 sm:grid-cols-2">
+          {groups.map(g => (
+            <GroupCard key={g.id} group={g} myName={myName} onOpen={() => onOpenGroup(g.id)} />
+          ))}
+        </div>
+      </main>
+
+      {groupsModal}
+      {confirmDelete}
+    </div>
+  );
+}
+
+/* ============ Group card (one tile on the home dashboard) ============ */
+function GroupCard({ group, myName, onOpen }) {
+  const people = group.people || [];
+  const isSolo = (group.type === 'solo') || people.length === 1;
+
+  // The signed-in user's net balance in THIS group, using the shared math.
+  // We match the current user by the name the owner appears as in group.people
+  // (their profile display name, falling back to 'Me' — same convention the
+  // rest of App.jsx uses). If that name isn't found (e.g. an unusual setup),
+  // `mine` is undefined and we just show "settled up".
+  const net = computeNetBalances(people, group.expenses || []);
+  const mine = net.find(b => b.name === myName);
+  const myNet = mine ? mine.net : 0;
+
+  // Within a cent = settled up (matches the settle-up rounding elsewhere).
+  const settled = Math.abs(myNet) < 0.005;
+  const owed = myNet > 0;   // positive net → you are OWED money
+
+  // Up to 4 avatar circles, then a "+N" overflow bubble.
+  const shown = people.slice(0, 4);
+  const overflow = people.length - shown.length;
+
+  return (
+    <button
+      onClick={onOpen}
+      className="text-left bg-white border border-stone-200 rounded-2xl p-4 shadow-sm hover:border-stone-300 hover:shadow active:scale-[0.99] transition flex flex-col gap-3"
+    >
+      {/* Title + solo tag */}
+      <div className="flex items-start justify-between gap-2">
+        <div className="font-semibold text-stone-900 truncate">{group.name}</div>
+        {isSolo && (
+          <span className="shrink-0 text-[10px] uppercase tracking-wider text-stone-500 bg-stone-100 border border-stone-200 rounded-full px-2 py-0.5">
+            solo
+          </span>
+        )}
+      </div>
+
+      {/* Member avatars: initials circles (AVATAR SEAM below) */}
+      <div className="flex items-center">
+        {shown.map((p, i) => (
+          // AVATAR SEAM: profile photos aren't available yet, so we render a
+          // circle with initials. When photos exist, replace the inner text
+          // with <img src={photoUrl} ... /> (keep the same circle wrapper).
+          <span
+            key={p + i}
+            title={p}
+            className="w-7 h-7 -ml-1.5 first:ml-0 rounded-full bg-indigo-100 text-indigo-700 text-[11px] font-semibold ring-2 ring-white flex items-center justify-center"
+          >
+            {initialsFromName(p)}
+          </span>
+        ))}
+        {overflow > 0 && (
+          <span className="w-7 h-7 -ml-1.5 rounded-full bg-stone-200 text-stone-600 text-[11px] font-semibold ring-2 ring-white flex items-center justify-center">
+            +{overflow}
+          </span>
+        )}
+      </div>
+
+      {/* The signed-in user's balance in this group */}
+      {isSolo ? (
+        <div className="text-sm text-stone-500">Personal spending</div>
+      ) : settled ? (
+        <div className="text-sm text-stone-500 font-medium">Settled up</div>
+      ) : owed ? (
+        <div className="text-sm font-semibold text-emerald-700">
+          You are owed +{fmt(myNet)}
+        </div>
+      ) : (
+        <div className="text-sm font-semibold text-rose-600">
+          You owe -{fmt(Math.abs(myNet))}
+        </div>
+      )}
+    </button>
   );
 }
 
@@ -1602,20 +1833,40 @@ function GroupForm({ group, myName, onSave, onCancel }) {
   // For an existing group, derive the type from how many people it has.
   const initialType = group ? (group.type || (group.people?.length === 1 ? 'solo' : 'shared')) : 'shared';
   const [type, setType] = useState(initialType);
-  // The partner field: find the first person that is NOT myName, default 'Shailja'.
-  const initialPartner = group?.people?.find(p => p !== myName) || '';
-  const [partner, setPartner] = useState(initialPartner);
+
+  // For a NEW shared group the owner can add more than one other person up
+  // front. We collect their names into `extraPeople` (a list of chips). The
+  // `personDraft` is the text currently typed in the add field.
+  // For an EXISTING group we don't edit members here (managed separately), so
+  // we seed the list from the current non-owner people just for display.
+  const initialExtra = (group?.people || []).filter(p => p !== myName);
+  const [extraPeople, setExtraPeople] = useState(initialExtra);
+  const [personDraft, setPersonDraft] = useState('');
 
   const hasExpenses = (group?.expenses?.length || 0) > 0;
-  const valid = name.trim() && (type === 'solo' || partner.trim());
+  // A new shared group needs at least one other person; solo needs none.
+  const valid = name.trim() && (type === 'solo' || extraPeople.length > 0);
+
+  // Add the typed name to the list (ignore blanks and case-insensitive dupes).
+  const addPerson = () => {
+    const n = personDraft.trim();
+    if (!n) return;
+    const exists = extraPeople.some(p => p.toLowerCase() === n.toLowerCase())
+      || n.toLowerCase() === myName.toLowerCase();
+    if (!exists) setExtraPeople([...extraPeople, n]);
+    setPersonDraft('');
+  };
+
+  const removePerson = (n) => setExtraPeople(extraPeople.filter(p => p !== n));
 
   const save = () => {
     if (!valid) return;
     onSave({
       name: name.trim(),
       type,
-      // Extra people beyond the owner — only relevant for new groups.
-      extraPeople: type === 'shared' ? [partner.trim()] : [],
+      // Extra people beyond the owner — only sent for new groups. The store
+      // already accepts an array; these become ghost members.
+      extraPeople: type === 'shared' ? extraPeople : [],
     });
   };
 
@@ -1666,20 +1917,76 @@ function GroupForm({ group, myName, onSave, onCancel }) {
         </Field>
 
         {type === 'shared' && (
-          <Field label="Other person">
-            <input
-              type="text"
-              value={partner}
-              onChange={(e) => setPartner(e.target.value)}
-              placeholder="Name"
-              className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm focus:outline-none focus:border-indigo-500"
-              // Disable if editing an existing group — members are managed separately
-              disabled={!isNew}
-            />
-            <div className="text-[11px] text-stone-500 mt-1">
-              You are <span className="font-medium">{myName}</span>.
-              {!isNew && <span className="block text-amber-700 mt-1">Member list is managed separately for existing groups.</span>}
-            </div>
+          <Field label="Other people">
+            {/* New group: a full multi-person adder. Existing group: members
+                are managed separately, so we just show them read-only. */}
+            {isNew ? (
+              <>
+                {/* Type a name, press Add (or Enter), and it becomes a chip. */}
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={personDraft}
+                    onChange={(e) => setPersonDraft(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addPerson(); } }}
+                    placeholder="Name"
+                    className="flex-1 px-3 py-2.5 rounded-lg border border-stone-300 text-sm focus:outline-none focus:border-indigo-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={addPerson}
+                    disabled={!personDraft.trim()}
+                    className="px-4 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:bg-stone-300 flex items-center gap-1.5 shrink-0"
+                  >
+                    <UserPlus className="w-4 h-4" />
+                    Add
+                  </button>
+                </div>
+
+                {/* The people added so far, each removable. */}
+                {extraPeople.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {extraPeople.map(p => (
+                      <span
+                        key={p}
+                        className="inline-flex items-center gap-1.5 pl-3 pr-1.5 py-1 rounded-full bg-stone-100 border border-stone-200 text-sm text-stone-700"
+                      >
+                        {p}
+                        <button
+                          type="button"
+                          onClick={() => removePerson(p)}
+                          className="p-0.5 text-stone-400 hover:text-red-600 rounded-full"
+                          title={`Remove ${p}`}
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                <div className="text-[11px] text-stone-500 mt-1.5 leading-snug">
+                  You are <span className="font-medium">{myName}</span>. Add one or more
+                  people to split with — they don't need an account.
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="flex flex-wrap gap-2">
+                  {extraPeople.length === 0 ? (
+                    <span className="text-sm text-stone-400">No other members.</span>
+                  ) : extraPeople.map(p => (
+                    <span key={p} className="inline-flex items-center px-3 py-1 rounded-full bg-stone-100 border border-stone-200 text-sm text-stone-700">
+                      {p}
+                    </span>
+                  ))}
+                </div>
+                <div className="text-[11px] text-stone-500 mt-1">
+                  You are <span className="font-medium">{myName}</span>.
+                  <span className="block text-amber-700 mt-1">Member list is managed separately for existing groups.</span>
+                </div>
+              </>
+            )}
           </Field>
         )}
       </div>
