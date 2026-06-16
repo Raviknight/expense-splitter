@@ -804,6 +804,88 @@ export function useExpenseStore(userId, profile) {
       await fetchRef.current();
     },
 
+    // ── Link a ghost member to a real connected user account ────────────────
+    // This is the "link-ghost" flow: the owner has an accepted connection with
+    // a real user, and wants to attach that user to a ghost row that already
+    // exists in this group.
+    //
+    // How it works:
+    //   1. Look up the ghost's group_members.id using the group's name→id map.
+    //   2. UPDATE that row in place: set user_id = the real user's id,
+    //      clear ghost_name = null.
+    //   THE ROW ID DOES NOT CHANGE — so every expense whose paid_by points at
+    //   this row stays perfectly attached. We never delete + reinsert.
+    //   3. Refetch so the UI shows the real user's display name instead of the
+    //      ghost name.
+    //
+    // Errors:
+    //   - If the RLS policy from db/05_link_ghost_policy.sql has not been run
+    //     yet (error code 42501, or message mentions policy/permission/row-level),
+    //     we show a friendly setup instruction instead of a raw Postgres error.
+    //   - All other errors are shown as-is.
+    //
+    // ONLINE-ONLY: this is a structural change (like adding/removing a person).
+    async linkGhostToUser(groupId, ghostName, userId) {
+      if (!navigator.onLine) {
+        setError("You're offline — linking a ghost needs a connection. Try again when you're back online.");
+        return;
+      }
+
+      const group = findGroup(groupId);
+      if (!group) {
+        setError('Group not found.');
+        return;
+      }
+
+      // Find the ghost's group_members row id via the display-name map.
+      const memberId = group._nameToMemberId[ghostName];
+      if (!memberId) {
+        setError(`Could not find ghost member "${ghostName}" in this group.`);
+        return;
+      }
+
+      // Verify this is actually a ghost (belt-and-suspenders check — the RLS
+      // policy also enforces it, but a clear message here is friendlier).
+      const meta = group._memberMeta?.[ghostName];
+      if (meta && !meta.isGhost) {
+        setError(`"${ghostName}" is already a real member — only ghost members can be linked.`);
+        return;
+      }
+
+      // UPDATE in place: set user_id, clear ghost_name.
+      // Column names must match db/01_schema.sql exactly.
+      const { error: dbError } = await supabase
+        .from('group_members')           // table: group_members
+        .update({
+          user_id:    userId,            // column: user_id (uuid, fk → auth.users)
+          ghost_name: null,              // column: ghost_name (text, now null)
+        })
+        .eq('id', memberId);             // column: id (the same row — no delete/reinsert)
+
+      if (dbError) {
+        // RLS/permission errors (code 42501 or message text) mean the owner
+        // hasn't run db/05_link_ghost_policy.sql yet. Give a clear instruction.
+        const isRlsError =
+          dbError.code === '42501' ||
+          (dbError.message || '').toLowerCase().includes('policy') ||
+          (dbError.message || '').toLowerCase().includes('permission') ||
+          (dbError.message || '').toLowerCase().includes('row-level') ||
+          (dbError.message || '').toLowerCase().includes('violates row');
+
+        if (isRlsError) {
+          setError(
+            'Linking needs a one-time database update — run db/05_link_ghost_policy.sql in Supabase.'
+          );
+        } else {
+          setError('Could not link member: ' + (dbError.message || 'Server error'));
+        }
+        return;
+      }
+
+      // Success: refetch so the name updates to the real user's display name.
+      await fetchRef.current();
+    },
+
     // ── Clear any error (used by retry / dismiss buttons) ────────────────────
     clearError() {
       setError(null);

@@ -6,6 +6,7 @@ import {
   BarChart3, Download, Printer,
 } from 'lucide-react';
 import { useAuth } from './auth/AuthProvider.jsx';
+import { useConnections } from './auth/useConnections.js';
 import { useExpenseStore } from './data/store.js';
 import { parseCsv, PROVIDER_PRESETS, buildExpenses } from './data/csv.js';
 
@@ -461,6 +462,9 @@ export default function App() {
               onRemovePerson={async (groupId, personName) => {
                 await actions.removePersonFromGroup(groupId, personName);
               }}
+              onLinkGhost={async (groupId, ghostName, userId) => {
+                await actions.linkGhostToUser(groupId, ghostName, userId);
+              }}
             />
           )}
 
@@ -653,6 +657,9 @@ export default function App() {
             }}
             onRemovePerson={async (groupId, personName) => {
               await actions.removePersonFromGroup(groupId, personName);
+            }}
+            onLinkGhost={async (groupId, ghostName, userId) => {
+              await actions.linkGhostToUser(groupId, ghostName, userId);
             }}
           />
         )}
@@ -849,6 +856,9 @@ export default function App() {
           }}
           onRemovePerson={async (groupId, personName) => {
             await actions.removePersonFromGroup(groupId, personName);
+          }}
+          onLinkGhost={async (groupId, ghostName, userId) => {
+            await actions.linkGhostToUser(groupId, ghostName, userId);
           }}
         />
       )}
@@ -1524,7 +1534,7 @@ function SummaryTab({ expenses, settlements, balances, sharedPool, total, people
 
 /* ============ Groups modal ============ */
 
-function GroupsModal({ groups, activeGroupId, myName, onClose, onSwitch, onCreateGroup, onUpdateGroup, onRequestDelete, onAddPerson, onRemovePerson }) {
+function GroupsModal({ groups, activeGroupId, myName, onClose, onSwitch, onCreateGroup, onUpdateGroup, onRequestDelete, onAddPerson, onRemovePerson, onLinkGhost }) {
   // view can be: 'list' | 'form' | 'members'
   const [view, setView] = useState('list');
   const [editingGroup, setEditingGroup] = useState(null);
@@ -1653,6 +1663,9 @@ function GroupsModal({ groups, activeGroupId, myName, onClose, onSwitch, onCreat
             onRequestRemove={(personName) =>
               setConfirmRemoveMember({ group: managingGroup, personName })
             }
+            onLinkGhost={(ghostName, userId) =>
+              onLinkGhost(managingGroup.id, ghostName, userId)
+            }
           />
         ) : (
           <GroupForm
@@ -1694,20 +1707,42 @@ function GroupsModal({ groups, activeGroupId, myName, onClose, onSwitch, onCreat
 /* ============ Members panel (inside GroupsModal) ============
  *
  * Shows all members of a shared group with badges:
- *   "you"   — the signed-in owner
- *   (no badge) — real connected user
+ *   "you"        — the signed-in owner
+ *   (no badge)   — real connected user
  *   "not on app" — ghost member (ghost_name set, user_id null)
  *
  * Lets the owner:
  *   - Add a new ghost by typing a name (calls onAddPerson)
  *   - Remove a ghost (calls onRequestRemove, which triggers a ConfirmDialog)
+ *   - Link a ghost to a real connected user (calls onLinkGhost)
  *
- * Real connected members (non-ghost) cannot be removed here — the remove
- * button is absent for them, keeping the UX simple and safe.
+ * Real connected members (non-ghost) cannot be removed or linked here.
+ *
+ * TODO(link-ghost): The linking seam is now ACTIVE. If the owner later wants
+ * to also allow UNLINKING (converting a real member back to a ghost, or
+ * transferring the ghost row to a different user), that would be a separate
+ * action — add a new store action `unlinkRealUser` and add a button here.
+ * The row-id preservation approach (update in place) means that direction
+ * of change is also safe for existing expenses.
  */
-function MembersPanel({ group, myName, onAddPerson, onRequestRemove }) {
+function MembersPanel({ group, myName, onAddPerson, onRequestRemove, onLinkGhost }) {
+  const { user } = useAuth();
+  // Load the owner's accepted connections so we can offer them as link targets.
+  const { accepted } = useConnections();
+
   const [newName, setNewName] = useState('');
   const [adding, setAdding] = useState(false);
+
+  // linkingGhost: the ghost's display name that is currently open for linking,
+  // or null if no picker is open.
+  const [linkingGhost, setLinkingGhost] = useState(null);
+
+  // confirmLink: { ghostName, realUser: { id, display_name, email } } when
+  // the owner has chosen a real user and we're waiting for their confirmation.
+  const [confirmLink, setConfirmLink] = useState(null);
+
+  // linking: true while the store action is in flight, so we can disable the button.
+  const [linking, setLinking] = useState(false);
 
   const handleAdd = async () => {
     const trimmed = newName.trim();
@@ -1716,6 +1751,30 @@ function MembersPanel({ group, myName, onAddPerson, onRequestRemove }) {
     await onAddPerson(trimmed);
     setNewName('');
     setAdding(false);
+  };
+
+  // Build the list of real users the owner can link a ghost to.
+  // Each accepted connection row has requester/addressee ids and _profile objects.
+  // The "other" person is whoever is NOT the current signed-in user.
+  const linkCandidates = accepted.map(conn => {
+    const isRequester = conn.requester === user?.id;
+    // Pick the profile of the other person (not the current user).
+    const otherProfile = isRequester ? conn.addressee_profile : conn.requester_profile;
+    if (!otherProfile) return null;
+    return {
+      id:           otherProfile.id,
+      display_name: otherProfile.display_name || otherProfile.email || 'Unknown',
+      email:        otherProfile.email || '',
+    };
+  }).filter(Boolean); // drop any rows where the profile lookup returned null
+
+  const handleConfirmLink = async () => {
+    if (!confirmLink) return;
+    setLinking(true);
+    await onLinkGhost(confirmLink.ghostName, confirmLink.realUser.id);
+    setLinking(false);
+    setConfirmLink(null);
+    setLinkingGhost(null);
   };
 
   const people = group?.people || [];
@@ -1735,58 +1794,96 @@ function MembersPanel({ group, myName, onAddPerson, onRequestRemove }) {
             const meta = memberMeta[personName] || {};
             const isMe = personName === myName;
             const isGhost = meta.isGhost === true;
+            const isPickerOpen = linkingGhost === personName;
 
             return (
-              <div key={personName} className="flex items-center gap-3 px-3 py-2.5">
-                {/* Avatar icon */}
-                <div className="w-8 h-8 rounded-full bg-stone-100 flex items-center justify-center shrink-0">
-                  {isGhost
-                    ? <Ghost className="w-4 h-4 text-stone-400" />
-                    : <User className="w-4 h-4 text-stone-500" />
-                  }
-                </div>
+              <div key={personName} className="px-3 py-2.5">
+                <div className="flex items-center gap-3">
+                  {/* Avatar icon */}
+                  <div className="w-8 h-8 rounded-full bg-stone-100 flex items-center justify-center shrink-0">
+                    {isGhost
+                      ? <Ghost className="w-4 h-4 text-stone-400" />
+                      : <User className="w-4 h-4 text-stone-500" />
+                    }
+                  </div>
 
-                {/* Name and badge */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="font-medium text-sm">{personName}</span>
-                    {isMe && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-stone-900 text-white">you</span>
-                    )}
+                  {/* Name and badges */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="font-medium text-sm">{personName}</span>
+                      {isMe && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-stone-900 text-white">you</span>
+                      )}
+                      {isGhost && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded border border-stone-300 text-stone-500 bg-stone-50">
+                          not on app
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Link-to-account affordance — only for ghosts.
+                     *  Shows a "Link to account" button if the owner has at least one
+                     *  accepted connection to offer. If they have none yet, shows a
+                     *  muted hint directing them to the Connections screen first.
+                     *
+                     *  TODO(link-ghost): If we later want auto-suggestions (e.g. fuzzy-
+                     *  match the ghost name against connection display names), add that
+                     *  filtering here: filter linkCandidates by name similarity before
+                     *  rendering the picker list. */}
                     {isGhost && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded border border-stone-300 text-stone-500 bg-stone-50">
-                        not on app
-                      </span>
-                    )}
-                    {/* TODO(link-ghost): Once this person signs up and the owner has an
-                     *  'accepted' connection with them (see canAddAsRealMember in
-                     *  src/auth/useConnections.js), show a "Link to account" button here.
-                     *  That flow should:
-                     *    1. Let the owner pick the matching real user from their connections.
-                     *    2. Update this group_members row: set user_id, clear ghost_name.
-                     *  Do NOT build that flow now — this comment is the seam.
-                     *  The disabled placeholder below keeps the space so future work is
-                     *  drop-in without restructuring this list item. */}
-                    {isGhost && (
-                      <span
-                        title="Link-to-account is not yet available"
-                        className="text-[10px] px-1.5 py-0.5 rounded border border-dashed border-stone-300 text-stone-400 cursor-not-allowed select-none"
-                      >
-                        Link to account (coming soon)
-                      </span>
+                      <div className="mt-1">
+                        {linkCandidates.length === 0 ? (
+                          // No accepted connections — can't link to anyone yet.
+                          <span className="text-[10px] text-stone-400 leading-snug">
+                            Connect with this person first (in Connections) to link them.
+                          </span>
+                        ) : (
+                          // Has connections — show the link button (or picker if open).
+                          <button
+                            onClick={() => setLinkingGhost(isPickerOpen ? null : personName)}
+                            className="text-[10px] px-1.5 py-0.5 rounded border border-indigo-300 text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition"
+                          >
+                            {isPickerOpen ? 'Cancel' : 'Link to account'}
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
+
+                  {/* Remove button — only for ghost members */}
+                  {isGhost && (
+                    <button
+                      onClick={() => onRequestRemove(personName)}
+                      className="p-1.5 text-stone-400 hover:text-red-600 rounded shrink-0"
+                      title={`Remove ${personName}`}
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
                 </div>
 
-                {/* Remove button — only for ghost members */}
-                {isGhost && (
-                  <button
-                    onClick={() => onRequestRemove(personName)}
-                    className="p-1.5 text-stone-400 hover:text-red-600 rounded shrink-0"
-                    title={`Remove ${personName}`}
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
+                {/* Inline connection picker — expands below the row when open.
+                 *  Lists every accepted connection. Tapping one moves to the
+                 *  confirm step (a ConfirmDialog) so the owner can't link
+                 *  by accident. */}
+                {isGhost && isPickerOpen && (
+                  <div className="mt-2 ml-11 space-y-1">
+                    <div className="text-[10px] text-stone-500 uppercase tracking-wider font-medium mb-1">
+                      Choose who {personName} really is:
+                    </div>
+                    {linkCandidates.map(candidate => (
+                      <button
+                        key={candidate.id}
+                        onClick={() => setConfirmLink({ ghostName: personName, realUser: candidate })}
+                        className="w-full text-left px-3 py-2 rounded-lg border border-stone-200 bg-stone-50 hover:border-indigo-400 hover:bg-indigo-50 transition text-sm"
+                      >
+                        <div className="font-medium text-stone-900">{candidate.display_name}</div>
+                        {candidate.email && (
+                          <div className="text-[10px] text-stone-400">{candidate.email}</div>
+                        )}
+                      </button>
+                    ))}
+                  </div>
                 )}
               </div>
             );
@@ -1823,6 +1920,47 @@ function MembersPanel({ group, myName, onAddPerson, onRequestRemove }) {
           </div>
         </div>
       </div>
+
+      {/* Confirm dialog for linking a ghost to a real user.
+       *  Rendered at z-50 (above the modal stack) so it floats on top.
+       *  Message reminds the owner that past expenses stay attached — the row
+       *  id is preserved (UPDATE in place, not delete + reinsert). */}
+      {confirmLink && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-stone-900/50 p-4"
+          onClick={() => !linking && setConfirmLink(null)}
+        >
+          <div
+            className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="font-semibold text-base mb-2">
+              Link {confirmLink.ghostName} to {confirmLink.realUser.display_name}?
+            </h3>
+            <p className="text-sm text-stone-600 mb-4">
+              Their past expenses stay attached — only the name updates to{' '}
+              <span className="font-medium">{confirmLink.realUser.display_name}</span>.
+              This cannot be undone from the app.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setConfirmLink(null)}
+                disabled={linking}
+                className="flex-1 py-2.5 rounded-lg border border-stone-300 text-sm font-medium disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmLink}
+                disabled={linking}
+                className="flex-1 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:bg-stone-300"
+              >
+                {linking ? 'Linking…' : 'Link'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
