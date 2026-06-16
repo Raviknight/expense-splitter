@@ -99,6 +99,7 @@ don't return data).
 | `db/03_find_profile_by_email.sql` | Adds the safe email-lookup function used to send connection requests. | Once, after 01. |
 | `db/02_import_my_data.sql` | Loads the owner's Niagara trip into **their** account only. | Once, after signing up. Paste your user id first (see the comments in the file). |
 | `db/04_add_preferred_currency.sql` | Adds `profiles.preferred_currency` (default 'USD') for the currency picker. | Once. App defaults to USD until run. |
+| `db/05_link_ghost_policy.sql` | Adds the owner UPDATE policy on `group_members` so a ghost can be linked to a connected real account. | Once. Ghost-link errors until run. |
 
 > `db/02` is personal to the owner. The app itself never seeds anyone's data — new users
 > start empty.
@@ -224,8 +225,18 @@ only path.
   Pure helpers in `offline.js` are unit-tested. Storage keys: `slitab.snapshot.<userId>`,
   `slitab.outbox.<userId>`.
 
+- **Ghost → real account linking** — `MembersPanel` "Link to account" picks an accepted
+  connection; `linkGhostToUser` in `store.js` UPDATEs the `group_members` row (sets `user_id`,
+  clears `ghost_name`) keeping the same id so the ghost's expenses stay attached. Requires
+  `db/05`. The *email-invite* half (inviting someone who hasn't signed up) is still pending and
+  needs working email (Resend + domain).
+- **Groups landing dashboard** — the app opens to a list of group cards (member initials + your
+  net balance via `computeNetBalances`); tap to enter, back to return. Group creation accepts
+  multiple people at once.
+
 **Not built yet:**
-- **Ghost → real user linking** — seam left in `MembersPanel` (`TODO(link-ghost)`); flow not built.
+- **Ghost email-invite** — invite a non-user by email to sign up, then link. Needs Resend + domain.
+- **Receipt/statement scanning (AI vision)** — planned; see `RECEIPT-SCANNING-PLAN.md`.
 - **Custom domain + branded email sender** — deferred; needed for emailing non-owners
   reliably and for a trustworthy URL. Resend without a domain only emails the owner.
 - **Per-person balance DISPLAY for 3+ groups with recorded settlements** — the settle-up
