@@ -8,11 +8,30 @@
 // This file converts in both directions so the rest of the UI never has to
 // know about UUIDs.
 //
+// Offline write support (added in v2):
+//   - After every successful fetchAll the assembled groups are saved to
+//     localStorage as a "snapshot" so the app shows last-known data instantly
+//     on next open, even if offline.
+//   - Expense add/edit/delete and settlement add/delete are "offline-capable":
+//     they apply the change to in-memory state immediately (optimistic UI),
+//     try Supabase, and if that fails because of a network error they put the
+//     operation in a persistent "outbox" queue instead of rolling back.
+//   - When the device comes back online the outbox is flushed in order.
+//   - Group creation/rename/delete and adding/removing people are online-only.
+//
 // Usage:
-//   const { groups, activeGroupId, loading, error, actions } = useExpenseStore(userId, profile);
+//   const { groups, activeGroupId, loading, error, online, pendingCount, actions }
+//     = useExpenseStore(userId, profile);
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from '../supabaseClient.js';
+import {
+  loadSnapshot, saveSnapshot,
+  loadOutbox,   saveOutbox,
+  enqueue,      dequeue,
+  applyOpToGroups,
+  isNetworkError, isUniqueViolation,
+} from './offline.js';
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -29,14 +48,48 @@ function memberDisplayName(member, profilesMap) {
 // ─── main hook ──────────────────────────────────────────────────────────────
 
 export function useExpenseStore(userId, profile) {
-  const [groups, setGroups]           = useState([]);
-  const [activeGroupId, setActiveGroupId] = useState(null);
-  const [loading, setLoading]         = useState(true);
+  // ── Synchronously hydrate from snapshot so the UI is not blank on open ─────
+  // We use the lazy-initializer form of useState (pass a function) so
+  // localStorage is only read ONCE — on the very first render — not on every
+  // re-render. This is safe: userId is stable once the auth layer resolves.
+  const [groups, setGroups] = useState(() => {
+    const snap = userId ? loadSnapshot(userId) : null;
+    return snap?.groups || [];
+  });
+  const [activeGroupId, setActiveGroupId] = useState(() => {
+    const snap = userId ? loadSnapshot(userId) : null;
+    return snap?.activeGroupId || null;
+  });
+
+  // If we have a snapshot we can show the UI immediately; still fetch to refresh.
+  // If we have no snapshot, show the spinner until the first fetch completes.
+  const [loading, setLoading]         = useState(() => {
+    const snap = userId ? loadSnapshot(userId) : null;
+    return !snap || !snap.groups || snap.groups.length === 0;
+  });
   const [error, setError]             = useState(null);
 
-  // Keep a stable ref so realtime callbacks can call the latest fetch without
-  // being stale-closed over an old version of it.
+  // ── Offline / outbox state ─────────────────────────────────────────────────
+  const [online, setOnline]           = useState(navigator.onLine);
+
+  // We hold the outbox in a ref (not state) so mutations inside async callbacks
+  // always see the current version without needing a state setter round-trip.
+  // pendingCount is derived state exposed to the UI.
+  const outboxRef                     = useRef(userId ? loadOutbox(userId) : []);
+  const [pendingCount, setPendingCount] = useState(outboxRef.current.length);
+
+  // isFlushing prevents two concurrent flush attempts.
+  const isFlushingRef = useRef(false);
+
+  // Keep a stable ref so realtime callbacks always call the latest fetch.
   const fetchRef = useRef(null);
+
+  // Helper: update outbox ref + localStorage + pendingCount in one shot.
+  const commitOutbox = useCallback((newOutbox) => {
+    outboxRef.current = newOutbox;
+    if (userId) saveOutbox(userId, newOutbox);
+    setPendingCount(newOutbox.length);
+  }, [userId]);
 
   // ── fetch ──────────────────────────────────────────────────────────────────
   // Loads ALL groups the user can see (RLS scopes this to their own groups),
@@ -59,6 +112,7 @@ export function useExpenseStore(userId, profile) {
         setGroups([]);
         setActiveGroupId(null);
         setLoading(false);
+        saveSnapshot(userId, [], null);
         return;
       }
 
@@ -204,12 +258,28 @@ export function useExpenseStore(userId, profile) {
 
       // Keep active group stable across refetches; fall back to first group.
       setActiveGroupId(prev => {
-        if (prev && assembled.some(g => g.id === prev)) return prev;
-        return assembled[0]?.id ?? null;
+        const next = (prev && assembled.some(g => g.id === prev))
+          ? prev
+          : assembled[0]?.id ?? null;
+
+        // Persist the fresh snapshot so offline opens show current data.
+        // We compute `next` here since setActiveGroupId is not yet committed.
+        saveSnapshot(userId, assembled, next);
+        return next;
       });
+
     } catch (err) {
       console.error('[store] fetchAll error:', err);
-      setError(err.message || 'Failed to load data. Please try again.');
+
+      // If this is a network failure AND we already have snapshot data, keep
+      // the snapshot silently (the offline banner in App.jsx tells the user).
+      // Only show an error when we have NO data at all.
+      if (isNetworkError(err)) {
+        // Stay on snapshot (or empty) — do not wipe what the user can see.
+        // Don't set error here; the `online` state / banner covers it.
+      } else {
+        setError(err.message || 'Failed to load data. Please try again.');
+      }
     } finally {
       setLoading(false);
     }
@@ -218,31 +288,160 @@ export function useExpenseStore(userId, profile) {
   // Keep the ref current so realtime callbacks always call the latest version.
   fetchRef.current = fetchAll;
 
+  // ── Flush outbox ────────────────────────────────────────────────────────────
+  // Replay queued writes in FIFO order against Supabase.
+  // - On success or 23505 (already there): drop the item and continue.
+  // - On network error: stop — the rest stays queued.
+  // - On real server error: drop the item (can't retry a bad write) and log it.
+  // After a clean flush, trigger a fetchAll to reconcile with server truth.
+  const flushOutbox = useCallback(async () => {
+    if (!userId) return;
+    if (isFlushingRef.current) return; // re-entrancy guard
+    if (outboxRef.current.length === 0) return;
+
+    isFlushingRef.current = true;
+    let didFlushAnything = false;
+
+    try {
+      // Process items one at a time in order (FIFO).
+      // We re-read outboxRef.current each iteration because commitOutbox mutates it.
+      while (outboxRef.current.length > 0) {
+        // Stop if we've gone offline mid-flush.
+        if (!navigator.onLine) break;
+
+        const item = outboxRef.current[0];
+        const { opId, kind, payload } = item;
+
+        let dbError = null;
+
+        try {
+          if (kind === 'expense.insert') {
+            // Supply the client-generated id so the insert is idempotent.
+            ({ error: dbError } = await supabase
+              .from('expenses')
+              .insert(payload));
+
+          } else if (kind === 'expense.update') {
+            // Strip the primary key from the update body — use it only in .eq().
+            // eslint-disable-next-line no-unused-vars
+            const { id: _updateId, ...updateFields } = payload;
+            ({ error: dbError } = await supabase
+              .from('expenses')
+              .update(updateFields)
+              .eq('id', payload.id));
+
+          } else if (kind === 'expense.delete') {
+            ({ error: dbError } = await supabase
+              .from('expenses')
+              .delete()
+              .eq('id', payload.id));
+
+          } else if (kind === 'settlement.insert') {
+            ({ error: dbError } = await supabase
+              .from('settlements')
+              .insert(payload));
+
+          } else if (kind === 'settlement.delete') {
+            ({ error: dbError } = await supabase
+              .from('settlements')
+              .delete()
+              .eq('id', payload.id));
+          }
+        } catch (fetchErr) {
+          // fetch() itself threw — still offline.
+          if (isNetworkError(fetchErr)) break;
+          // Unexpected JS error: drop and continue so we don't get stuck.
+          console.error('[store] flush unexpected error for op', opId, fetchErr);
+          commitOutbox(dequeue(outboxRef.current, opId));
+          continue;
+        }
+
+        if (!dbError) {
+          // Success.
+          commitOutbox(dequeue(outboxRef.current, opId));
+          didFlushAnything = true;
+        } else if (isUniqueViolation(dbError)) {
+          // Row already exists (duplicate sync) — treat as success, drop it.
+          console.log('[store] flush: 23505 unique violation for op', opId, '— dropping as already synced');
+          commitOutbox(dequeue(outboxRef.current, opId));
+          didFlushAnything = true;
+        } else if (isNetworkError(dbError)) {
+          // Still offline — stop and leave the rest queued.
+          break;
+        } else {
+          // Real server error (RLS, constraint, etc.) — drop and log.
+          // We cannot retry a semantically bad write.
+          console.error('[store] flush: server rejected op', opId, dbError);
+          commitOutbox(dequeue(outboxRef.current, opId));
+          // Don't surface this to the user as an error — the optimistic change
+          // is already shown; a silent server reject is better than an alert
+          // for an op the user triggered while offline.
+        }
+      }
+    } finally {
+      isFlushingRef.current = false;
+    }
+
+    // After a successful flush, refetch to reconcile with server truth.
+    // This also replaces any _offline-flagged rows with the authoritative ones.
+    if (didFlushAnything) {
+      await fetchRef.current();
+    }
+  }, [userId, commitOutbox]);
+
   // ── initial load ───────────────────────────────────────────────────────────
   useEffect(() => {
     if (!userId) return;
     setLoading(true);
-    fetchAll();
-  }, [userId, fetchAll]);
+    fetchAll().then(() => {
+      // If there were pending ops and we're online, try to flush immediately.
+      if (navigator.onLine && outboxRef.current.length > 0) {
+        flushOutbox();
+      }
+    });
+  }, [userId, fetchAll, flushOutbox]);
+
+  // ── online / offline tracking ──────────────────────────────────────────────
+  useEffect(() => {
+    const handleOnline = () => {
+      setOnline(true);
+      // Flush any queued ops now that we have connectivity.
+      flushOutbox();
+    };
+    const handleOffline = () => {
+      setOnline(false);
+    };
+
+    window.addEventListener('online',  handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online',  handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [flushOutbox]);
 
   // ── realtime ───────────────────────────────────────────────────────────────
   // Subscribe to all relevant tables. On any change (insert/update/delete)
   // we do a simple full refetch — straightforward and correct.
+  // We skip the refetch while we have unsynced ops in the outbox: a refetch
+  // at that point would wipe the optimistic state. The reconciliation happens
+  // after flushOutbox() succeeds instead.
   useEffect(() => {
     if (!userId) return;
 
     const channel = supabase
       .channel('expense-splitter-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'groups' },
-        () => fetchRef.current())
+        () => { if (outboxRef.current.length === 0) fetchRef.current(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'group_members' },
-        () => fetchRef.current())
+        () => { if (outboxRef.current.length === 0) fetchRef.current(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'expenses' },
-        () => fetchRef.current())
+        () => { if (outboxRef.current.length === 0) fetchRef.current(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'settlements' },
-        () => fetchRef.current())
+        () => { if (outboxRef.current.length === 0) fetchRef.current(); })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'connections' },
-        () => fetchRef.current())
+        () => { if (outboxRef.current.length === 0) fetchRef.current(); })
       .subscribe();
 
     // Clean up when the user signs out or component unmounts.
@@ -254,9 +453,64 @@ export function useExpenseStore(userId, profile) {
   // ── helper: find group ─────────────────────────────────────────────────────
   const findGroup = (groupId) => groups.find(g => g.id === groupId);
 
+  // ── offline-capable write helper ───────────────────────────────────────────
+  // Shared logic for expense/settlement writes:
+  //   1. Apply optimistic change to in-memory state immediately.
+  //   2. Try Supabase.
+  //   3a. On success: refetch (authoritative data replaces optimistic row).
+  //   3b. On network error: enqueue to outbox, keep optimistic state.
+  //   3c. On real server error: roll back optimistic state, surface error.
+  //
+  // `optimisticGroups`  : the groups array AFTER the optimistic change.
+  // `op`                : the outbox item { opId, kind, payload, groupId }.
+  // `supabaseCall`      : async function () => { error } — the actual DB call.
+  async function offlineWrite(optimisticGroups, op, supabaseCall) {
+    // Step 1: apply optimistically.
+    setGroups(optimisticGroups);
+
+    let dbError = null;
+    let caughtNetworkError = false;
+
+    try {
+      ({ error: dbError } = await supabaseCall());
+    } catch (fetchErr) {
+      if (isNetworkError(fetchErr)) {
+        caughtNetworkError = true;
+      } else {
+        // Unexpected JS error — treat as network failure to be safe.
+        caughtNetworkError = true;
+        console.error('[store] offlineWrite unexpected error:', fetchErr);
+      }
+    }
+
+    if (!dbError && !caughtNetworkError) {
+      // Success: refetch to get the authoritative server data.
+      await fetchRef.current();
+      return;
+    }
+
+    if (caughtNetworkError || isNetworkError(dbError)) {
+      // Network failure — queue the op and persist both outbox and snapshot.
+      const newOutbox = enqueue(outboxRef.current, op);
+      commitOutbox(newOutbox);
+      // Persist snapshot with optimistic state so offline → close → reopen works.
+      setActiveGroupId(prev => {
+        saveSnapshot(userId, optimisticGroups, prev);
+        return prev;
+      });
+      return;
+    }
+
+    // Real server error — roll back optimistic change and tell the user.
+    // We roll back by re-setting groups to the pre-optimistic state (before our
+    // setGroups call above). Since we haven't called fetchRef yet, the previous
+    // React state (before this function was called) is still in `groups`.
+    // We trigger a refetch to restore authoritative state cleanly.
+    setError('Could not save: ' + (dbError.message || 'Server error'));
+    await fetchRef.current();
+  }
+
   // ── actions ────────────────────────────────────────────────────────────────
-  // Each action writes to Supabase using exact schema column names, then
-  // triggers a full refetch so local state is always in sync with the DB.
 
   const actions = {
 
@@ -266,64 +520,58 @@ export function useExpenseStore(userId, profile) {
     },
 
     // ── Add or edit an expense ───────────────────────────────────────────────
-    // UI shape →  DB columns: name, amount, date, category, paid_by, split_mode, note
+    // OFFLINE-CAPABLE. Generates a client-side UUID for new expenses so the id
+    // is stable whether it syncs now or later.
     async upsertExpense(groupId, uiExpense) {
       const group = findGroup(groupId);
       if (!group) return;
 
-      // Convert the name string → group_members.id.
       const paidByMemberId = group._nameToMemberId[uiExpense.paidBy];
       if (!paidByMemberId) {
         setError(`Member "${uiExpense.paidBy}" not found in this group.`);
         return;
       }
 
+      const isUpdate = !!(uiExpense._isExistingDbRow && uiExpense.id);
+
+      // Build the DB row with exact schema column names.
+      // For inserts we supply a client-generated id so the row has a stable
+      // identity before (and after) it reaches the server.
       const row = {
+        id:         isUpdate ? uiExpense.id : crypto.randomUUID(),
         group_id:   groupId,
         name:       uiExpense.name,
-        amount:     Number(uiExpense.amount),       // numeric(12,2) — must be a Number
-        date:       uiExpense.date,                 // 'YYYY-MM-DD'
+        amount:     Number(uiExpense.amount),
+        date:       uiExpense.date,
         category:   uiExpense.category,
-        paid_by:    paidByMemberId,                 // group_members.id (UUID)
-        split_mode: uiExpense.splitMode,            // 'equal' | 'full' | 'personal'
+        paid_by:    paidByMemberId,
+        split_mode: uiExpense.splitMode,
         note:       uiExpense.note || null,
       };
 
-      let dbError;
+      const kind = isUpdate ? 'expense.update' : 'expense.insert';
+      const op   = { opId: crypto.randomUUID(), kind, payload: row, groupId };
 
-      if (uiExpense._isExistingDbRow && uiExpense.id) {
-        // Editing an existing DB row — update by id.
-        ({ error: dbError } = await supabase
-          .from('expenses')
-          .update(row)
-          .eq('id', uiExpense.id));
-      } else {
-        // New expense — let the DB generate the UUID via insert.
-        ({ error: dbError } = await supabase
-          .from('expenses')
-          .insert(row));
-      }
+      // Build the optimistic groups state.
+      const optimisticGroups = applyOpToGroups(groups, op);
 
-      if (dbError) {
-        setError('Could not save expense: ' + dbError.message);
-        return;
-      }
-
-      await fetchRef.current();
+      await offlineWrite(optimisticGroups, op, () => {
+        if (isUpdate) {
+          // eslint-disable-next-line no-unused-vars
+          const { id, ...updateFields } = row;
+          return supabase.from('expenses').update(updateFields).eq('id', row.id);
+        } else {
+          return supabase.from('expenses').insert(row);
+        }
+      });
     },
 
     // ── Bulk import expenses (from CSV) ──────────────────────────────────────
-    // rows  : array of { name, amount, date, category, note } built by csv.js.
-    // opts  : { paidByName, splitMode } — applied to EVERY imported row.
-    //
-    // We resolve the single payer name → group_members.id once, build all DB
-    // rows, then insert them in ONE batch for speed. Returns { inserted } on
-    // success or { error } so the UI can report the outcome.
+    // Batch insert — online only (no offline fallback for bulk ops).
     async importExpenses(groupId, rows, { paidByName, splitMode }) {
       const group = findGroup(groupId);
       if (!group) return { error: 'Group not found.' };
 
-      // Resolve the payer's display name → group_members.id (UUID).
       const paidByMemberId = group._nameToMemberId[paidByName];
       if (!paidByMemberId) {
         const msg = `Member "${paidByName}" not found in this group.`;
@@ -335,19 +583,18 @@ export function useExpenseStore(userId, profile) {
         return { inserted: 0 };
       }
 
-      // Build DB rows using EXACT schema column names.
       const dbRows = rows.map(r => ({
+        id:         crypto.randomUUID(),
         group_id:   groupId,
         name:       r.name,
-        amount:     Number(r.amount),       // numeric(12,2) — must be a Number
-        date:       r.date,                 // 'YYYY-MM-DD'
+        amount:     Number(r.amount),
+        date:       r.date,
         category:   r.category || 'Other',
-        paid_by:    paidByMemberId,         // group_members.id (UUID)
-        split_mode: splitMode,              // 'equal' | 'full' | 'personal'
+        paid_by:    paidByMemberId,
+        split_mode: splitMode,
         note:       r.note || null,
       }));
 
-      // One batch insert for all rows.
       const { error: dbError } = await supabase
         .from('expenses')
         .insert(dbRows);
@@ -361,37 +608,30 @@ export function useExpenseStore(userId, profile) {
       return { inserted: dbRows.length };
     },
 
-    // ── Delete an expense ────────────────────────────────────────────────────
+    // ── Delete an expense or settlement ──────────────────────────────────────
+    // OFFLINE-CAPABLE.
     async deleteExpense(groupId, expenseId, isSettlement) {
-      let dbError;
+      const kind    = isSettlement ? 'settlement.delete' : 'expense.delete';
+      const payload = { id: expenseId };
+      const op      = { opId: crypto.randomUUID(), kind, payload, groupId };
 
-      if (isSettlement) {
-        // Settlements live in the settlements table, not expenses.
-        ({ error: dbError } = await supabase
-          .from('settlements')
-          .delete()
-          .eq('id', expenseId));
-      } else {
-        ({ error: dbError } = await supabase
-          .from('expenses')
-          .delete()
-          .eq('id', expenseId));
-      }
+      const optimisticGroups = applyOpToGroups(groups, op);
 
-      if (dbError) {
-        setError('Could not delete: ' + dbError.message);
-        return;
-      }
-
-      await fetchRef.current();
+      await offlineWrite(optimisticGroups, op, () => {
+        const table = isSettlement ? 'settlements' : 'expenses';
+        return supabase.from(table).delete().eq('id', expenseId);
+      });
     },
 
     // ── Create a new group ───────────────────────────────────────────────────
-    // Inserts into `groups`, then inserts the owner as a group_members row
-    // (user_id = userId). Any extra people typed in the form become ghost
-    // members (ghost_name set, user_id null).
+    // ONLINE-ONLY: creating a group requires a server round-trip to get the
+    // group_members UUID needed for every subsequent expense write.
     async createGroup(name, type, extraPeopleNames) {
-      // Insert the group row.
+      if (!navigator.onLine) {
+        setError("You're offline — creating or changing groups and people needs a connection. Expenses and settlements you add will sync automatically when you're back online.");
+        return null;
+      }
+
       const { data: newGroup, error: gErr } = await supabase
         .from('groups')
         .insert({ name, owner_id: userId, type })
@@ -405,10 +645,7 @@ export function useExpenseStore(userId, profile) {
 
       const newGroupId = newGroup.id;
 
-      // Insert the owner's own member row (real user, not a ghost).
       const memberRows = [{ group_id: newGroupId, user_id: userId }];
-
-      // Extra people (typed names) become ghost members.
       extraPeopleNames.forEach(n => {
         if (n.trim()) {
           memberRows.push({ group_id: newGroupId, ghost_name: n.trim() });
@@ -421,7 +658,6 @@ export function useExpenseStore(userId, profile) {
 
       if (mErr) {
         setError('Could not add members: ' + mErr.message);
-        // Group was created; still refetch so user sees it.
       }
 
       await fetchRef.current();
@@ -430,8 +666,13 @@ export function useExpenseStore(userId, profile) {
     },
 
     // ── Edit an existing group's name/type ───────────────────────────────────
-    // The UI currently only edits name and type (people are managed separately).
+    // ONLINE-ONLY.
     async updateGroup(groupId, name, type) {
+      if (!navigator.onLine) {
+        setError("You're offline — creating or changing groups and people needs a connection. Expenses and settlements you add will sync automatically when you're back online.");
+        return;
+      }
+
       const { error: gErr } = await supabase
         .from('groups')
         .update({ name, type })
@@ -446,9 +687,13 @@ export function useExpenseStore(userId, profile) {
     },
 
     // ── Delete a group ───────────────────────────────────────────────────────
-    // The DB schema has ON DELETE CASCADE so members/expenses/settlements are
-    // removed automatically.
+    // ONLINE-ONLY. ON DELETE CASCADE handles members/expenses/settlements.
     async deleteGroup(groupId) {
+      if (!navigator.onLine) {
+        setError("You're offline — creating or changing groups and people needs a connection. Expenses and settlements you add will sync automatically when you're back online.");
+        return;
+      }
+
       const { error: gErr } = await supabase
         .from('groups')
         .delete()
@@ -459,14 +704,11 @@ export function useExpenseStore(userId, profile) {
         return;
       }
 
-      // After delete, refetch. The setActiveGroupId inside fetchAll will
-      // automatically pick the first remaining group if the deleted one was active.
       await fetchRef.current();
     },
 
     // ── Record a settlement ──────────────────────────────────────────────────
-    // Inserts into `settlements` table.
-    // from_member and to_member are group_members UUIDs.
+    // OFFLINE-CAPABLE. Client generates the UUID so the row id is stable.
     async recordSettlement(groupId, { from, to, amount, note }) {
       const group = findGroup(groupId);
       if (!group) return;
@@ -479,30 +721,39 @@ export function useExpenseStore(userId, profile) {
         return;
       }
 
-      const { error: sErr } = await supabase
-        .from('settlements')
-        .insert({
-          group_id:    groupId,
-          from_member: fromMemberId,   // group_members.id
-          to_member:   toMemberId,     // group_members.id
-          amount:      Number(amount),
-          date:        new Date().toISOString().slice(0, 10),
-          note:        note || null,
-        });
+      const row = {
+        id:          crypto.randomUUID(),
+        group_id:    groupId,
+        from_member: fromMemberId,
+        to_member:   toMemberId,
+        amount:      Number(amount),
+        date:        new Date().toISOString().slice(0, 10),
+        note:        note || null,
+      };
 
-      if (sErr) {
-        setError('Could not record settlement: ' + sErr.message);
-        return;
-      }
+      const op = {
+        opId:    crypto.randomUUID(),
+        kind:    'settlement.insert',
+        payload: row,
+        groupId,
+      };
 
-      await fetchRef.current();
+      const optimisticGroups = applyOpToGroups(groups, op);
+
+      await offlineWrite(optimisticGroups, op, () =>
+        supabase.from('settlements').insert(row)
+      );
     },
 
     // ── Add a person (ghost member) to an existing group ─────────────────────
-    // Inserts a group_members row with ghost_name set and user_id null.
-    // The DB check constraint (user_id IS NOT NULL) XOR (ghost_name IS NOT NULL)
-    // is satisfied because we only set ghost_name here.
+    // ONLINE-ONLY: we need the new member's UUID in the _nameToMemberId map
+    // before any offline expense can reference them.
     async addPersonToGroup(groupId, personName) {
+      if (!navigator.onLine) {
+        setError("You're offline — creating or changing groups and people needs a connection. Expenses and settlements you add will sync automatically when you're back online.");
+        return;
+      }
+
       const trimmed = personName.trim();
       if (!trimmed) return;
 
@@ -518,33 +769,24 @@ export function useExpenseStore(userId, profile) {
     },
 
     // ── Remove a person (ghost or real) from an existing group ───────────────
-    // Maps the display-name → group_members.id via the group's _nameToMemberId
-    // map, then deletes that single row.
-    //
-    // GUARD: we do NOT allow removing yourself (the current signed-in user).
-    // This prevents the owner from losing access to their own group by accident.
-    // The owner's group_members row has user_id === userId.
+    // ONLINE-ONLY.
     async removePersonFromGroup(groupId, personName) {
+      if (!navigator.onLine) {
+        setError("You're offline — creating or changing groups and people needs a connection. Expenses and settlements you add will sync automatically when you're back online.");
+        return;
+      }
+
       const group = findGroup(groupId);
       if (!group) return;
 
-      // Look up the group_members row id for this display-name.
       const memberId = group._nameToMemberId[personName];
       if (!memberId) {
         setError(`Could not find member "${personName}" to remove.`);
         return;
       }
 
-      // Guard: refuse to remove the current user's own member row.
-      // _memberMeta tracks isGhost; real members have user_id set.
-      // We compare memberId against the owner's own member id by checking
-      // whether the meta entry is NOT a ghost AND the name matches the profile.
       const meta = group._memberMeta?.[personName];
       if (meta && !meta.isGhost) {
-        // Real (connected) user — do not allow removal via this UI.
-        // The only real member the owner can manage here is other connected
-        // users; but the safest guard is to block removing ANY non-ghost,
-        // which covers the owner themselves.
         setError('You cannot remove a real connected member this way. Only ghost members can be removed.');
         return;
       }
@@ -562,12 +804,12 @@ export function useExpenseStore(userId, profile) {
       await fetchRef.current();
     },
 
-    // ── Clear any error (used by retry buttons) ──────────────────────────────
+    // ── Clear any error (used by retry / dismiss buttons) ────────────────────
     clearError() {
       setError(null);
     },
 
-    // ── Retry: just re-run fetchAll ──────────────────────────────────────────
+    // ── Retry: re-run fetchAll ───────────────────────────────────────────────
     async retry() {
       setLoading(true);
       setError(null);
@@ -575,5 +817,5 @@ export function useExpenseStore(userId, profile) {
     },
   };
 
-  return { groups, activeGroupId, loading, error, actions };
+  return { groups, activeGroupId, loading, error, online, pendingCount, actions };
 }

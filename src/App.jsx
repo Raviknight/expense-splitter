@@ -351,7 +351,7 @@ export default function App() {
 
   // Load all data from Supabase. The store returns the same shape the UI
   // already knows how to render, so minimal UI changes are needed.
-  const { groups, activeGroupId, loading, error, actions } = useExpenseStore(
+  const { groups, activeGroupId, loading, error, online, pendingCount, actions } = useExpenseStore(
     user?.id,
     profile,
   );
@@ -602,6 +602,25 @@ export default function App() {
           >
             Dismiss
           </button>
+        </div>
+      )}
+
+      {/* Offline / sync-pending status banner — only shown when relevant */}
+      {(!online || pendingCount > 0) && (
+        <div className={`border-b px-4 py-1.5 flex items-center gap-2 max-w-3xl mx-auto ${
+          !online
+            ? 'bg-amber-50 border-amber-200'
+            : 'bg-stone-50 border-stone-200'
+        }`}>
+          {/* Dot indicator */}
+          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+            !online ? 'bg-amber-500' : 'bg-indigo-500 animate-pulse'
+          }`} />
+          <span className={`text-xs ${!online ? 'text-amber-800' : 'text-stone-600'}`}>
+            {!online
+              ? 'Offline — changes saved on this device will sync when you reconnect'
+              : `Syncing ${pendingCount} change${pendingCount === 1 ? '' : 's'}…`}
+          </span>
         </div>
       )}
 
