@@ -509,6 +509,13 @@ export default function App() {
               onLinkGhost={async (groupId, ghostName, userId) => {
                 await actions.linkGhostToUser(groupId, ghostName, userId);
               }}
+              onInviteGhost={async (_groupId, email, groupName, _ghostName) => {
+                return actions.inviteGhostByEmail({
+                  email,
+                  groupName,
+                  inviterName: profile?.display_name || 'A friend',
+                });
+              }}
             />
           )}
 
@@ -705,6 +712,13 @@ export default function App() {
             }}
             onLinkGhost={async (groupId, ghostName, userId) => {
               await actions.linkGhostToUser(groupId, ghostName, userId);
+            }}
+            onInviteGhost={async (_groupId, email, groupName, _ghostName) => {
+              return actions.inviteGhostByEmail({
+                email,
+                groupName,
+                inviterName: profile?.display_name || 'A friend',
+              });
             }}
           />
         )}
@@ -905,6 +919,13 @@ export default function App() {
           }}
           onLinkGhost={async (groupId, ghostName, userId) => {
             await actions.linkGhostToUser(groupId, ghostName, userId);
+          }}
+          onInviteGhost={async (_groupId, email, groupName, _ghostName) => {
+            return actions.inviteGhostByEmail({
+              email,
+              groupName,
+              inviterName: profile?.display_name || 'A friend',
+            });
           }}
         />
       )}
@@ -1585,7 +1606,7 @@ function SummaryTab({ expenses, settlements, balances, sharedPool, total, people
 
 /* ============ Groups modal ============ */
 
-function GroupsModal({ groups, activeGroupId, myName, profile, onClose, onSwitch, onCreateGroup, onUpdateGroup, onRequestDelete, onAddPerson, onRemovePerson, onLinkGhost }) {
+function GroupsModal({ groups, activeGroupId, myName, profile, onClose, onSwitch, onCreateGroup, onUpdateGroup, onRequestDelete, onAddPerson, onRemovePerson, onLinkGhost, onInviteGhost }) {
   // view can be: 'list' | 'form' | 'members'
   const [view, setView] = useState('list');
   const [editingGroup, setEditingGroup] = useState(null);
@@ -1717,6 +1738,9 @@ function GroupsModal({ groups, activeGroupId, myName, profile, onClose, onSwitch
             onLinkGhost={(ghostName, userId) =>
               onLinkGhost(managingGroup.id, ghostName, userId)
             }
+            onInviteGhost={(email, ghostName) =>
+              onInviteGhost(managingGroup.id, email, managingGroup.name, ghostName)
+            }
           />
         ) : (
           <GroupForm
@@ -1777,7 +1801,7 @@ function GroupsModal({ groups, activeGroupId, myName, profile, onClose, onSwitch
  * The row-id preservation approach (update in place) means that direction
  * of change is also safe for existing expenses.
  */
-function MembersPanel({ group, myName, onAddPerson, onRequestRemove, onLinkGhost }) {
+function MembersPanel({ group, myName, onAddPerson, onRequestRemove, onLinkGhost, onInviteGhost }) {
   const { user } = useAuth();
   // Load the owner's accepted connections so we can offer them as link targets.
   const { accepted } = useConnections();
@@ -1795,6 +1819,75 @@ function MembersPanel({ group, myName, onAddPerson, onRequestRemove, onLinkGhost
 
   // linking: true while the store action is in flight, so we can disable the button.
   const [linking, setLinking] = useState(false);
+
+  // ── Invite-by-email state ────────────────────────────────────────────────
+  // invitingGhost: the ghost's display name whose email input is currently open,
+  // or null when the invite panel is closed.
+  const [invitingGhost, setInvitingGhost] = useState(null);
+
+  // inviteEmail: what the owner has typed into the invite email field.
+  const [inviteEmail, setInviteEmail] = useState('');
+
+  // inviteSending: true while the Edge Function call is in flight.
+  const [inviteSending, setInviteSending] = useState(false);
+
+  // inviteResult: { ok, message } after an attempt, or null before one.
+  // Keyed by ghost name so each row tracks its own result independently.
+  const [inviteResults, setInviteResults] = useState({}); // { [ghostName]: { ok, message } }
+
+  // Open (or close) the invite panel for a specific ghost.
+  // Closing clears the email field and any prior result for that ghost.
+  const openInvitePanel = (ghostName) => {
+    if (invitingGhost === ghostName) {
+      // Already open — close it.
+      setInvitingGhost(null);
+      setInviteEmail('');
+    } else {
+      // Switch to this ghost's panel; close the link picker if it was open.
+      setInvitingGhost(ghostName);
+      setInviteEmail('');
+      setLinkingGhost(null);
+    }
+  };
+
+  // Send the invite: validate, call the store action, store the result inline.
+  const handleSendInvite = async (ghostName) => {
+    const trimmedEmail = inviteEmail.trim();
+
+    // Simple email-shape check: must contain @ and at least one dot after it.
+    const looksLikeEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail);
+    if (!trimmedEmail || !looksLikeEmail) {
+      setInviteResults(prev => ({
+        ...prev,
+        [ghostName]: { ok: false, message: 'Please enter a valid email address.' },
+      }));
+      return;
+    }
+
+    setInviteSending(true);
+    // onInviteGhost is threaded from GroupsModal and calls actions.inviteGhostByEmail.
+    const result = await onInviteGhost(trimmedEmail, ghostName);
+    setInviteSending(false);
+
+    // Store the email alongside the result so the success line can show it
+    // even after the inviteEmail input state is later cleared.
+    setInviteResults(prev => ({ ...prev, [ghostName]: { ...result, sentTo: trimmedEmail } }));
+
+    if (result?.ok) {
+      // Success: collapse the panel after a short delay so the user sees
+      // the green confirmation line, then it tidies itself up.
+      setTimeout(() => {
+        setInvitingGhost(null);
+        setInviteEmail('');
+        // Clear the success message so it doesn't linger if reopened later.
+        setInviteResults(prev => {
+          const copy = { ...prev };
+          delete copy[ghostName];
+          return copy;
+        });
+      }, 3000);
+    }
+  };
 
   const handleAdd = async () => {
     const trimmed = newName.trim();
@@ -1873,31 +1966,52 @@ function MembersPanel({ group, myName, onAddPerson, onRequestRemove, onLinkGhost
                       )}
                     </div>
 
-                    {/* Link-to-account affordance — only for ghosts.
-                     *  Shows a "Link to account" button if the owner has at least one
-                     *  accepted connection to offer. If they have none yet, shows a
-                     *  muted hint directing them to the Connections screen first.
+                    {/* Ghost-member action buttons: "Link to account" and
+                     *  "Invite by email" — both shown only for ghost rows.
                      *
-                     *  TODO(link-ghost): If we later want auto-suggestions (e.g. fuzzy-
-                     *  match the ghost name against connection display names), add that
-                     *  filtering here: filter linkCandidates by name similarity before
-                     *  rendering the picker list. */}
+                     *  Link to account:
+                     *    Shows when the owner has at least one accepted connection.
+                     *    If they have none yet, a muted hint points them to Connections.
+                     *
+                     *    TODO(link-ghost): If we later want auto-suggestions (e.g. fuzzy-
+                     *    match the ghost name against connection display names), add that
+                     *    filtering here: filter linkCandidates by name similarity before
+                     *    rendering the picker list.
+                     *
+                     *  Invite by email:
+                     *    Always available for ghost members. Reveals a small inline email
+                     *    input + Send button when clicked. Calls onInviteGhost which
+                     *    hits the `send-invite` Edge Function. */}
                     {isGhost && (
-                      <div className="mt-1">
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                        {/* "Link to account" button (or hint if no connections) */}
                         {linkCandidates.length === 0 ? (
-                          // No accepted connections — can't link to anyone yet.
                           <span className="text-[10px] text-stone-400 leading-snug">
                             Connect with this person first (in Connections) to link them.
                           </span>
                         ) : (
-                          // Has connections — show the link button (or picker if open).
                           <button
-                            onClick={() => setLinkingGhost(isPickerOpen ? null : personName)}
+                            onClick={() => {
+                              setLinkingGhost(isPickerOpen ? null : personName);
+                              // Close the invite panel if it was open for this ghost.
+                              if (invitingGhost === personName) {
+                                setInvitingGhost(null);
+                                setInviteEmail('');
+                              }
+                            }}
                             className="text-[10px] px-1.5 py-0.5 rounded border border-indigo-300 text-indigo-600 bg-indigo-50 hover:bg-indigo-100 transition"
                           >
                             {isPickerOpen ? 'Cancel' : 'Link to account'}
                           </button>
                         )}
+
+                        {/* "Invite by email" toggle button */}
+                        <button
+                          onClick={() => openInvitePanel(personName)}
+                          className="text-[10px] px-1.5 py-0.5 rounded border border-stone-300 text-stone-600 bg-stone-50 hover:bg-stone-100 transition"
+                        >
+                          {invitingGhost === personName ? 'Cancel invite' : 'Invite by email'}
+                        </button>
                       </div>
                     )}
                   </div>
@@ -1935,6 +2049,71 @@ function MembersPanel({ group, myName, onAddPerson, onRequestRemove, onLinkGhost
                         )}
                       </button>
                     ))}
+                  </div>
+                )}
+
+                {/* Inline invite-by-email panel — expands below the row when
+                 *  the "Invite by email" button is clicked for this ghost.
+                 *  Shows an email input + Send button, a "Sending…" state,
+                 *  and a green success or rose error line after the attempt. */}
+                {isGhost && invitingGhost === personName && (
+                  <div className="mt-2 ml-11 space-y-1.5">
+                    <div className="text-[10px] text-stone-500 uppercase tracking-wider font-medium">
+                      Email address for {personName}:
+                    </div>
+
+                    {/* Show the result line if we already tried for this ghost. */}
+                    {inviteResults[personName] && (
+                      inviteResults[personName].ok ? (
+                        <div className="text-[11px] text-emerald-700 font-medium">
+                          Invitation sent to {inviteResults[personName].sentTo || ''}
+                        </div>
+                      ) : (
+                        <div className="text-[11px] text-rose-600">
+                          {inviteResults[personName].message}
+                        </div>
+                      )
+                    )}
+
+                    {/* Only show the input + button when no success yet. */}
+                    {!inviteResults[personName]?.ok && (
+                      <div className="flex gap-2">
+                        <input
+                          type="email"
+                          value={inviteEmail}
+                          onChange={(e) => {
+                            setInviteEmail(e.target.value);
+                            // Clear any previous error so it doesn't linger while
+                            // the owner is typing a corrected address.
+                            if (inviteResults[personName] && !inviteResults[personName].ok) {
+                              setInviteResults(prev => {
+                                const copy = { ...prev };
+                                delete copy[personName];
+                                return copy;
+                              });
+                            }
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && !inviteSending) handleSendInvite(personName);
+                          }}
+                          placeholder="their@email.com"
+                          disabled={inviteSending}
+                          className="flex-1 px-2.5 py-1.5 rounded-lg border border-stone-300 text-sm focus:outline-none focus:border-indigo-500 disabled:bg-stone-50"
+                        />
+                        <button
+                          onClick={() => handleSendInvite(personName)}
+                          disabled={inviteSending || !inviteEmail.trim()}
+                          className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-medium hover:bg-indigo-700 disabled:bg-stone-300 shrink-0"
+                        >
+                          {inviteSending ? 'Sending…' : 'Send'}
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="text-[10px] text-stone-400 leading-snug">
+                      They will get an email with a link to sign up and join the group.
+                      Once they sign up, use "Link to account" to connect them.
+                    </div>
                   </div>
                 )}
               </div>

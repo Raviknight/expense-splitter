@@ -918,6 +918,66 @@ export function useExpenseStore(userId, profile) {
       await fetchRef.current();
     },
 
+    // ── Invite a ghost member by email ──────────────────────────────────────
+    // Calls the deployed Edge Function `send-invite` (supabase/functions/send-invite/)
+    // which emails the person via Resend from hello@splitab.app.
+    //
+    // This action does NOT call setError globally — invite failures are shown
+    // inline in the MembersPanel, not as an app-level banner. We return a small
+    // result object the UI can act on directly.
+    //
+    // Returns: { ok: true }  on success
+    //          { ok: false, message: string }  on failure
+    //
+    // TODO(link-ghost): When the invited person signs up, the owner can use the
+    // "Link to account" flow (linkGhostToUser above) to connect the ghost row
+    // to their new real account. The invite here is only a notification — no
+    // automatic linking happens.
+    async inviteGhostByEmail({ email, groupName, inviterName }) {
+      // Call the Edge Function. supabase.functions.invoke handles auth headers.
+      // We only need to inspect `error`; the response body (data) is ignored.
+      let error;
+      try {
+        ({ error } = await supabase.functions.invoke('send-invite', {
+          body: { email, groupName, inviterName },
+        }));
+      } catch (fetchErr) {
+        // The fetch itself threw — likely the function is not deployed, or a
+        // network error reached the functions endpoint.
+        return {
+          ok: false,
+          message: "Invite couldn't be sent — the invite email function may not be set up yet.",
+        };
+      }
+
+      if (error) {
+        // Check for signs that the Edge Function isn't deployed or is unreachable.
+        // Supabase surfaces these as messages like "Function not found" or
+        // "Failed to send a request to the Edge Function".
+        const msg = (error.message || '').toLowerCase();
+        const notDeployed =
+          msg.includes('function not found') ||
+          msg.includes('failed to send a request to the edge function') ||
+          msg.includes('404') ||
+          error.status === 404;
+
+        if (notDeployed) {
+          return {
+            ok: false,
+            message: "Invite couldn't be sent — the invite email function may not be set up yet.",
+          };
+        }
+
+        // Any other error: return whatever detail the function gave back.
+        return {
+          ok: false,
+          message: error.message || 'Could not send the invitation. Please try again.',
+        };
+      }
+
+      return { ok: true };
+    },
+
     // ── Clear any error (used by retry / dismiss buttons) ────────────────────
     clearError() {
       setError(null);
