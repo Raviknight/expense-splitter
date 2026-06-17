@@ -234,12 +234,21 @@ only path.
 - **Groups landing dashboard** — the app opens to a list of group cards (member initials + your
   net balance via `computeNetBalances`); tap to enter, back to return. Group creation accepts
   multiple people at once.
+- **Per-group currency** — each group has its own `currency` (db/06); chosen at creation
+  (default from device locale → profile preference → USD), changeable in group edit. Amounts
+  display per-group; home cards use each group's own currency. `localeDefaultCurrency()` in `App.jsx`.
+- **Custom domain + branded email** — live at **https://splitab.app** (GitHub Pages custom domain
+  via `public/CNAME`; Cloudflare DNS). Email sends from `hello@splitab.app` via Resend (domain
+  verified), so magic link / reset / invites reach any address.
+- **Ghost email-invite** — `MembersPanel` "Invite by email" → `inviteGhostByEmail` in `store.js`
+  calls the `send-invite` Supabase Edge Function (`supabase/functions/send-invite/index.ts`),
+  which emails an invite via Resend. The function must be deployed in the Supabase dashboard with
+  a `RESEND_API_KEY` secret. Auto-link on signup is intentionally not built; the invitee signs up,
+  connects, then the owner uses the existing "Link to account" flow.
 
 **Not built yet:**
-- **Ghost email-invite** — invite a non-user by email to sign up, then link. Needs Resend + domain.
-- **Receipt/statement scanning (AI vision)** — planned; see `RECEIPT-SCANNING-PLAN.md`.
-- **Custom domain + branded email sender** — deferred; needed for emailing non-owners
-  reliably and for a trustworthy URL. Resend without a domain only emails the owner.
+- **Receipt/statement scanning (AI vision)** — planned; see `RECEIPT-SCANNING-PLAN.md`. Leaning
+  toward a free-tier vision API (e.g. Gemini) over paid, called from an Edge Function.
 - **Per-person balance DISPLAY for 3+ groups with recorded settlements** — the settle-up
   *suggestions* use correct net-balance math, but the older balance *display* at the top of the
   Summary still treats settlements as a `full` split (exact for 2 people only). Align it with
