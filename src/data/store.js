@@ -45,6 +45,24 @@ function memberDisplayName(member, profilesMap) {
   return member.ghost_name || 'Unknown';
 }
 
+// If a groups insert/update fails because the `currency` column doesn't exist
+// yet (db/06_add_group_currency.sql hasn't been run), return a friendly,
+// plain-language instruction. Otherwise return null so the caller shows its
+// normal error. Postgres reports a missing column with code 42703 and a
+// message like: column "currency" of relation "groups" does not exist.
+function currencySetupMessage(dbError) {
+  if (!dbError) return null;
+  const msg = (dbError.message || '').toLowerCase();
+  const looksLikeMissingColumn =
+    dbError.code === '42703' ||
+    (msg.includes('currency') && msg.includes('column')) ||
+    (msg.includes('currency') && msg.includes('does not exist'));
+  if (looksLikeMissingColumn) {
+    return 'Currency needs a one-time database update — run db/06_add_group_currency.sql in Supabase.';
+  }
+  return null;
+}
+
 // ─── main hook ──────────────────────────────────────────────────────────────
 
 export function useExpenseStore(userId, profile) {
@@ -101,9 +119,13 @@ export function useExpenseStore(userId, profile) {
       setError(null);
 
       // 1. Load all accessible groups (RLS returns only permitted rows).
+      //    We select '*' (every column) on purpose: the per-group `currency`
+      //    column is added by db/06_add_group_currency.sql. Selecting '*' means
+      //    the app keeps working even BEFORE that script is run — the column is
+      //    simply absent and we fall back to 'USD' when we assemble each group.
       const { data: rawGroups, error: gErr } = await supabase
         .from('groups')
-        .select('id, name, owner_id, type')
+        .select('*')
         .order('created_at', { ascending: true });
 
       if (gErr) throw gErr;
@@ -243,6 +265,10 @@ export function useExpenseStore(userId, profile) {
           name:           g.name,
           type:           g.type,
           owner_id:       g.owner_id,
+          // Per-group currency code (e.g. 'USD', 'EUR'). Falls back to 'USD'
+          // when the db/06 column hasn't been added yet (row.currency is then
+          // undefined). Display-only — no money is ever converted.
+          currency:       g.currency || 'USD',
           people,
           expenses:       [...expenses, ...settlements],
           // Internal maps — not used by UI rendering but needed by write helpers.
@@ -626,7 +652,7 @@ export function useExpenseStore(userId, profile) {
     // ── Create a new group ───────────────────────────────────────────────────
     // ONLINE-ONLY: creating a group requires a server round-trip to get the
     // group_members UUID needed for every subsequent expense write.
-    async createGroup(name, type, extraPeopleNames) {
+    async createGroup(name, type, extraPeopleNames, currency) {
       if (!navigator.onLine) {
         setError("You're offline — creating or changing groups and people needs a connection. Expenses and settlements you add will sync automatically when you're back online.");
         return null;
@@ -634,12 +660,16 @@ export function useExpenseStore(userId, profile) {
 
       const { data: newGroup, error: gErr } = await supabase
         .from('groups')
-        .insert({ name, owner_id: userId, type })
+        // currency is the per-group code (e.g. 'USD', 'EUR'); default to 'USD'.
+        .insert({ name, owner_id: userId, type, currency: currency || 'USD' })
         .select('id')
         .single();
 
       if (gErr) {
-        setError('Could not create group: ' + gErr.message);
+        // If the db/06 currency column hasn't been added yet, the insert fails
+        // with a "column ... does not exist" schema error. Give a clear, plain
+        // instruction instead of a raw Postgres message.
+        setError(currencySetupMessage(gErr) || ('Could not create group: ' + gErr.message));
         return null;
       }
 
@@ -667,7 +697,7 @@ export function useExpenseStore(userId, profile) {
 
     // ── Edit an existing group's name/type ───────────────────────────────────
     // ONLINE-ONLY.
-    async updateGroup(groupId, name, type) {
+    async updateGroup(groupId, name, type, currency) {
       if (!navigator.onLine) {
         setError("You're offline — creating or changing groups and people needs a connection. Expenses and settlements you add will sync automatically when you're back online.");
         return;
@@ -675,11 +705,13 @@ export function useExpenseStore(userId, profile) {
 
       const { error: gErr } = await supabase
         .from('groups')
-        .update({ name, type })
+        // currency is the per-group code (e.g. 'USD', 'EUR'); default to 'USD'.
+        .update({ name, type, currency: currency || 'USD' })
         .eq('id', groupId);
 
       if (gErr) {
-        setError('Could not update group: ' + gErr.message);
+        // Same db/06 schema-error guard as createGroup.
+        setError(currencySetupMessage(gErr) || ('Could not update group: ' + gErr.message));
         return;
       }
 

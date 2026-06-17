@@ -78,14 +78,53 @@ const CURRENCIES = {
   JPY: '¥',
 };
 
-// The symbol currently in use. App sets this from the signed-in user's
-// preferred_currency on every render (see below). It lives at module scope so
-// the shared `fmt` helper — used by many components — can read it without every
-// component needing to thread the symbol through props.
+// The symbol currently in use. App sets this from the ACTIVE GROUP's currency
+// on every render (see below). It lives at module scope so the shared `fmt`
+// helper — used by many components inside the group detail view — can read it
+// without every component needing to thread the symbol through props.
 let currencySymbol = '$';
 
-// Format a number as money using the active currency symbol.
-const fmt = (n) => currencySymbol + Number(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+// Format a number as money. By default it uses the active group's symbol
+// (the module-level `currencySymbol`). Pass an explicit `sym` to override —
+// the home dashboard does this so each group card can print in its OWN
+// currency even though several cards are on screen at once.
+const fmt = (n, sym = currencySymbol) =>
+  sym + Number(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+
+// Guess a sensible DEFAULT currency for a NEW group from the device region.
+// We read the country (e.g. 'US', 'GB', 'DE') from the browser locale and map
+// it to one of OUR supported currencies. Returns null if the region is unknown
+// or anything goes wrong — the caller then falls back to the profile default.
+// This only seeds the picker; the user can always change it.
+function localeDefaultCurrency() {
+  try {
+    // Try the modern Intl.Locale API first; fall back to parsing 'en-US'.
+    let region = null;
+    try {
+      region = new Intl.Locale(navigator.language).region || null;
+    } catch (e) {
+      region = (navigator.language || '').split('-')[1] || null;
+    }
+    if (!region) return null;
+    region = region.toUpperCase();
+
+    // Common Eurozone regions all map to EUR.
+    const EUROZONE = ['DE', 'FR', 'ES', 'IT', 'NL', 'IE', 'PT', 'AT', 'BE', 'FI', 'GR'];
+    if (EUROZONE.includes(region)) return 'EUR';
+
+    const REGION_TO_CURRENCY = {
+      US: 'USD',
+      GB: 'GBP',
+      IN: 'INR',
+      CA: 'CAD',
+      AU: 'AUD',
+      JP: 'JPY',
+    };
+    return REGION_TO_CURRENCY[region] || null;
+  } catch (e) {
+    return null;
+  }
+}
 
 /* ============ Settle-up math (works for any group size) ============
  *
@@ -361,18 +400,22 @@ export default function App() {
   // Get the signed-in user's id and profile from the auth layer.
   const { user, profile } = useAuth();
 
-  // Pick the money symbol from the user's preferred currency (defaults to '$').
-  // We set the module-level `currencySymbol` synchronously during render so the
-  // shared `fmt` helper formats every amount with the right symbol. This is
-  // display-only — stored values and all math stay exactly the same.
-  currencySymbol = CURRENCIES[profile?.preferred_currency] || '$';
-
   // Load all data from Supabase. The store returns the same shape the UI
   // already knows how to render, so minimal UI changes are needed.
   const { groups, activeGroupId, loading, error, online, pendingCount, actions } = useExpenseStore(
     user?.id,
     profile,
   );
+
+  // Currency is now PER GROUP. Inside a group's detail view every amount uses
+  // that ACTIVE group's currency. We set the module-level `currencySymbol`
+  // synchronously during render from the active group so the shared `fmt`
+  // helper formats every amount in the right currency. This is display-only —
+  // stored values and all math stay exactly the same.
+  // (The home dashboard shows many groups at once, so it does NOT rely on this
+  // single symbol — each GroupCard formats with its own group's currency.)
+  const activeGroupForCurrency = groups.find(g => g.id === activeGroupId) || groups[0];
+  currencySymbol = CURRENCIES[activeGroupForCurrency?.currency] || '$';
 
   const [tab, setTab] = useState('expenses');
   const [search, setSearch] = useState('');
@@ -446,14 +489,15 @@ export default function App() {
               groups={groups}
               activeGroupId={activeGroupId}
               myName={profile?.display_name || 'Me'}
+              profile={profile}
               onClose={() => setShowGroups(false)}
               onSwitch={(id) => { actions.switchGroup(id); setShowGroups(false); }}
-              onCreateGroup={async (name, type, extraPeople) => {
-                await actions.createGroup(name, type, extraPeople);
+              onCreateGroup={async (name, type, extraPeople, currency) => {
+                await actions.createGroup(name, type, extraPeople, currency);
                 setShowGroups(false);
               }}
-              onUpdateGroup={async (groupId, name, type) => {
-                await actions.updateGroup(groupId, name, type);
+              onUpdateGroup={async (groupId, name, type, currency) => {
+                await actions.updateGroup(groupId, name, type, currency);
               }}
               onRequestDelete={(g) => setConfirmDeleteGroup(g)}
               onAddPerson={async (groupId, personName) => {
@@ -642,14 +686,15 @@ export default function App() {
             groups={groups}
             activeGroupId={activeGroupId}
             myName={profile?.display_name || 'Me'}
+            profile={profile}
             onClose={() => setShowGroups(false)}
             onSwitch={switchGroup}
-            onCreateGroup={async (name, type, extraPeople) => {
-              await actions.createGroup(name, type, extraPeople);
+            onCreateGroup={async (name, type, extraPeople, currency) => {
+              await actions.createGroup(name, type, extraPeople, currency);
               setShowGroups(false);
             }}
-            onUpdateGroup={async (groupId, name, type) => {
-              await actions.updateGroup(groupId, name, type);
+            onUpdateGroup={async (groupId, name, type, currency) => {
+              await actions.updateGroup(groupId, name, type, currency);
             }}
             onRequestDelete={(g) => setConfirmDeleteGroup(g)}
             onAddPerson={async (groupId, personName) => {
@@ -841,14 +886,15 @@ export default function App() {
           groups={groups}
           activeGroupId={activeGroupId}
           myName={profile?.display_name || 'Me'}
+          profile={profile}
           onClose={() => setShowGroups(false)}
           onSwitch={switchGroup}
-          onCreateGroup={async (name, type, extraPeople) => {
-            await actions.createGroup(name, type, extraPeople);
+          onCreateGroup={async (name, type, extraPeople, currency) => {
+            await actions.createGroup(name, type, extraPeople, currency);
             setShowGroups(false);
           }}
-          onUpdateGroup={async (groupId, name, type) => {
-            await actions.updateGroup(groupId, name, type);
+          onUpdateGroup={async (groupId, name, type, currency) => {
+            await actions.updateGroup(groupId, name, type, currency);
           }}
           onRequestDelete={(g) => setConfirmDeleteGroup(g)}
           onAddPerson={async (groupId, personName) => {
@@ -981,6 +1027,11 @@ function GroupCard({ group, myName, onOpen }) {
   const settled = Math.abs(myNet) < 0.005;
   const owed = myNet > 0;   // positive net → you are OWED money
 
+  // This card must print in THIS group's own currency — several cards are on
+  // screen at once, so we can't rely on the single module-level symbol. We pass
+  // this symbol explicitly to fmt() below.
+  const sym = CURRENCIES[group.currency] || '$';
+
   // Up to 4 avatar circles, then a "+N" overflow bubble.
   const shown = people.slice(0, 4);
   const overflow = people.length - shown.length;
@@ -1028,11 +1079,11 @@ function GroupCard({ group, myName, onOpen }) {
         <div className="text-sm text-stone-500 font-medium">Settled up</div>
       ) : owed ? (
         <div className="text-sm font-semibold text-emerald-700">
-          You are owed +{fmt(myNet)}
+          You are owed +{fmt(myNet, sym)}
         </div>
       ) : (
         <div className="text-sm font-semibold text-rose-600">
-          You owe -{fmt(Math.abs(myNet))}
+          You owe -{fmt(Math.abs(myNet), sym)}
         </div>
       )}
     </button>
@@ -1534,7 +1585,7 @@ function SummaryTab({ expenses, settlements, balances, sharedPool, total, people
 
 /* ============ Groups modal ============ */
 
-function GroupsModal({ groups, activeGroupId, myName, onClose, onSwitch, onCreateGroup, onUpdateGroup, onRequestDelete, onAddPerson, onRemovePerson, onLinkGhost }) {
+function GroupsModal({ groups, activeGroupId, myName, profile, onClose, onSwitch, onCreateGroup, onUpdateGroup, onRequestDelete, onAddPerson, onRemovePerson, onLinkGhost }) {
   // view can be: 'list' | 'form' | 'members'
   const [view, setView] = useState('list');
   const [editingGroup, setEditingGroup] = useState(null);
@@ -1671,13 +1722,14 @@ function GroupsModal({ groups, activeGroupId, myName, onClose, onSwitch, onCreat
           <GroupForm
             group={editingGroup}
             myName={myName}
+            profile={profile}
             onSave={async (groupData) => {
               if (editingGroup) {
-                // Editing an existing group — only name and type can change.
-                await onUpdateGroup(editingGroup.id, groupData.name, groupData.type);
+                // Editing an existing group — name, type, and currency can change.
+                await onUpdateGroup(editingGroup.id, groupData.name, groupData.type, groupData.currency);
               } else {
                 // Creating a new group.
-                await onCreateGroup(groupData.name, groupData.type, groupData.extraPeople || []);
+                await onCreateGroup(groupData.name, groupData.type, groupData.extraPeople || [], groupData.currency);
               }
               setView('list');
               setEditingGroup(null);
@@ -1965,12 +2017,20 @@ function MembersPanel({ group, myName, onAddPerson, onRequestRemove, onLinkGhost
   );
 }
 
-function GroupForm({ group, myName, onSave, onCancel }) {
+function GroupForm({ group, myName, profile, onSave, onCancel }) {
   const isNew = !group;
   const [name, setName] = useState(group?.name || '');
   // For an existing group, derive the type from how many people it has.
   const initialType = group ? (group.type || (group.people?.length === 1 ? 'solo' : 'shared')) : 'shared';
   const [type, setType] = useState(initialType);
+
+  // Per-group currency. When EDITING, default to the group's current currency.
+  // When CREATING, default to the device-region guess, else the profile's
+  // preferred currency, else 'USD'. The user can change it either way.
+  const initialCurrency = isNew
+    ? (localeDefaultCurrency() || profile?.preferred_currency || 'USD')
+    : (group.currency || 'USD');
+  const [currency, setCurrency] = useState(initialCurrency);
 
   // For a NEW shared group the owner can add more than one other person up
   // front. We collect their names into `extraPeople` (a list of chips). The
@@ -2002,6 +2062,9 @@ function GroupForm({ group, myName, onSave, onCancel }) {
     onSave({
       name: name.trim(),
       type,
+      // The chosen currency code (e.g. 'USD', 'EUR'). Passed through to
+      // createGroup / updateGroup in the store.
+      currency,
       // Extra people beyond the owner — only sent for new groups. The store
       // already accepts an array; these become ghost members.
       extraPeople: type === 'shared' ? extraPeople : [],
@@ -2020,6 +2083,20 @@ function GroupForm({ group, myName, onSave, onCancel }) {
             className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm focus:outline-none focus:border-indigo-500"
             autoFocus
           />
+        </Field>
+
+        <Field label="Currency">
+          {/* Each group has its own currency. This is display-only — amounts
+              are never converted, we just show this symbol in the group. */}
+          <select
+            value={currency}
+            onChange={(e) => setCurrency(e.target.value)}
+            className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm bg-white focus:outline-none focus:border-indigo-500"
+          >
+            {Object.entries(CURRENCIES).map(([code, symbol]) => (
+              <option key={code} value={code}>{symbol} {code}</option>
+            ))}
+          </select>
         </Field>
 
         <Field label="Type">
