@@ -4,7 +4,7 @@ A multi-user, cloud-synced Progressive Web App (PWA) for splitting trip expenses
 Built with React + esbuild, backed by Supabase (auth + database), deployed to GitHub
 Pages, and installable on an iPhone home screen.
 
-- **Live app:** https://raviknight.github.io/expense-splitter/
+- **Live app:** https://splitab.app/
 - **Repo:** https://github.com/Raviknight/expense-splitter (public — see "Why public" below)
 - **Owner/GitHub:** Raviknight
 
@@ -107,7 +107,7 @@ don't return data).
 ### Auth configuration (in the Supabase dashboard)
 
 - **URL Configuration** (Authentication → URL Configuration): the **Site URL** and a
-  **Redirect URL** must both be set to `https://raviknight.github.io/expense-splitter/`.
+  **Redirect URL** must both be set to `https://splitab.app/`.
   Without this, magic links fall back to `localhost` and don't work.
 - **Email rate limit:** Supabase's built-in email sender allows only ~2–4/hour. For real
   use, configure **custom SMTP** (Authentication → Emails → SMTP Settings). Resend is the

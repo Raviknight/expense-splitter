@@ -6,7 +6,7 @@ Splitab is a multi-user, cloud-synced Progressive Web App (PWA) for splitting ex
 trips and in groups. It installs on your phone's home screen, works offline, and syncs in
 real time across devices.
 
-🔗 **Live app:** https://raviknight.github.io/expense-splitter/
+🔗 **Live app:** https://splitab.app/
 
 > ⚠️ **Source-available, not open source.** You're welcome to read and learn from this code.
 > Please don't use it to build a competing product — see [License](#license).
