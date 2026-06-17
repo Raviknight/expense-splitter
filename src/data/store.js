@@ -82,6 +82,30 @@ function currencySetupMessage(dbError) {
   return null;
 }
 
+// If saving a CUSTOM-split expense fails because db/07_custom_split.sql hasn't
+// been run yet, return a friendly instruction. Two things can go wrong before
+// that script runs:
+//   1. split_mode = 'custom' is rejected by the old check constraint
+//      (Postgres code 23514 "check_violation", message mentions
+//      split_mode_check / "violates check").
+//   2. The split_detail column doesn't exist yet (code 42703, message
+//      mentions split_detail / "does not exist").
+// Otherwise return null so the caller shows its normal error.
+function customSplitSetupMessage(dbError) {
+  if (!dbError) return null;
+  const msg = (dbError.message || '').toLowerCase();
+  const looksLikeCustomSplit =
+    dbError.code === '23514' ||                       // check constraint violation
+    dbError.code === '42703' ||                       // undefined column
+    msg.includes('split_detail') ||
+    msg.includes('split_mode_check') ||
+    msg.includes('violates check');
+  if (looksLikeCustomSplit) {
+    return 'Custom split needs a one-time database update — run db/07_custom_split.sql in Supabase.';
+  }
+  return null;
+}
+
 // ─── main hook ──────────────────────────────────────────────────────────────
 
 export function useExpenseStore(userId, profile) {
@@ -191,9 +215,13 @@ export function useExpenseStore(userId, profile) {
       }
 
       // 4. Load all expenses for all groups in one query.
+      //    We select '*' (every column) on purpose: the `split_detail` column
+      //    is added by db/07_custom_split.sql. Selecting '*' means reads keep
+      //    working even BEFORE that script is run — the column is simply absent
+      //    and a custom split's per-person amounts won't be present until then.
       const { data: rawExpenses, error: eErr } = await supabase
         .from('expenses')
-        .select('id, group_id, name, amount, date, category, paid_by, split_mode, note')
+        .select('*')
         .in('group_id', groupIds)
         .order('date', { ascending: false });
 
@@ -234,16 +262,36 @@ export function useExpenseStore(userId, profile) {
         // Map expense DB rows → UI expense shape.
         const expenses = (rawExpenses || [])
           .filter(e => e.group_id === g.id)
-          .map(e => ({
-            id:        e.id,
-            name:      e.name,
-            amount:    Number(e.amount),
-            date:      e.date,           // already 'YYYY-MM-DD'
-            category:  e.category,
-            paidBy:    memberIdToName[e.paid_by] || 'Unknown',
-            splitMode: e.split_mode,     // DB uses snake_case; UI uses camelCase
-            note:      e.note || '',
-          }));
+          .map(e => {
+            // Base UI expense (same fields as before).
+            const ui = {
+              id:        e.id,
+              name:      e.name,
+              amount:    Number(e.amount),
+              date:      e.date,           // already 'YYYY-MM-DD'
+              category:  e.category,
+              paidBy:    memberIdToName[e.paid_by] || 'Unknown',
+              splitMode: e.split_mode,     // DB uses snake_case; UI uses camelCase
+              note:      e.note || '',
+            };
+
+            // Custom split: the DB stores split_detail as { member_id: amount }.
+            // The rest of the UI works with display NAMES, not member ids, so we
+            // translate the keys here using this group's id→name map. The result
+            // is a plain { name: amount } object the balance math can read.
+            // (Absent/null split_detail → we attach nothing, so non-custom
+            // expenses are completely unaffected.)
+            if (e.split_detail && typeof e.split_detail === 'object') {
+              const splitDetail = {};
+              Object.entries(e.split_detail).forEach(([memberId, amt]) => {
+                const name = memberIdToName[memberId];
+                if (name) splitDetail[name] = Number(amt);
+              });
+              ui.splitDetail = splitDetail;
+            }
+
+            return ui;
+          });
 
         // Map settlement DB rows → a settlement-flavoured expense shape that
         // the UI already knows how to render (type:'settlement').
@@ -551,7 +599,14 @@ export function useExpenseStore(userId, profile) {
     // setGroups call above). Since we haven't called fetchRef yet, the previous
     // React state (before this function was called) is still in `groups`.
     // We trigger a refetch to restore authoritative state cleanly.
-    setError('Could not save: ' + (dbError.message || 'Server error'));
+    //
+    // Special case: if this is a custom-split expense and db/07 hasn't been run
+    // yet, the DB rejects 'custom' / the missing split_detail column. Show the
+    // plain "run the migration" instruction instead of a raw Postgres message.
+    setError(
+      customSplitSetupMessage(dbError) ||
+      ('Could not save: ' + (dbError.message || 'Server error'))
+    );
     await fetchRef.current();
   }
 
@@ -582,16 +637,33 @@ export function useExpenseStore(userId, profile) {
       // Build the DB row with exact schema column names.
       // For inserts we supply a client-generated id so the row has a stable
       // identity before (and after) it reaches the server.
+      // Custom split: the UI hands us splitDetail keyed by display NAME
+      // ({ "Shailja": 70, "Ravi": 30 }). The DB wants it keyed by the member's
+      // group_members.id ({ "<uuid>": 70, ... }), so translate names→ids here
+      // with this group's name→id map. For every OTHER split mode we store null
+      // (those modes compute each person's share from the rules, so there's
+      // nothing per-person to remember).
+      let splitDetailForDb = null;
+      if (uiExpense.splitMode === 'custom' && uiExpense.splitDetail) {
+        splitDetailForDb = {};
+        Object.entries(uiExpense.splitDetail).forEach(([name, amt]) => {
+          const memberId = group._nameToMemberId[name];
+          if (memberId) splitDetailForDb[memberId] = Number(amt);
+        });
+      }
+
       const row = {
-        id:         isUpdate ? uiExpense.id : crypto.randomUUID(),
-        group_id:   groupId,
-        name:       uiExpense.name,
-        amount:     Number(uiExpense.amount),
-        date:       uiExpense.date,
-        category:   uiExpense.category,
-        paid_by:    paidByMemberId,
-        split_mode: uiExpense.splitMode,
-        note:       uiExpense.note || null,
+        id:           isUpdate ? uiExpense.id : crypto.randomUUID(),
+        group_id:     groupId,
+        name:         uiExpense.name,
+        amount:       Number(uiExpense.amount),
+        date:         uiExpense.date,
+        category:     uiExpense.category,
+        paid_by:      paidByMemberId,
+        split_mode:   uiExpense.splitMode,
+        note:         uiExpense.note || null,
+        // Per-person amounts for a custom split (or null for the other modes).
+        split_detail: splitDetailForDb,
       };
 
       const kind = isUpdate ? 'expense.update' : 'expense.insert';

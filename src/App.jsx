@@ -61,6 +61,7 @@ const SPLIT_MODES = [
   { id: 'equal',    label: 'Equal',    desc: 'Split 50/50' },
   { id: 'full',     label: 'Full',     desc: 'Other person owes it all' },
   { id: 'personal', label: 'Personal', desc: 'No split — payer keeps it' },
+  { id: 'custom',   label: 'Custom',   desc: "Set each person's share" },
 ];
 
 /* ============ Currency (display only — no FX conversion) ============ */
@@ -170,6 +171,15 @@ function computeNetBalances(people, entries) {
     } else if (mode === 'full') {
       // Everyone except the payer owes the full amount.
       people.forEach(p => { if (p !== e.paidBy) owed[p] += amt; });
+    } else if (mode === 'custom') {
+      // Custom: the per-person amounts were typed by the user and live in
+      // e.splitDetail ({ name: amount }). Each named person owes exactly their
+      // amount; anyone NOT listed owes 0 for this expense. (The amounts were
+      // already made to sum to the expense total when it was saved.)
+      const detail = e.splitDetail || {};
+      Object.entries(detail).forEach(([name, share]) => {
+        if (name in owed) owed[name] += Number(share || 0);
+      });
     } else {
       // Equal: divide evenly among ALL people.
       const share = amt / people.length;
@@ -576,6 +586,16 @@ export default function App() {
         owed[e.paidBy] = (owed[e.paidBy] || 0) + amt;
       } else if (mode === 'full') {
         people.forEach(p => { if (p !== e.paidBy) owed[p] = (owed[p] || 0) + amt; });
+        shared += amt;
+      } else if (mode === 'custom') {
+        // Custom: each person owes exactly the amount the user typed for them,
+        // stored in e.splitDetail ({ name: amount }). People not listed owe 0.
+        // Like a normal shared expense, the whole amount goes into the shared
+        // pool (it was split among people, just not evenly).
+        const detail = e.splitDetail || {};
+        Object.entries(detail).forEach(([name, share]) => {
+          owed[name] = (owed[name] || 0) + Number(share || 0);
+        });
         shared += amt;
       } else {
         const share = amt / people.length;
@@ -2606,6 +2626,24 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
   const [saving, setSaving] = useState(false);
   const nameRef = useRef(null);
 
+  // ── Custom split state ──────────────────────────────────────────────────────
+  // customMode: 'amount' (people type currency amounts) or 'percent' (they type
+  //   percentages that we convert to amounts on save).
+  // customVals: a plain map { personName: "stringValue" } — we keep the raw
+  //   string the user typed so the input behaves naturally (e.g. half-typed
+  //   numbers), and parse to a number only when we need to do math.
+  const [customMode, setCustomMode] = useState('amount');
+  const [customVals, setCustomVals] = useState(() => {
+    // If we're editing an existing custom expense, pre-fill from its splitDetail
+    // (which is amounts, keyed by name). Otherwise start everyone at empty.
+    const start = {};
+    people.forEach(p => {
+      const existing = expense?.splitDetail?.[p];
+      start[p] = (existing != null) ? String(existing) : '';
+    });
+    return start;
+  });
+
   useEffect(() => {
     if (isNew) setTimeout(() => nameRef.current?.focus(), 50);
   }, [isNew]);
@@ -2616,11 +2654,90 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
     setCategory(autoCategorize(name));
   }, [name, catManuallySet]);
 
-  const valid = name.trim() && parseFloat(amount) > 0 && date;
+  // The expense total as a number (0 if blank/invalid). Used by the custom
+  // editor for the "Assigned of total" math and the equal-split helper.
+  const totalAmount = parseFloat(amount) || 0;
+
+  // ── Custom-split math (only meaningful when splitMode === 'custom') ──────────
+  // Round a number to whole cents to avoid floating-point dust.
+  const roundCents = (n) => Math.round(n * 100) / 100;
+
+  // Sum of whatever the user has typed, as numbers (blank = 0).
+  const customSum = people.reduce((s, p) => s + (parseFloat(customVals[p]) || 0), 0);
+
+  // For 'amount' mode the target is the expense total; for 'percent' it's 100.
+  const customTarget = customMode === 'percent' ? 100 : totalAmount;
+
+  // Is the custom split complete? Amounts must equal the total within a cent
+  // (0.005); percentages must sum to ~100 (a slightly looser 0.05 so typing
+  // 33.33 three times = 99.99 still counts as balanced). We also require a
+  // positive total to compare against.
+  const customEpsilon = customMode === 'percent' ? 0.05 : 0.005;
+  const customComplete =
+    splitMode !== 'custom' ||
+    (totalAmount > 0 && Math.abs(customSum - customTarget) < customEpsilon);
+
+  // Build the final { name: amount } map that sums EXACTLY to the total.
+  // - amount mode: use the typed amounts (rounded to cents), then nudge the
+  //   LAST participant so the rounded amounts add up to the total exactly.
+  // - percent mode: amount = percent/100 * total (rounded), then assign any
+  //   rounding remainder to the LAST participant.
+  // In both cases people with a 0/blank value are dropped (they owe nothing).
+  const buildSplitDetail = () => {
+    // Decide participants (anyone with a value > 0). Keep the people order.
+    const participants = people.filter(p => (parseFloat(customVals[p]) || 0) > 0);
+    if (participants.length === 0) return {};
+
+    const detail = {};
+    let running = 0;
+    participants.forEach((p, i) => {
+      const raw = parseFloat(customVals[p]) || 0;
+      let amt;
+      if (customMode === 'percent') {
+        amt = roundCents((raw / 100) * totalAmount);
+      } else {
+        amt = roundCents(raw);
+      }
+      if (i === participants.length - 1) {
+        // Last person absorbs any rounding remainder so the parts sum EXACTLY
+        // to the expense total.
+        amt = roundCents(totalAmount - running);
+      }
+      running = roundCents(running + amt);
+      detail[p] = amt;
+    });
+    return detail;
+  };
+
+  // Fill the per-person inputs with an equal split (amounts or percentages).
+  const splitEqually = () => {
+    const n = people.length;
+    if (n === 0) return;
+    const next = {};
+    if (customMode === 'percent') {
+      // Equal percentages; give the remainder to the last person so it sums 100.
+      const each = Math.floor((100 / n) * 100) / 100;
+      people.forEach((p, i) => {
+        next[p] = String(i === n - 1 ? roundCents(100 - each * (n - 1)) : each);
+      });
+    } else {
+      const each = roundCents(totalAmount / n);
+      people.forEach((p, i) => {
+        next[p] = String(i === n - 1 ? roundCents(totalAmount - each * (n - 1)) : each);
+      });
+    }
+    setCustomVals(next);
+  };
+
+  const valid =
+    name.trim() && parseFloat(amount) > 0 && date &&
+    // For a custom split the per-person values must add up correctly.
+    customComplete;
 
   const save = async () => {
     if (!valid || saving) return;
     setSaving(true);
+    const finalMode = isSolo ? 'personal' : splitMode;
     await onSave({
       // Pass the expense id if editing; undefined for new (store decides insert vs update).
       id: expense?.id,
@@ -2632,10 +2749,39 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
       category,
       paidBy: isSolo ? people[0] : paidBy,
       note: note.trim(),
-      splitMode: isSolo ? 'personal' : splitMode,
+      splitMode: finalMode,
+      // Only custom splits carry per-person amounts; every other mode leaves
+      // this undefined so the store stores null (no per-person detail).
+      splitDetail: finalMode === 'custom' ? buildSplitDetail() : undefined,
     });
     setSaving(false);
   };
+
+  // When the user switches INTO custom mode and hasn't typed anything yet,
+  // pre-fill an equal split so they just edit a few numbers instead of starting
+  // from blank. We only do this if every value is currently empty.
+  useEffect(() => {
+    if (splitMode !== 'custom') return;
+    const allEmpty = people.every(p => !customVals[p]);
+    if (allEmpty) {
+      const n = people.length;
+      if (n === 0) return;
+      const next = {};
+      if (customMode === 'percent') {
+        const each = Math.floor((100 / n) * 100) / 100;
+        people.forEach((p, i) => {
+          next[p] = String(i === n - 1 ? roundCents(100 - each * (n - 1)) : each);
+        });
+      } else {
+        const each = roundCents(totalAmount / n);
+        people.forEach((p, i) => {
+          next[p] = String(i === n - 1 ? roundCents(totalAmount - each * (n - 1)) : each);
+        });
+      }
+      setCustomVals(next);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [splitMode, customMode]);
 
   // For split descriptions: everyone except the payer.
   const otherPeople = isSolo ? [] : people.filter(p => p !== paidBy);
@@ -2731,7 +2877,7 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
                *  means everyone EXCEPT the payer owes the full amount; personal
                *  means no one else owes anything. */}
               <Field label="Split">
-                <div className="grid grid-cols-3 gap-2">
+                <div className="grid grid-cols-4 gap-2">
                   {SPLIT_MODES.map(m => (
                     <button
                       key={m.id}
@@ -2756,7 +2902,106 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
                       : `Everyone else (${otherPeople.join(', ')}) each owe the full ${amount ? fmt(parseFloat(amount) || 0) : 'amount'}.`
                   )}
                   {splitMode === 'personal' && `Just ${paidBy}'s expense. No one owes anyone for this.`}
+                  {splitMode === 'custom' && "Type each person's share below. Leave someone blank/0 to leave them out."}
                 </div>
+
+                {/* ── Custom split editor ─────────────────────────────────────
+                 *  One numeric input per person, plus an "amount vs %" toggle and
+                 *  a "Split equally" helper. The Save button is blocked until the
+                 *  parts add up (amounts → the total; percentages → 100). */}
+                {splitMode === 'custom' && (
+                  <div className="mt-3 rounded-lg border border-stone-200 bg-stone-50 p-3 space-y-2.5">
+                    {/* By amount / By % toggle + Split equally */}
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="inline-flex rounded-lg border border-stone-300 overflow-hidden text-xs">
+                        <button
+                          type="button"
+                          onClick={() => setCustomMode('amount')}
+                          className={`px-3 py-1.5 font-medium transition ${
+                            customMode === 'amount' ? 'bg-indigo-600 text-white' : 'bg-white text-stone-600 hover:bg-stone-100'
+                          }`}
+                        >
+                          By amount
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setCustomMode('percent')}
+                          className={`px-3 py-1.5 font-medium transition border-l border-stone-300 ${
+                            customMode === 'percent' ? 'bg-indigo-600 text-white' : 'bg-white text-stone-600 hover:bg-stone-100'
+                          }`}
+                        >
+                          By %
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={splitEqually}
+                        className="text-xs font-medium text-indigo-600 hover:text-indigo-800"
+                      >
+                        Split equally
+                      </button>
+                    </div>
+
+                    {/* Per-person inputs */}
+                    <div className="space-y-1.5">
+                      {people.map(p => (
+                        <div key={p} className="flex items-center gap-2">
+                          <div className="flex-1 text-sm text-stone-700 truncate">{p}</div>
+                          <div className="relative w-28">
+                            {customMode === 'amount' && (
+                              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-stone-400 text-sm">{currencySymbol}</span>
+                            )}
+                            <input
+                              type="number"
+                              step={customMode === 'percent' ? '0.1' : '0.01'}
+                              inputMode="decimal"
+                              value={customVals[p] ?? ''}
+                              onChange={(e) => setCustomVals(v => ({ ...v, [p]: e.target.value }))}
+                              placeholder="0"
+                              className={`w-full ${customMode === 'amount' ? 'pl-6' : 'pl-2.5'} pr-6 py-1.5 rounded-lg border border-stone-300 text-sm text-right tabular-nums bg-white focus:outline-none focus:border-indigo-500`}
+                            />
+                            {customMode === 'percent' && (
+                              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-stone-400 text-sm">%</span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Running total + remaining / over-by message */}
+                    <div className="pt-1 border-t border-stone-200 text-[11px] leading-snug">
+                      {customMode === 'percent' ? (
+                        <div className="flex items-center justify-between">
+                          <span className="text-stone-500">
+                            Assigned: {roundCents(customSum)}% of 100%
+                          </span>
+                          <span className={customComplete ? 'text-emerald-700 font-medium' : 'text-stone-500'}>
+                            {customComplete ? 'Balanced' : `${roundCents(100 - customSum)}% left`}
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between">
+                          <span className="text-stone-500">
+                            Assigned: {fmt(roundCents(customSum))} of {fmt(totalAmount)}
+                          </span>
+                          <span className={customComplete ? 'text-emerald-700 font-medium' : 'text-stone-500'}>
+                            {customComplete ? 'Balanced' : `${fmt(roundCents(totalAmount - customSum))} left`}
+                          </span>
+                        </div>
+                      )}
+                      {!customComplete && totalAmount > 0 && (
+                        <div className="text-amber-700 mt-1">
+                          {customMode === 'percent'
+                            ? 'Percentages must add up to 100% before you can save.'
+                            : `Amounts must add up to the ${fmt(totalAmount)} total before you can save.`}
+                        </div>
+                      )}
+                      {totalAmount <= 0 && (
+                        <div className="text-amber-700 mt-1">Enter the expense amount above first.</div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </Field>
             </>
           )}
