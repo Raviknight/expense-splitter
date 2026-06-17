@@ -246,9 +246,13 @@ only path.
   a `RESEND_API_KEY` secret. Auto-link on signup is intentionally not built; the invitee signs up,
   connects, then the owner uses the existing "Link to account" flow.
 
+- **Receipt/statement scanning (AI vision)** — `ImportModal` "Scan" tab → `scanReceipt` in
+  `store.js` calls the `scan-receipt` Supabase Edge Function (`supabase/functions/scan-receipt/`),
+  which sends the image/PDF to Google Gemini (free tier) and returns extracted expenses that flow
+  into the existing import preview. Deploy the function with a `GEMINI_API_KEY` secret (optional
+  `GEMINI_MODEL`). Design notes in `RECEIPT-SCANNING-PLAN.md`.
+
 **Not built yet:**
-- **Receipt/statement scanning (AI vision)** — planned; see `RECEIPT-SCANNING-PLAN.md`. Leaning
-  toward a free-tier vision API (e.g. Gemini) over paid, called from an Edge Function.
 - **Per-person balance DISPLAY for 3+ groups with recorded settlements** — the settle-up
   *suggestions* use correct net-balance math, but the older balance *display* at the top of the
   Summary still treats settlements as a `full` split (exact for 2 people only). Align it with
