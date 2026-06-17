@@ -745,7 +745,19 @@ export function useExpenseStore(userId, profile) {
         // yet" cases into one friendly sentence; everything else we pass
         // through so the owner can see the real detail.
         if (error) {
-          const raw = error.message || String(error);
+          let raw = error.message || String(error);
+          // supabase-js reports a generic "non-2xx status code" here; the REAL
+          // reason is in the function's JSON error body on error.context (a
+          // Response). Read it so the owner sees e.g. a missing GEMINI_API_KEY or
+          // a Gemini error, instead of the unhelpful generic message.
+          try {
+            if (error.context && typeof error.context.json === 'function') {
+              const body = await error.context.json();
+              if (body?.error) {
+                raw = body.error + (body.detail ? ` — ${String(body.detail).slice(0, 300)}` : '');
+              }
+            }
+          } catch (_) { /* body wasn't JSON — keep the original message */ }
           if (looksUndeployed(raw)) {
             return { ok: false, message: NOT_DEPLOYED_MSG };
           }
