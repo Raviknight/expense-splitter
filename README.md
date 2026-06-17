@@ -1,8 +1,8 @@
-# Slitab
+# Splitab
 
 **Split trip expenses with anyone — even friends who aren't on the app.**
 
-Slitab is a multi-user, cloud-synced Progressive Web App (PWA) for splitting expenses on
+Splitab is a multi-user, cloud-synced Progressive Web App (PWA) for splitting expenses on
 trips and in groups. It installs on your phone's home screen, works offline, and syncs in
 real time across devices.
 

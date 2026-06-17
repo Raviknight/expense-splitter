@@ -1,6 +1,6 @@
 {
-  "name": "Slitab",
-  "short_name": "Slitab",
+  "name": "Splitab",
+  "short_name": "Splitab",
   "description": "Split expenses with friends and groups, synced in real time.",
   "display": "standalone",
   "orientation": "portrait-primary",

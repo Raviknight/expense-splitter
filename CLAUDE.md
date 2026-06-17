@@ -1,4 +1,4 @@
-# SplitMate (Expense Splitter) — project guide
+# Splitab (Expense Splitter) — project guide
 
 A multi-user, cloud-synced Progressive Web App (PWA) for splitting trip expenses.
 Built with React + esbuild, backed by Supabase (auth + database), deployed to GitHub

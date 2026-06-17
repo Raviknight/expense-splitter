@@ -383,7 +383,7 @@ export default function AuthScreen() {
         </div>
 
         {/* App name */}
-        <h1 className="text-3xl font-bold text-stone-900 tracking-tight">Slitab</h1>
+        <h1 className="text-3xl font-bold text-stone-900 tracking-tight">Splitab</h1>
 
         {/* Tagline — value proposition in one line */}
         <p className="text-sm text-stone-500 mt-2 max-w-xs mx-auto leading-relaxed">
