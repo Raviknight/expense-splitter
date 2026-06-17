@@ -43,14 +43,17 @@ const NOT_DEPLOYED_MSG =
 // rather than a real scanning problem (so we can show the friendly hint above).
 function looksUndeployed(message) {
   const m = (message || '').toLowerCase();
+  // Only treat genuine "couldn't reach the function" signatures as undeployed.
+  // We deliberately do NOT match bare "not found"/"404", because a real error
+  // FROM a deployed function (e.g. Gemini "model ... is not found") contains
+  // those words and must show its true detail, not a misleading "deploy" hint.
   return (
     m.includes('failed to send a request to the edge function') ||
-    m.includes('function not found') ||
-    m.includes('not found') ||      // covers a 404 response
-    m.includes('404') ||
-    m.includes('failed to fetch') || // browser network error
+    m.includes('function not found') ||      // the Edge Function itself is missing
+    m.includes('failed to fetch') ||         // browser network error
     m.includes('networkerror') ||
-    m.includes('network error')
+    m.includes('network error') ||
+    m.includes('load failed')                // Safari offline
   );
 }
 
