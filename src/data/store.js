@@ -35,6 +35,25 @@ import {
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
+// Shown when the scan-receipt Edge Function looks like it hasn't been deployed.
+const NOT_DEPLOYED_MSG =
+  "Scanning isn't set up yet — the scan function may need to be deployed.";
+
+// Decide whether an error string smells like a missing/undeployed function
+// rather than a real scanning problem (so we can show the friendly hint above).
+function looksUndeployed(message) {
+  const m = (message || '').toLowerCase();
+  return (
+    m.includes('failed to send a request to the edge function') ||
+    m.includes('function not found') ||
+    m.includes('not found') ||      // covers a 404 response
+    m.includes('404') ||
+    m.includes('failed to fetch') || // browser network error
+    m.includes('networkerror') ||
+    m.includes('network error')
+  );
+}
+
 // Build a display name for a group_members row.
 // Real member (user_id set): look up the profiles map → display_name.
 // Ghost member: use ghost_name directly.
@@ -632,6 +651,52 @@ export function useExpenseStore(userId, profile) {
 
       await fetchRef.current();
       return { inserted: dbRows.length };
+    },
+
+    // ── Scan a receipt or statement (AI vision) ──────────────────────────────
+    // The browser sends the picked file (already turned into base64 + its
+    // mime type) up to the `scan-receipt` Supabase Edge Function. That function
+    // does the AI reading and hands back a list of expenses.
+    //
+    // We return a plain result object so the calling UI can show the message
+    // inline (next to the file picker), rather than as a global red banner:
+    //   • success → { ok: true, expenses: [{ date, description, amount, category }] }
+    //   • failure → { ok: false, message: '…friendly text…' }
+    async scanReceipt(fileBase64, mimeType) {
+      try {
+        const { data, error } = await supabase.functions.invoke('scan-receipt', {
+          body: { fileBase64, mimeType },
+        });
+
+        // `error` is set when the request itself failed (network, 404, the
+        // function threw, etc.). We translate the common "it isn't deployed
+        // yet" cases into one friendly sentence; everything else we pass
+        // through so the owner can see the real detail.
+        if (error) {
+          const raw = error.message || String(error);
+          if (looksUndeployed(raw)) {
+            return { ok: false, message: NOT_DEPLOYED_MSG };
+          }
+          return { ok: false, message: raw };
+        }
+
+        // The function can also report a problem in its JSON body
+        // (e.g. { ok: false, error: 'No image' }) even with a 200 status.
+        if (!data || data.ok !== true) {
+          const detail = data?.error || data?.detail || data?.message;
+          return { ok: false, message: detail || 'Scanning failed — please try again.' };
+        }
+
+        return { ok: true, expenses: Array.isArray(data.expenses) ? data.expenses : [] };
+      } catch (err) {
+        // A thrown error usually means the request never reached a deployed
+        // function (offline, blocked, or the function does not exist).
+        const raw = err?.message || String(err);
+        if (looksUndeployed(raw)) {
+          return { ok: false, message: NOT_DEPLOYED_MSG };
+        }
+        return { ok: false, message: raw };
+      }
     },
 
     // ── Delete an expense or settlement ──────────────────────────────────────

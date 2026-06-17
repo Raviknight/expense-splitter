@@ -3,7 +3,7 @@ import {
   Plus, Pencil, Trash2, X, ArrowDownUp, Receipt, Users, PieChart, Search,
   ChevronDown, ChevronRight, Check, ArrowLeft, Handshake, User,
   AlertCircle, RefreshCw, UserPlus, Ghost, Upload, FileSpreadsheet,
-  BarChart3, Download, Printer,
+  BarChart3, Download, Printer, ScanLine, Loader2,
 } from 'lucide-react';
 import { useAuth } from './auth/AuthProvider.jsx';
 import { useConnections } from './auth/useConnections.js';
@@ -431,6 +431,8 @@ export default function App() {
   const [view, setView] = useState('home');
   const [showSettle, setShowSettle] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  // Which tab the import/scan modal opens on: 'csv' (file import) or 'scan' (photo).
+  const [importStartMode, setImportStartMode] = useState('csv');
   const [confirmDeleteGroup, setConfirmDeleteGroup] = useState(null);
 
   // ── Loading state ─────────────────────────────────────────────────────────
@@ -869,7 +871,15 @@ export default function App() {
           Both only appear here in the normal state where a group exists. */}
       <div className="fixed bottom-6 right-6 z-30 flex flex-col items-end gap-3">
         <button
-          onClick={() => setShowImport(true)}
+          onClick={() => { setImportStartMode('scan'); setShowImport(true); }}
+          className="w-12 h-12 rounded-full bg-white border border-stone-300 text-stone-700 shadow-md hover:bg-stone-50 active:scale-95 transition flex items-center justify-center"
+          aria-label="Scan receipt or statement"
+          title="Scan a receipt or statement photo / PDF"
+        >
+          <ScanLine className="w-5 h-5" />
+        </button>
+        <button
+          onClick={() => { setImportStartMode('csv'); setShowImport(true); }}
           className="w-12 h-12 rounded-full bg-white border border-stone-300 text-stone-700 shadow-md hover:bg-stone-50 active:scale-95 transition flex items-center justify-center"
           aria-label="Import CSV"
           title="Import expenses from a CSV file"
@@ -946,8 +956,10 @@ export default function App() {
           people={people}
           isSolo={isSolo}
           myName={profile?.display_name || 'Me'}
+          startMode={importStartMode}
           onClose={() => setShowImport(false)}
           onImport={(rows, opts) => actions.importExpenses(activeGroup.id, rows, opts)}
+          onScan={(base64, mimeType) => actions.scanReceipt(base64, mimeType)}
         />
       )}
 
@@ -2776,7 +2788,12 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
 //
 // All the heavy lifting (parsing, normalizing, building) lives in csv.js so this
 // component just collects choices and shows results.
-function ImportModal({ people, isSolo, myName, onClose, onImport }) {
+function ImportModal({ people, isSolo, myName, startMode = 'csv', onClose, onImport, onScan }) {
+  // Which source the user is importing from: 'csv' (a spreadsheet file) or
+  // 'scan' (a receipt/statement photo or PDF read by AI vision). Both paths
+  // end at the SAME preview + "Paid by"/split defaults + Import button below.
+  const [mode, setMode] = useState(startMode === 'scan' ? 'scan' : 'csv');
+
   // Raw parse results.
   const [fileName, setFileName] = useState('');
   const [headers, setHeaders] = useState([]);
@@ -2799,6 +2816,65 @@ function ImportModal({ people, isSolo, myName, onClose, onImport }) {
   const [importing, setImporting] = useState(false);
   const [result, setResult] = useState(null); // { inserted } on success
   const [importError, setImportError] = useState('');
+
+  // ── Scan state (only used when mode === 'scan') ────────────────────────────
+  const [scanning, setScanning] = useState(false);     // spinner while AI reads
+  const [scanError, setScanError] = useState('');      // inline error message
+  const [scanRows, setScanRows] = useState(null);       // null = nothing scanned yet
+  const [scanFileName, setScanFileName] = useState(''); // name of the picked file
+
+  // ── Scan: turn the picked image/PDF into base64 + read it via AI ───────────
+  const handleScanFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setScanError('');
+    setScanRows(null);
+    setResult(null);
+    setScanFileName(file.name);
+    setScanning(true);
+    try {
+      // FileReader.readAsDataURL gives us a string like
+      // "data:image/jpeg;base64,/9j/4AAQ...". The Edge Function wants ONLY the
+      // part after the comma, so we strip the "data:<mime>;base64," prefix.
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload  = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error || new Error('Could not read file'));
+        reader.readAsDataURL(file);
+      });
+      const base64   = String(dataUrl).split(',')[1] || '';
+      const mimeType = file.type || 'application/octet-stream';
+
+      const res = await onScan(base64, mimeType);
+      if (!res?.ok) {
+        setScanError(res?.message || 'Scanning failed — please try again.');
+        setScanRows(null);
+      } else {
+        // Map the AI's expenses into the SAME row shape the CSV preview uses:
+        //   description → name, keep amount/date, fill category/date sensibly.
+        const today = new Date().toISOString().slice(0, 10);
+        const mapped = (res.expenses || []).map(ex => {
+          const name = (ex.description || '').trim() || 'Expense';
+          const hasDate = !!ex.date;
+          const row = {
+            name,
+            amount:   Number(ex.amount) || 0,
+            // No readable date → fall back to today and flag it like the CSV flow.
+            date:     hasDate ? ex.date : today,
+            category: (ex.category || '').trim() || autoCategorize(name),
+          };
+          if (!hasDate) row._warning = 'No date found — set to today.';
+          return row;
+        }).filter(r => r.amount > 0);
+        setScanRows(mapped);
+      }
+    } catch (err) {
+      setScanError('Could not read that file. Try a clearer photo or a single page.');
+      setScanRows(null);
+    } finally {
+      setScanning(false);
+    }
+  };
 
   // ── Step 1: read & parse the chosen file ──────────────────────────────────
   const handleFile = async (e) => {
@@ -2846,10 +2922,22 @@ function ImportModal({ people, isSolo, myName, onClose, onImport }) {
 
   // ── Step 5: build the preview whenever inputs change ───────────────────────
   // Reuse the app's autoCategorize so categorization stays consistent.
-  const built = useMemo(() => {
+  const csvBuilt = useMemo(() => {
     if (rows.length === 0 || !mapping.amount) return { expenses: [], skipped: 0 };
     return buildExpenses(rows, mapping, options, autoCategorize);
   }, [rows, mapping, options]);
+
+  // `built` is the active source for the shared preview + Import button.
+  // CSV mode uses the parsed/mapped rows; scan mode uses the AI's rows.
+  const built = mode === 'scan'
+    ? { expenses: scanRows || [], skipped: 0 }
+    : csvBuilt;
+
+  // Show the shared defaults + preview block once a source has produced rows:
+  //   CSV → file parsed (headers found); Scan → at least one expense read.
+  const showDefaults = mode === 'csv'
+    ? headers.length > 0
+    : Array.isArray(scanRows) && scanRows.length > 0;
 
   const canImport = built.expenses.length > 0 && paidByName && !importing;
 
@@ -2887,7 +2975,9 @@ function ImportModal({ people, isSolo, myName, onClose, onImport }) {
       <div className="bg-white w-full sm:max-w-md sm:rounded-2xl rounded-t-2xl shadow-2xl max-h-[92vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <div className="sticky top-0 bg-white border-b border-stone-200 px-4 py-3 flex items-center justify-between">
           <h2 className="font-semibold flex items-center gap-2">
-            <FileSpreadsheet className="w-4 h-4 text-stone-500" /> Import CSV
+            {mode === 'scan'
+              ? <><ScanLine className="w-4 h-4 text-stone-500" /> Scan receipt / statement</>
+              : <><FileSpreadsheet className="w-4 h-4 text-stone-500" /> Import CSV</>}
           </h2>
           <button onClick={onClose} className="p-1 text-stone-400 hover:text-stone-700"><X className="w-5 h-5" /></button>
         </div>
@@ -2905,7 +2995,28 @@ function ImportModal({ people, isSolo, myName, onClose, onImport }) {
             </div>
           ) : (
             <>
-              {/* ── Step 1: file picker ─────────────────────────────────── */}
+              {/* ── Source picker: CSV file OR Scan a photo/PDF ──────────── */}
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => setMode('csv')}
+                  className={`flex items-center justify-center gap-1.5 py-2 rounded-lg border text-sm font-medium transition ${
+                    mode === 'csv' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white border-stone-300 text-stone-700 hover:border-stone-500'
+                  }`}
+                >
+                  <FileSpreadsheet className="w-4 h-4" /> CSV file
+                </button>
+                <button
+                  onClick={() => setMode('scan')}
+                  className={`flex items-center justify-center gap-1.5 py-2 rounded-lg border text-sm font-medium transition ${
+                    mode === 'scan' ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white border-stone-300 text-stone-700 hover:border-stone-500'
+                  }`}
+                >
+                  <ScanLine className="w-4 h-4" /> Scan
+                </button>
+              </div>
+
+              {/* ── CSV mode: Step 1 file picker ─────────────────────────── */}
+              {mode === 'csv' && (
               <Field label="1. Choose a CSV file">
                 <input
                   type="file"
@@ -2918,8 +3029,35 @@ function ImportModal({ people, isSolo, myName, onClose, onImport }) {
                 )}
                 {parseError && <div className="text-[11px] text-red-600 mt-1">{parseError}</div>}
               </Field>
+              )}
 
-              {headers.length > 0 && (
+              {/* ── Scan mode: pick a photo/PDF, then AI reads it ────────── */}
+              {mode === 'scan' && (
+              <Field label="Choose a receipt or statement (photo or PDF)">
+                <input
+                  type="file"
+                  accept="image/*,application/pdf"
+                  onChange={handleScanFile}
+                  disabled={scanning}
+                  className="w-full text-sm text-stone-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border file:border-stone-300 file:bg-stone-50 file:text-sm file:font-medium hover:file:bg-stone-100 disabled:opacity-50"
+                />
+                {scanFileName && !scanning && !scanError && (
+                  <div className="text-[11px] text-stone-500 mt-1">{scanFileName}</div>
+                )}
+                {scanning && (
+                  <div className="flex items-center gap-2 text-sm text-stone-500 mt-2">
+                    <Loader2 className="w-4 h-4 animate-spin" /> Scanning…
+                  </div>
+                )}
+                {scanError && <div className="text-sm text-rose-600 mt-2">{scanError}</div>}
+                {!scanning && !scanError && Array.isArray(scanRows) && scanRows.length === 0 && (
+                  <div className="text-sm text-stone-500 mt-2">No expenses found — try a clearer photo or a single page.</div>
+                )}
+              </Field>
+              )}
+
+              {/* CSV-only steps 2 & 3 (preset + column mapping). */}
+              {mode === 'csv' && headers.length > 0 && (
                 <>
                   {/* ── Step 2: provider preset ─────────────────────────── */}
                   <Field label="2. Provider preset">
@@ -2962,10 +3100,18 @@ function ImportModal({ people, isSolo, myName, onClose, onImport }) {
                       </select>
                     </Field>
                   </div>
+                </>
+              )}
 
-                  {/* ── Step 4: defaults (paid by + split) ──────────────── */}
+              {/* ── Shared (both modes): defaults + preview + import ─────── */}
+              {/* Shown once there's something to import: CSV mapped rows, or
+                  scanned rows. The preview table, "Paid by"/split defaults, and
+                  the Import button are IDENTICAL for CSV and Scan. */}
+              {showDefaults && (
+                <>
+                  {/* ── Defaults: paid by + split ───────────────────────── */}
                   <div className="space-y-3">
-                    <div className="text-[11px] uppercase tracking-wider text-stone-500 font-medium">4. Defaults for every row</div>
+                    <div className="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Defaults for every row</div>
                     <Field label="Paid by">
                       <select
                         value={paidByName}
@@ -2994,11 +3140,11 @@ function ImportModal({ people, isSolo, myName, onClose, onImport }) {
                     )}
                   </div>
 
-                  {/* ── Step 5: preview ─────────────────────────────────── */}
+                  {/* ── Preview ─────────────────────────────────────────── */}
                   <div className="space-y-2">
-                    <div className="text-[11px] uppercase tracking-wider text-stone-500 font-medium">5. Preview</div>
-                    {!mapping.amount ? (
-                      <div className="text-sm text-stone-500">Map the Amount column to see a preview.</div>
+                    <div className="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Preview</div>
+                    {built.expenses.length === 0 ? (
+                      <div className="text-sm text-stone-500">Nothing to preview yet.</div>
                     ) : (
                       <>
                         <div className="rounded-xl border border-stone-200 overflow-hidden">
@@ -3026,7 +3172,9 @@ function ImportModal({ people, isSolo, myName, onClose, onImport }) {
                         <div className="text-[11px] text-stone-500">
                           Importing {built.expenses.length} expense{built.expenses.length === 1 ? '' : 's'}
                           {built.skipped > 0 && ` (${built.skipped} row${built.skipped === 1 ? '' : 's'} skipped — no valid amount)`}.
-                          {built.expenses.some(e => e._warning) && ' Highlighted rows had an unreadable date set to today.'}
+                          {built.expenses.some(e => e._warning) && (mode === 'scan'
+                            ? ' Highlighted rows had no date — set to today.'
+                            : ' Highlighted rows had an unreadable date set to today.')}
                         </div>
                       </>
                     )}
