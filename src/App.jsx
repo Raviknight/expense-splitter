@@ -560,13 +560,23 @@ export default function App() {
     let shared = 0;
     expenses.forEach(e => {
       const amt = Number(e.amount || 0);
+      // A settlement is a PAYMENT (transfer), not a split: the payer (from)
+      // reduces their debt and the receiver (to) reduces their credit. Treating
+      // it like a "full" expense here is what previously left everyone still
+      // looking like they owed money after they'd settled up.
+      if (e.type === 'settlement') {
+        const from = e._settleFrom, to = e._settleTo;
+        if (from in paid) paid[from] = (paid[from] || 0) + amt;
+        if (to in owed)   owed[to]   = (owed[to]   || 0) + amt;
+        return;
+      }
       const mode = e.splitMode || 'equal';
       paid[e.paidBy] = (paid[e.paidBy] || 0) + amt;
       if (mode === 'personal') {
         owed[e.paidBy] = (owed[e.paidBy] || 0) + amt;
       } else if (mode === 'full') {
         people.forEach(p => { if (p !== e.paidBy) owed[p] = (owed[p] || 0) + amt; });
-        if (e.type !== 'settlement') shared += amt;
+        shared += amt;
       } else {
         const share = amt / people.length;
         people.forEach(p => { owed[p] = (owed[p] || 0) + share; });
