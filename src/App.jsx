@@ -701,12 +701,10 @@ export default function App() {
   const tabs = isSolo
     ? [
         { id: 'expenses',   label: 'Expenses',   icon: Receipt },
-        { id: 'categories', label: 'Categories', icon: PieChart },
         { id: 'insights',   label: 'Insights',   icon: BarChart3 },
       ]
     : [
         { id: 'expenses',   label: 'Expenses',   icon: Receipt },
-        { id: 'categories', label: 'Categories', icon: PieChart },
         { id: 'insights',   label: 'Insights',   icon: BarChart3 },
         { id: 'summary',    label: 'Settle Up',  icon: Handshake },
       ];
@@ -874,17 +872,10 @@ export default function App() {
             isSolo={isSolo}
           />
         )}
-        {tab === 'categories' && (
-          <CategoriesTab
-            expenses={realExpenses}
-            total={total}
-            onPick={(c) => { setFilterCat(c); setTab('expenses'); }}
-          />
-        )}
         {tab === 'insights' && (
           <InsightsTab
             expenses={realExpenses}
-            total={total}
+            onPick={(c) => { setFilterCat(c); setTab('expenses'); }}
           />
         )}
         {tab === 'summary' && !isSolo && (
@@ -1365,61 +1356,23 @@ function ExpenseRow({ e, onEdit, onDelete, isSolo }) {
   );
 }
 
-function CategoriesTab({ expenses, total, onPick }) {
-  const byCategory = useMemo(() => {
-    const m = {};
-    expenses.forEach(e => { m[e.category] = (m[e.category] || 0) + Number(e.amount || 0); });
-    return Object.entries(m).sort((a, b) => b[1] - a[1]);
-  }, [expenses]);
-
-  if (total === 0) return (
-    <div className="text-center py-12 text-stone-500">
-      <div className="text-sm">No expenses yet.</div>
-      <div className="text-xs mt-1">Add expenses to see category breakdown.</div>
-    </div>
-  );
-  return (
-    <div className="space-y-2">
-      <div className="text-[11px] uppercase tracking-wider text-stone-500 font-medium px-1 pb-1">
-        Spending by category
-      </div>
-      {byCategory.map(([cat, amt]) => {
-        const meta = catMeta(cat);
-        const pct = (amt / total) * 100;
-        return (
-          <button
-            key={cat}
-            onClick={() => onPick(cat)}
-            className="w-full bg-white border border-stone-200 rounded-xl p-3 hover:border-stone-400 transition text-left"
-          >
-            <div className="flex items-center justify-between mb-1.5">
-              <div className="flex items-center gap-2">
-                <span className="text-lg">{meta.emoji}</span>
-                <span className="font-medium text-sm">{cat}</span>
-              </div>
-              <div className="text-right">
-                <div className="font-semibold tabular-nums text-sm">{fmt(amt)}</div>
-                <div className="text-[10px] text-stone-500 tabular-nums">{pct.toFixed(1)}%</div>
-              </div>
-            </div>
-            <div className="h-1.5 bg-stone-100 rounded-full overflow-hidden">
-              <div className="h-full bg-stone-900 rounded-full transition-all" style={{ width: `${pct}%` }} />
-            </div>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 /* ============ Insights tab ============
  *
- * A lightweight, READ-ONLY spending overview for the active group:
- *   - Total spent (real expenses only, settlements excluded by the caller).
+ * A lightweight, READ-ONLY spending overview for the active group. This is the
+ * single merged "Insights" tab — it replaces the old separate "Categories" and
+ * "Insights" tabs, which showed the same by-category data twice.
+ *
+ * What it shows:
+ *   - A month filter dropdown ("All time" plus every month that has expenses).
+ *   - Total spent for the chosen period (real expenses only — settlements are
+ *     already excluded by the caller).
  *   - A "top category" highlight.
  *   - A by-category breakdown as simple horizontal bars (plain CSS widths —
  *     no charting library), sorted high → low. Each bar uses that category's
  *     own colour and emoji from CATEGORIES.
+ *
+ * Tapping a category row jumps to the Expenses tab filtered to that category
+ * (that is the old Categories-tab behaviour, folded in here via `onPick`).
  *
  * We do NOT mutate anything here; it only reads the numbers it is handed.
  */
@@ -1435,35 +1388,106 @@ function barColorFromTone(tone) {
   return `bg-${family}-500`;
 }
 
-function InsightsTab({ expenses, total }) {
-  // Sum amounts per category, highest first. Memoised so we only recompute
-  // when the expense list changes.
-  const byCategory = useMemo(() => {
-    const m = {};
-    expenses.forEach(e => { m[e.category] = (m[e.category] || 0) + Number(e.amount || 0); });
-    return Object.entries(m).sort((a, b) => b[1] - a[1]);
+// Turn a "YYYY-MM" key (like "2026-06") into a friendly label ("June 2026").
+// We build it by hand from the year and the month number so we don't need any
+// date library. The month number is 1–12, so we index a plain array of names.
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+function monthLabel(key) {
+  const [year, month] = key.split('-');           // e.g. "2026", "06"
+  const name = MONTH_NAMES[Number(month) - 1];    // "06" → index 5 → "June"
+  return `${name} ${year}`;                        // "June 2026"
+}
+
+function InsightsTab({ expenses, onPick }) {
+  // Which period is shown. 'all' means every expense; otherwise it's a
+  // "YYYY-MM" month key. Defaults to "All time".
+  const [period, setPeriod] = useState('all');
+
+  // Every month that has at least one expense, newest first. We take each
+  // expense's date (a 'YYYY-MM-DD' string), keep just the "YYYY-MM" part,
+  // de-duplicate, and sort descending (so the most recent month is on top).
+  const months = useMemo(() => {
+    const set = new Set();
+    expenses.forEach(e => { if (e.date) set.add(String(e.date).slice(0, 7)); });
+    return Array.from(set).sort().reverse();
   }, [expenses]);
 
-  if (total === 0) return (
-    <div className="text-center py-12 text-stone-500">
-      <div className="text-sm">No expenses yet.</div>
-      <div className="text-xs mt-1">Add expenses to see spending insights.</div>
+  // The expenses that belong to the chosen period. For "All time" it's all of
+  // them; for a month it's only the ones whose date starts with that month key.
+  const periodExpenses = useMemo(() => {
+    if (period === 'all') return expenses;
+    return expenses.filter(e => String(e.date || '').slice(0, 7) === period);
+  }, [expenses, period]);
+
+  // The total for the chosen period (computed locally, NOT the passed-in
+  // all-time total), and the per-category sums highest first. Memoised so we
+  // only recompute when the filtered list changes.
+  const periodTotal = useMemo(
+    () => periodExpenses.reduce((s, e) => s + Number(e.amount || 0), 0),
+    [periodExpenses]
+  );
+  const byCategory = useMemo(() => {
+    const m = {};
+    periodExpenses.forEach(e => { m[e.category] = (m[e.category] || 0) + Number(e.amount || 0); });
+    return Object.entries(m).sort((a, b) => b[1] - a[1]);
+  }, [periodExpenses]);
+
+  // The month dropdown. Shown above everything so it stays visible even when the
+  // chosen period is empty. Only render the picker if there is at least one month.
+  const picker = months.length > 0 && (
+    <div className="flex items-center justify-between gap-2 px-1">
+      <div className="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Period</div>
+      <select
+        value={period}
+        onChange={(e) => setPeriod(e.target.value)}
+        className="text-sm bg-white border border-stone-300 rounded-lg px-2.5 py-1.5 font-medium text-stone-700"
+      >
+        <option value="all">All time</option>
+        {months.map(m => (
+          <option key={m} value={m}>{monthLabel(m)}</option>
+        ))}
+      </select>
+    </div>
+  );
+
+  // Empty state: either the group has no expenses at all, or the chosen month
+  // has none. We still show the picker so the user can switch periods.
+  if (periodTotal === 0) return (
+    <div className="space-y-3">
+      {picker}
+      <div className="text-center py-12 text-stone-500">
+        <div className="text-sm">
+          {period === 'all' ? 'No expenses yet.' : `No expenses in ${monthLabel(period)}.`}
+        </div>
+        <div className="text-xs mt-1">
+          {period === 'all'
+            ? 'Add expenses to see spending insights.'
+            : 'Pick another month to see spending.'}
+        </div>
+      </div>
     </div>
   );
 
   // The biggest category is simply the first row after the high→low sort.
   const [topCat, topAmt] = byCategory[0];
   const topMeta = catMeta(topCat);
-  const topPct = (topAmt / total) * 100;
+  const topPct = (topAmt / periodTotal) * 100;
 
   return (
     <div className="space-y-3">
-      {/* Total spent card */}
+      {picker}
+
+      {/* Total spent card (for the chosen period) */}
       <div className="bg-white border border-stone-200 rounded-xl p-4">
-        <div className="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-1">Total spent</div>
-        <div className="text-3xl font-semibold tabular-nums">{fmt(total)}</div>
+        <div className="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-1">
+          {period === 'all' ? 'Total spent' : `Spent in ${monthLabel(period)}`}
+        </div>
+        <div className="text-3xl font-semibold tabular-nums">{fmt(periodTotal)}</div>
         <div className="text-sm text-stone-500 mt-1">
-          {expenses.length} expense{expenses.length === 1 ? '' : 's'} across {byCategory.length} categor{byCategory.length === 1 ? 'y' : 'ies'}
+          {periodExpenses.length} expense{periodExpenses.length === 1 ? '' : 's'} across {byCategory.length} categor{byCategory.length === 1 ? 'y' : 'ies'}
         </div>
       </div>
 
@@ -1480,14 +1504,19 @@ function InsightsTab({ expenses, total }) {
         </div>
       </div>
 
-      {/* By-category bars (high → low) */}
+      {/* By-category bars (high → low). Each row is a button so tapping it jumps
+          to the Expenses tab filtered to that category (via onPick). */}
       <div className="bg-white border border-stone-200 rounded-xl p-4 space-y-3">
         <div className="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Where it went</div>
         {byCategory.map(([cat, amt]) => {
           const meta = catMeta(cat);
-          const pct = (amt / total) * 100;
+          const pct = (amt / periodTotal) * 100;
           return (
-            <div key={cat}>
+            <button
+              key={cat}
+              onClick={() => onPick(cat)}
+              className="w-full text-left rounded-lg -mx-1 px-1 py-0.5 hover:bg-stone-50 transition"
+            >
               <div className="flex items-center justify-between mb-1 text-sm">
                 <div className="flex items-center gap-1.5 min-w-0">
                   <span>{meta.emoji}</span>
@@ -1504,7 +1533,7 @@ function InsightsTab({ expenses, total }) {
                   style={{ width: `${pct}%` }}
                 />
               </div>
-            </div>
+            </button>
           );
         })}
       </div>
