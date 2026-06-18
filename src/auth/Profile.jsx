@@ -21,7 +21,7 @@
 import { useState, useEffect } from 'react';
 import {
   X, User, Mail, Save, Check, AlertCircle, Settings,
-  Lock, Eye, EyeOff, DollarSign,
+  Lock, Eye, EyeOff, DollarSign, Sun, Moon,
 } from 'lucide-react';
 import { supabase } from '../supabaseClient.js';
 import { useAuth } from './AuthProvider.jsx';
@@ -65,6 +65,41 @@ export default function Profile({ onClose }) {
   const [pwSaving, setPwSaving]         = useState(false);
   const [pwSaved, setPwSaved]           = useState(false);
   const [pwError, setPwError]           = useState(null);
+
+  // ── Appearance (light / dark) state ───────────────────────────────────────
+  // The actual theme is driven by a `.dark` class on <html> (see the overrides
+  // in public/index.html). Here we just remember which mode is active so the
+  // toggle highlights the right button.
+  //
+  // First load:
+  //   • If the user saved a choice before, use it ('light' or 'dark').
+  //   • If they never chose, follow the system — which the no-flash script in
+  //     index.html already resolved by adding/removing `.dark` on <html>.
+  //     So we read the live class to reflect whatever the system gave us.
+  const [isDark, setIsDark] = useState(() => {
+    try {
+      const saved = localStorage.getItem('slitab.theme');
+      if (saved === 'dark') return true;
+      if (saved === 'light') return false;
+      // No saved choice → mirror the current <html> class (set by the bootstrap).
+      return document.documentElement.classList.contains('dark');
+    } catch {
+      return false;
+    }
+  });
+
+  // Apply a theme everywhere: flip the <html> class (instant, no reload) and
+  // remember the choice so it sticks on the next visit.
+  function applyTheme(dark) {
+    setIsDark(dark);
+    try {
+      document.documentElement.classList.toggle('dark', dark);
+      localStorage.setItem('slitab.theme', dark ? 'dark' : 'light');
+    } catch {
+      // localStorage can throw in private mode — the class toggle still works
+      // for this session, so we ignore it.
+    }
+  }
 
   // Sync fields when the profile prop arrives from context (first load).
   useEffect(() => {
@@ -398,7 +433,67 @@ export default function Profile({ onClose }) {
           </div>
         </section>
 
-        {/* ── Section 3: Change password ── */}
+        {/* ── Section 3: Appearance (light / dark) ── */}
+        {/*
+          A two-button toggle. The active mode is highlighted with the indigo
+          accent. Tapping a button applies the theme instantly (flips the
+          `.dark` class on <html>) and saves the choice to localStorage — no
+          page reload, no Save button needed.
+        */}
+        <section className="bg-white border border-stone-200 rounded-2xl p-5 shadow-sm">
+          <div className="flex items-center gap-2 mb-4">
+            <Sun className="w-4 h-4 text-stone-500" />
+            <span className="text-sm font-semibold text-stone-700">Appearance</span>
+          </div>
+
+          <div className="flex flex-col gap-3">
+            <label className="text-xs font-medium text-stone-500 uppercase tracking-wide">
+              Theme
+            </label>
+
+            {/* Segmented Light / Dark toggle */}
+            <div className="grid grid-cols-2 gap-2">
+              {/* Light option */}
+              <button
+                type="button"
+                onClick={() => applyTheme(false)}
+                aria-pressed={!isDark}
+                className={
+                  'flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium border transition ' +
+                  (!isDark
+                    ? 'bg-indigo-600 text-white border-indigo-600'
+                    : 'bg-white text-stone-700 border-stone-200 hover:bg-stone-50')
+                }
+              >
+                <Sun className="w-4 h-4" />
+                Light
+              </button>
+
+              {/* Dark option */}
+              <button
+                type="button"
+                onClick={() => applyTheme(true)}
+                aria-pressed={isDark}
+                className={
+                  'flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-medium border transition ' +
+                  (isDark
+                    ? 'bg-indigo-600 text-white border-indigo-600'
+                    : 'bg-white text-stone-700 border-stone-200 hover:bg-stone-50')
+                }
+              >
+                <Moon className="w-4 h-4" />
+                Dark
+              </button>
+            </div>
+
+            <p className="text-xs text-stone-400">
+              Choose how Splitab looks on this device. New devices start by
+              following your system setting.
+            </p>
+          </div>
+        </section>
+
+        {/* ── Section 4: Change password ── */}
         {/*
           The user is already authenticated, so we don't need their current
           password or their email. supabase.auth.updateUser({ password }) works

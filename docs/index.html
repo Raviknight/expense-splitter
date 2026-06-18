@@ -4,7 +4,17 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Splitab</title>
-    <meta name="theme-color" content="#FAFAF7" />
+    <!-- Light theme-color; a second tag below applies a dark bar when the OS is in dark mode. -->
+    <meta name="theme-color" content="#FAFAF7" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#1c1917" media="(prefers-color-scheme: dark)" />
+
+    <!-- No-flash theme bootstrap.
+         Runs BEFORE the body renders so the page paints in the right theme on
+         the very first frame (no white flash before the app loads).
+         Rule: use the saved choice if there is one; otherwise follow the OS. -->
+    <script>
+      (function(){try{var t=localStorage.getItem('slitab.theme');var d=t==='dark'||(t===null&&window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches);if(d)document.documentElement.classList.add('dark');}catch(e){}})();
+    </script>
 
     <!-- PWA manifest (relative path works under any GitHub Pages subpath) -->
     <link rel="manifest" href="manifest.json" />
@@ -17,6 +27,10 @@
 
     <!-- Tailwind via official Play CDN so the existing utility classes render. -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Tell the CDN to switch dark variants on a `.dark` class (not the OS).
+         Harmless here since our dark theme is driven by the CSS overrides below,
+         but it keeps any `dark:` utilities consistent with our toggle. -->
+    <script>tailwind.config = { darkMode: 'class' };</script>
     <style>
       html, body { background-color: #FAFAF7; }
       /* iOS Safari auto-zooms when you focus a text field smaller than 16px,
@@ -26,6 +40,57 @@
       @media (max-width: 640px) {
         input, select, textarea { font-size: 16px !important; }
       }
+
+      /* ── Dark mode overrides ───────────────────────────────────────────────
+         The whole app is styled with Tailwind utility classes on a light
+         stone/white palette. Rather than edit every component, we remap those
+         specific utilities to a dark stone palette whenever <html> has the
+         `.dark` class (added by the no-flash script above and the Profile
+         toggle). These rules come AFTER the light rules and use !important so
+         they win over the inline utility styles the CDN generates.
+
+         We intentionally do NOT touch the indigo accent (bg-indigo-600) or the
+         emerald / rose / amber semantic chips — those small coloured chips read
+         fine on the dark cards. */
+
+      /* Page background */
+      .dark body, .dark html { background-color: #1c1917 !important; }
+      .dark .bg-\[\#FAFAF7\] { background-color: #1c1917 !important; }
+
+      /* Cards / inputs / raised surfaces */
+      .dark .bg-white      { background-color: #292524 !important; }
+      .dark .bg-stone-50   { background-color: #292524 !important; }
+      .dark .bg-stone-100  { background-color: #3f3b38 !important; }
+
+      /* Text shades */
+      .dark .text-stone-900 { color: #f5f5f4 !important; }
+      .dark .text-stone-800 { color: #e7e5e4 !important; }
+      .dark .text-stone-700 { color: #d6d3d1 !important; }
+      .dark .text-stone-600 { color: #b8b3ae !important; }
+      .dark .text-stone-500 { color: #a8a29e !important; }
+      .dark .text-stone-400 { color: #8a847e !important; }
+
+      /* Borders */
+      .dark .border-stone-100,
+      .dark .border-stone-200 { border-color: #44403c !important; }
+      .dark .border-stone-300 { border-color: #57534e !important; }
+
+      /* Divider utility (the “> :not([hidden]) ~ :not([hidden])” child borders) */
+      .dark .divide-stone-100 > :not([hidden]) ~ :not([hidden]) { border-color: #44403c !important; }
+
+      /* Form controls — keep them legible on the dark surface */
+      .dark input,
+      .dark select,
+      .dark textarea {
+        background-color: #292524 !important;
+        color: #f5f5f4 !important;
+        border-color: #44403c !important;
+      }
+      .dark input::placeholder { color: #8a847e !important; }
+
+      /* Hover helpers */
+      .dark .hover\:bg-stone-50:hover,
+      .dark .hover\:bg-stone-100:hover { background-color: #3f3b38 !important; }
     </style>
 
     <!-- Service worker registration.
@@ -45,6 +110,6 @@
   </head>
   <body>
     <div id="root"></div>
-    <script src="bundle-EPYWCEHD.js"></script>
+    <script src="bundle-ZAMWWP4Q.js"></script>
   </body>
 </html>
