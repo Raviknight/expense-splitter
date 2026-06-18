@@ -102,6 +102,7 @@ don't return data).
 | `db/05_link_ghost_policy.sql` | Adds the owner UPDATE policy on `group_members` so a ghost can be linked to a connected real account. | Once. Ghost-link errors until run. |
 | `db/06_add_group_currency.sql` | Adds `groups.currency` (default 'USD') so each group has its own currency. | Once. New groups default to USD/locale until run. |
 | `db/07_custom_split.sql` | Allows `split_mode='custom'` and adds `expenses.split_detail` (jsonb per-person amounts). | Once. Custom split errors until run. |
+| `db/08_avatars.sql` | Creates the public `avatars` Storage bucket + upload policies and adds `profiles.avatar_url`. | Once. Profile photo upload errors until run. |
 
 > `db/02` is personal to the owner. The app itself never seeds anyone's data — new users
 > start empty.
