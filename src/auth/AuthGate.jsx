@@ -17,6 +17,7 @@ import AuthScreen from './AuthScreen.jsx';
 import Connections from './Connections.jsx';
 import Profile from './Profile.jsx';
 import ResetPassword from './ResetPassword.jsx';
+import Avatar from '../ui/Avatar.jsx';
 
 export default function AuthGate({ children }) {
   const { session, profile, user, loading, signOut, recoveryMode } = useAuth();
@@ -76,11 +77,10 @@ export default function AuthGate({ children }) {
       {/* Slim auth bar — sits above App's own sticky header */}
       <div className="bg-stone-900 text-white">
         <div className="max-w-3xl mx-auto px-4 py-1.5 flex items-center justify-between gap-3">
-          {/* Left: signed-in-as label */}
+          {/* Left: signed-in-as label. Shows the user's photo (or initials).
+              profile.avatar_url is undefined until db/08 is run → initials. */}
           <div className="flex items-center gap-1.5 min-w-0">
-            <div className="w-5 h-5 rounded-full bg-stone-600 flex items-center justify-center text-[10px] font-semibold shrink-0">
-              {displayName[0].toUpperCase()}
-            </div>
+            <Avatar name={displayName} url={profile?.avatar_url} size={20} />
             <span className="text-xs text-stone-300 truncate hidden sm:block">{displayName}</span>
           </div>
 

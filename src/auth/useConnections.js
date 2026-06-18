@@ -39,12 +39,25 @@ export function useConnections() {
 
     // Collect all distinct profile ids we need to show names for.
     const profileIds = [...new Set(rows.flatMap(r => [r.requester, r.addressee]))];
-    const { data: profileRows, error: profileErr } = await supabase
+    // Try to include avatar_url (added by db/08). If that column doesn't exist
+    // yet, PostgREST errors — so we fall back to the name/email-only query so
+    // connections keep loading (photos just show as initials until db/08 runs).
+    let profileRows = null;
+    const withAvatar = await supabase
       .from('profiles')      // table: profiles
-      .select('id, display_name, email')
+      .select('id, display_name, email, avatar_url')
       .in('id', profileIds);
 
-    if (profileErr) { setLoading(false); setError(profileErr.message); return; }
+    if (withAvatar.error) {
+      const nameOnly = await supabase
+        .from('profiles')
+        .select('id, display_name, email')
+        .in('id', profileIds);
+      if (nameOnly.error) { setLoading(false); setError(nameOnly.error.message); return; }
+      profileRows = nameOnly.data;
+    } else {
+      profileRows = withAvatar.data;
+    }
 
     // Build a quick id→profile lookup.
     const byId = Object.fromEntries((profileRows || []).map(p => [p.id, p]));

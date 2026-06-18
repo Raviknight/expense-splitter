@@ -207,14 +207,41 @@ export function useExpenseStore(userId, profile) {
       // Start with the current user in the map so we don't need a separate query.
       const profilesMap = { [userId]: profile?.display_name || 'Me' };
 
+      // Parallel map: user_id → avatar_url (their profile photo). We seed it
+      // with the CURRENT user's own avatar from the `profile` arg so their own
+      // member row shows their photo too. profile.avatar_url is undefined until
+      // db/08 is run — that's fine, it just stays empty and Avatar shows initials.
+      const avatarMap = { [userId]: profile?.avatar_url || null };
+
       if (otherUserIds.length > 0) {
-        const { data: otherProfiles, error: pErr } = await supabase
+        // We want avatar_url too, but that column only exists AFTER db/08 is run.
+        // Asking for a missing column makes PostgREST error and would break the
+        // whole fetch. So we try WITH avatar_url first; if that fails we retry
+        // with just display_name (names keep working, photos stay as initials).
+        let otherProfiles = null;
+        const withAvatar = await supabase
           .from('profiles')
-          .select('id, display_name')
+          .select('id, display_name, avatar_url')
           .in('id', otherUserIds);
 
-        if (pErr) throw pErr;
-        (otherProfiles || []).forEach(p => { profilesMap[p.id] = p.display_name; });
+        if (withAvatar.error) {
+          // Most likely the avatar_url column doesn't exist yet (db/08 not run).
+          // Fall back to the original name-only query so reads never break.
+          const nameOnly = await supabase
+            .from('profiles')
+            .select('id, display_name')
+            .in('id', otherUserIds);
+          if (nameOnly.error) throw nameOnly.error;
+          otherProfiles = nameOnly.data;
+        } else {
+          otherProfiles = withAvatar.data;
+        }
+
+        (otherProfiles || []).forEach(p => {
+          profilesMap[p.id] = p.display_name;
+          // avatar_url is undefined before db/08 → store null (Avatar shows initials).
+          avatarMap[p.id] = p.avatar_url || null;
+        });
       }
 
       // 4. Load all expenses for all groups in one query.
@@ -322,12 +349,17 @@ export function useExpenseStore(userId, profile) {
         // can tell apart real connected members from ghost members without
         // knowing about UUIDs.
         const memberMeta = {};
+        // Per-member avatar map: display name → avatar_url (or null).
+        // Real members look up their photo by user_id; ghosts have no account
+        // so they get null and the UI falls back to initials.
+        const memberAvatars = {};
         members.forEach(m => {
           const displayName = memberDisplayName(m, profilesMap);
           memberMeta[displayName] = {
             isGhost:  m.ghost_name !== null && m.ghost_name !== undefined,
             memberId: m.id,
           };
+          memberAvatars[displayName] = m.user_id ? (avatarMap[m.user_id] || null) : null;
         });
 
         return {
@@ -347,6 +379,9 @@ export function useExpenseStore(userId, profile) {
           // Per-member metadata for the UI (ghost badge, etc.).
           // Shape: { [displayName]: { isGhost: bool, memberId: uuid } }
           _memberMeta: memberMeta,
+          // Per-member avatar URLs for the UI. Shape: { [displayName]: url|null }.
+          // Ghosts and members without a photo are null → Avatar shows initials.
+          _memberAvatars: memberAvatars,
         };
       });
 

@@ -19,6 +19,7 @@ import { UserPlus, Check, X, Clock, Users, Mail, ChevronDown, ChevronUp } from '
 import { supabase } from '../supabaseClient.js';
 import { useAuth } from './AuthProvider.jsx';
 import { useConnections } from './useConnections.js';
+import Avatar from '../ui/Avatar.jsx';
 
 // ---- Small shared UI pieces ----
 
@@ -279,9 +280,12 @@ function AcceptedList({ accepted, currentUserId }) {
         const other = c.requester === currentUserId ? c.addressee_profile : c.requester_profile;
         return (
           <li key={c.id} className="flex items-center gap-3 bg-white border border-stone-200 rounded-xl px-4 py-3">
-            <div className="w-8 h-8 rounded-full bg-stone-100 flex items-center justify-center text-stone-600 text-sm font-semibold shrink-0">
-              {(other?.display_name || other?.email || '?')[0].toUpperCase()}
-            </div>
+            {/* Photo when set (avatar_url comes from useConnections), else initials. */}
+            <Avatar
+              name={other?.display_name || other?.email}
+              url={other?.avatar_url}
+              size={32}
+            />
             <div className="min-w-0">
               <p className="text-sm font-medium text-stone-800 truncate">
                 {other?.display_name || other?.email || 'Unknown user'}

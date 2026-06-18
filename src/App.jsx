@@ -9,6 +9,7 @@ import { useAuth } from './auth/AuthProvider.jsx';
 import { useConnections } from './auth/useConnections.js';
 import { useExpenseStore } from './data/store.js';
 import { parseCsv, PROVIDER_PRESETS, buildExpenses } from './data/csv.js';
+import Avatar from './ui/Avatar.jsx';
 
 // Feature flag: receipt/statement scanning (AI vision) is HIDDEN for now while we
 // sort out a reliable vision API (Gemini free tier kept hitting quota limits).
@@ -1113,19 +1114,18 @@ function GroupCard({ group, myName, onOpen }) {
         )}
       </div>
 
-      {/* Member avatars: initials circles (AVATAR SEAM below) */}
+      {/* Member avatars: profile photo when available, else initials.
+          group._memberAvatars maps display name → photo URL (null for ghosts /
+          no photo). Before db/08 the map is empty → Avatar shows initials. */}
       <div className="flex items-center">
         {shown.map((p, i) => (
-          // AVATAR SEAM: profile photos aren't available yet, so we render a
-          // circle with initials. When photos exist, replace the inner text
-          // with <img src={photoUrl} ... /> (keep the same circle wrapper).
-          <span
+          <Avatar
             key={p + i}
-            title={p}
-            className="w-7 h-7 -ml-1.5 first:ml-0 rounded-full bg-indigo-100 text-indigo-700 text-[11px] font-semibold ring-2 ring-white flex items-center justify-center"
-          >
-            {initialsFromName(p)}
-          </span>
+            name={p}
+            url={(group._memberAvatars || {})[p]}
+            size={28}
+            className="-ml-1.5 first:ml-0 ring-2 ring-white"
+          />
         ))}
         {overflow > 0 && (
           <span className="w-7 h-7 -ml-1.5 rounded-full bg-stone-200 text-stone-600 text-[11px] font-semibold ring-2 ring-white flex items-center justify-center">
@@ -2003,6 +2003,7 @@ function MembersPanel({ group, myName, onAddPerson, onRequestRemove, onLinkGhost
 
   const people = group?.people || [];
   const memberMeta = group?._memberMeta || {};
+  const memberAvatars = group?._memberAvatars || {};
 
   return (
     <div>
@@ -2023,13 +2024,16 @@ function MembersPanel({ group, myName, onAddPerson, onRequestRemove, onLinkGhost
             return (
               <div key={personName} className="px-3 py-2.5">
                 <div className="flex items-center gap-3">
-                  {/* Avatar icon */}
-                  <div className="w-8 h-8 rounded-full bg-stone-100 flex items-center justify-center shrink-0">
-                    {isGhost
-                      ? <Ghost className="w-4 h-4 text-stone-400" />
-                      : <User className="w-4 h-4 text-stone-500" />
-                    }
-                  </div>
+                  {/* Avatar: real members show their photo (or initials);
+                      ghosts keep the little ghost icon so they read as "no
+                      account yet". memberAvatars is empty before db/08. */}
+                  {isGhost ? (
+                    <div className="w-8 h-8 rounded-full bg-stone-100 flex items-center justify-center shrink-0">
+                      <Ghost className="w-4 h-4 text-stone-400" />
+                    </div>
+                  ) : (
+                    <Avatar name={personName} url={memberAvatars[personName]} size={32} />
+                  )}
 
                   {/* Name and badges */}
                   <div className="flex-1 min-w-0">
