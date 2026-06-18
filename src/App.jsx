@@ -10,6 +10,12 @@ import { useConnections } from './auth/useConnections.js';
 import { useExpenseStore } from './data/store.js';
 import { parseCsv, PROVIDER_PRESETS, buildExpenses } from './data/csv.js';
 
+// Feature flag: receipt/statement scanning (AI vision) is HIDDEN for now while we
+// sort out a reliable vision API (Gemini free tier kept hitting quota limits).
+// The whole scan code path is kept intact — flip this to true to re-enable the
+// "Scan" button + tab once a working GEMINI_API_KEY (or other provider) is set.
+const SCAN_ENABLED = false;
+
 /* ============ Categories & auto-categorization ============ */
 
 const CATEGORIES = [
@@ -900,6 +906,7 @@ export default function App() {
       {/* Floating action buttons: Import CSV (secondary) + Add expense (primary).
           Both only appear here in the normal state where a group exists. */}
       <div className="fixed bottom-6 right-6 z-30 flex flex-col items-end gap-3">
+        {SCAN_ENABLED && (
         <button
           onClick={() => { setImportStartMode('scan'); setShowImport(true); }}
           className="w-12 h-12 rounded-full bg-white border border-stone-300 text-stone-700 shadow-md hover:bg-stone-50 active:scale-95 transition flex items-center justify-center"
@@ -908,6 +915,7 @@ export default function App() {
         >
           <ScanLine className="w-5 h-5" />
         </button>
+        )}
         <button
           onClick={() => { setImportStartMode('csv'); setShowImport(true); }}
           className="w-12 h-12 rounded-full bg-white border border-stone-300 text-stone-700 shadow-md hover:bg-stone-50 active:scale-95 transition flex items-center justify-center"
@@ -3250,7 +3258,10 @@ function ImportModal({ people, isSolo, myName, startMode = 'csv', onClose, onImp
             </div>
           ) : (
             <>
-              {/* ── Source picker: CSV file OR Scan a photo/PDF ──────────── */}
+              {/* ── Source picker: CSV file OR Scan a photo/PDF ──────────────
+                  The Scan tab is hidden while SCAN_ENABLED is false, so the
+                  modal is CSV-only for now. */}
+              {SCAN_ENABLED && (
               <div className="grid grid-cols-2 gap-2">
                 <button
                   onClick={() => setMode('csv')}
@@ -3269,6 +3280,7 @@ function ImportModal({ people, isSolo, myName, startMode = 'csv', onClose, onImp
                   <ScanLine className="w-4 h-4" /> Scan
                 </button>
               </div>
+              )}
 
               {/* ── CSV mode: Step 1 file picker ─────────────────────────── */}
               {mode === 'csv' && (
