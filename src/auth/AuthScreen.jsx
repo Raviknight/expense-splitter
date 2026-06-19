@@ -41,16 +41,16 @@ function ErrorMsg({ msg }) {
 const FEATURES = [
   {
     icon: Users,
-    text: 'Split with friends in real time',
+    text: 'Split bills, rent, or a whole trip',
   },
   {
     icon: Smartphone,
     // "ghosts" = the app's term for people added without an account
-    text: 'Add people without accounts',
+    text: 'Add people who aren’t on the app',
   },
   {
     icon: WifiOff,
-    text: 'Works on your phone, offline-ready',
+    text: 'Works offline, syncs across devices',
   },
 ];
 
@@ -371,23 +371,20 @@ export default function AuthScreen() {
 
       {/* ── Hero / title area ── */}
       <div className="mb-8 text-center">
-        {/* App mark — indigo background with a split/receipt icon */}
-        <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-indigo-600 mb-4 shadow-md">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            {/* Receipt icon drawn inline — no extra import needed */}
-            <polyline points="1 6 1 22 23 22 23 6" />
-            <path d="M1 6l11-4 11 4" />
-            <line x1="8" y1="12" x2="16" y2="12" />
-            <line x1="8" y1="16" x2="16" y2="16" />
+        {/* App mark — dark square with the indigo "S" monogram (matches the app icon) */}
+        <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-stone-900 mb-4 shadow-md">
+          <svg width="40" height="40" viewBox="0 0 100 100" aria-hidden="true">
+            <path d="M72 34 C56 24 34 26 32 42 C30.5 54 48 56 55 59 C66 63 70 72 64 78 C56 88 36 86 27 76"
+              fill="none" stroke="#818cf8" strokeWidth="11" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </div>
 
         {/* App name */}
         <h1 className="text-3xl font-bold text-stone-900 tracking-tight">Splitab</h1>
 
-        {/* Tagline — value proposition in one line */}
+        {/* Tagline — value proposition in one line (any shared expense, not just trips) */}
         <p className="text-sm text-stone-500 mt-2 max-w-xs mx-auto leading-relaxed">
-          Split trip expenses with anyone — even friends who aren't on the app.
+          Split expenses with anyone — trips, rent, dinners, anything.
         </p>
 
         {/* Three feature highlights — compact icon + text rows */}
