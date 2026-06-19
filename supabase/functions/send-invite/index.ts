@@ -91,13 +91,13 @@ Deno.serve(async (req) => {
         <tr><td align="center">
           <table width="100%" style="max-width:460px;background:#fff;border:1px solid #e7e5e4;border-radius:16px;padding:32px;">
             <tr><td align="center" style="padding-bottom:16px;">
-              <div style="width:48px;height:48px;background:#4f46e5;border-radius:12px;display:inline-block;line-height:48px;color:#fff;font-size:22px;">🧾</div>
+              <div style="width:48px;height:48px;background:#1c1917;border-radius:12px;display:inline-block;line-height:48px;color:#818cf8;font-size:26px;font-weight:700;font-family:Georgia,serif;">S</div>
             </td></tr>
             <tr><td align="center" style="font-size:20px;font-weight:600;color:#1c1917;padding-bottom:8px;">
               You're invited to Splitab
             </td></tr>
             <tr><td align="center" style="font-size:14px;color:#78716c;line-height:1.6;padding-bottom:24px;">
-              <strong>${escapeHtml(inviter)}</strong> added you to <strong>${escapeHtml(group)}</strong> and wants to split trip expenses with you. Sign up (free) to see what you're owed.
+              <strong>${escapeHtml(inviter)}</strong> added you to <strong>${escapeHtml(group)}</strong> and wants to split expenses with you. Sign up (free) to see what you're owed and settle up easily.
             </td></tr>
             <tr><td align="center" style="padding-bottom:24px;">
               <a href="${inviteLink}" style="background:#4f46e5;color:#fff;text-decoration:none;font-size:15px;font-weight:500;padding:12px 28px;border-radius:12px;display:inline-block;">
