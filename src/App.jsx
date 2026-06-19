@@ -452,6 +452,91 @@ export default function App() {
   const [importStartMode, setImportStartMode] = useState('csv');
   const [confirmDeleteGroup, setConfirmDeleteGroup] = useState(null);
 
+  // ── Invite auto-accept notice ─────────────────────────────────────────────
+  // A small toast shown after we automatically accept an invite the user
+  // arrived with. Shape: { kind: 'success' | 'error', text: string } or null.
+  const [inviteNotice, setInviteNotice] = useState(null);
+  // Guard so the auto-accept runs at most once per page load, even though the
+  // effect below re-runs whenever `user` / `actions` change identity.
+  const inviteHandledRef = useRef(false);
+
+  // When the user becomes available, check for a pending invite token that
+  // main.jsx stashed in localStorage (it survives the magic-link redirect).
+  // If found: remove it immediately (so it only runs once even across reloads),
+  // accept it, and show a success or error notice.
+  useEffect(() => {
+    // Don't run until we actually have a signed-in user.
+    if (!user?.id) return;
+    // Only ever run once per load.
+    if (inviteHandledRef.current) return;
+
+    let token = null;
+    try {
+      token = localStorage.getItem('slitab.pendingInvite');
+      if (token) {
+        // Remove right away so a reload or a second effect run can't re-accept.
+        localStorage.removeItem('slitab.pendingInvite');
+      }
+    } catch (e) {
+      // localStorage may be unavailable; nothing to do.
+      token = null;
+    }
+    if (!token) return;
+
+    // Mark handled BEFORE the async call so re-renders during the await
+    // can't kick off a second accept.
+    inviteHandledRef.current = true;
+
+    (async () => {
+      const result = await actions.acceptInvite(token);
+      if (result?.ok) {
+        const who = result.inviter || 'your friend';
+        const text = `You're connected with ${who}` +
+          (result.group ? ` and added to ${result.group}` : '');
+        setInviteNotice({ kind: 'success', text });
+      } else {
+        setInviteNotice({
+          kind: 'error',
+          text: result?.message || 'Could not accept the invite.',
+        });
+      }
+    })();
+  }, [user?.id, actions]);
+
+  // Auto-dismiss the invite notice after a few seconds (the user can also
+  // close it with the X). Only arms a timer while a notice is showing.
+  useEffect(() => {
+    if (!inviteNotice) return;
+    const t = setTimeout(() => setInviteNotice(null), 6000);
+    return () => clearTimeout(t);
+  }, [inviteNotice]);
+
+  // The toast element, rendered in each view so it shows on home and group
+  // screens alike. Fixed to the top so it floats above the page content.
+  const inviteNoticeEl = inviteNotice && (
+    <div className="fixed top-3 inset-x-0 z-50 flex justify-center px-4 pointer-events-none">
+      <div
+        className={`pointer-events-auto flex items-center gap-3 max-w-md w-full px-4 py-2.5 rounded-xl border shadow-sm text-sm ${
+          inviteNotice.kind === 'success'
+            ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+            : 'bg-rose-50 border-rose-200 text-rose-800'
+        }`}
+      >
+        {inviteNotice.kind === 'success'
+          ? <Check className="w-4 h-4 shrink-0 text-emerald-600" />
+          : <AlertCircle className="w-4 h-4 shrink-0 text-rose-500" />}
+        <div className="flex-1">{inviteNotice.text}</div>
+        <button
+          onClick={() => setInviteNotice(null)}
+          aria-label="Dismiss"
+          className="shrink-0 opacity-60 hover:opacity-100"
+        >
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+    </div>
+  );
+
   // ── Loading state ─────────────────────────────────────────────────────────
   if (loading) {
     return (
@@ -488,6 +573,7 @@ export default function App() {
   if (!loading && groups.length === 0) {
     return (
       <div className="min-h-screen bg-[#FAFAF7] flex items-center justify-center p-6">
+        {inviteNoticeEl}
         <div className="max-w-sm w-full text-center">
           <div className="text-5xl mb-4">🗂️</div>
           <div className="font-semibold text-stone-900 text-lg mb-2">No groups yet</div>
@@ -528,11 +614,18 @@ export default function App() {
               onLinkGhost={async (groupId, ghostName, userId) => {
                 await actions.linkGhostToUser(groupId, ghostName, userId);
               }}
-              onInviteGhost={async (_groupId, email, groupName, _ghostName) => {
+              onInviteGhost={async (groupId, email, groupName, ghostName) => {
+                // Tie the invite to this exact ghost so accept_invite can
+                // auto-link it: look up the ghost's group_members.id from the
+                // group's display-name → member-id map.
+                const g = groups.find(gr => gr.id === groupId);
+                const ghostMemberId = g?._nameToMemberId?.[ghostName] || null;
                 return actions.inviteGhostByEmail({
                   email,
                   groupName,
                   inviterName: profile?.display_name || 'A friend',
+                  groupId,
+                  ghostMemberId,
                 });
               }}
             />
@@ -716,6 +809,8 @@ export default function App() {
   // helper closures (switchGroup, deleteGroup…) are defined so we can pass them.
   if (view === 'home') {
     return (
+      <>
+      {inviteNoticeEl}
       <HomeScreen
         groups={groups}
         myName={profile?.display_name || 'Me'}
@@ -750,11 +845,17 @@ export default function App() {
             onLinkGhost={async (groupId, ghostName, userId) => {
               await actions.linkGhostToUser(groupId, ghostName, userId);
             }}
-            onInviteGhost={async (_groupId, email, groupName, _ghostName) => {
+            onInviteGhost={async (groupId, email, groupName, ghostName) => {
+              // Tie the invite to this exact ghost so accept_invite can
+              // auto-link it (display-name → group_members.id).
+              const g = groups.find(gr => gr.id === groupId);
+              const ghostMemberId = g?._nameToMemberId?.[ghostName] || null;
               return actions.inviteGhostByEmail({
                 email,
                 groupName,
                 inviterName: profile?.display_name || 'A friend',
+                groupId,
+                ghostMemberId,
               });
             }}
           />
@@ -771,11 +872,15 @@ export default function App() {
           />
         )}
       />
+      </>
     );
   }
 
   return (
     <div className="min-h-screen bg-[#FAFAF7] text-stone-900" style={{ fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif' }}>
+
+      {/* Floating notice after auto-accepting an invite */}
+      {inviteNoticeEl}
 
       {/* Non-blocking error banner — shown when a write fails but data is loaded */}
       {error && (
@@ -960,11 +1065,17 @@ export default function App() {
           onLinkGhost={async (groupId, ghostName, userId) => {
             await actions.linkGhostToUser(groupId, ghostName, userId);
           }}
-          onInviteGhost={async (_groupId, email, groupName, _ghostName) => {
+          onInviteGhost={async (groupId, email, groupName, ghostName) => {
+            // Tie the invite to this exact ghost so accept_invite can
+            // auto-link it (display-name → group_members.id).
+            const g = groups.find(gr => gr.id === groupId);
+            const ghostMemberId = g?._nameToMemberId?.[ghostName] || null;
             return actions.inviteGhostByEmail({
               email,
               groupName,
               inviterName: profile?.display_name || 'A friend',
+              groupId,
+              ghostMemberId,
             });
           }}
         />

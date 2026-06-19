@@ -1116,17 +1116,18 @@ export function useExpenseStore(userId, profile) {
     // Returns: { ok: true }  on success
     //          { ok: false, message: string }  on failure
     //
-    // TODO(link-ghost): When the invited person signs up, the owner can use the
-    // "Link to account" flow (linkGhostToUser above) to connect the ghost row
-    // to their new real account. The invite here is only a notification — no
-    // automatic linking happens.
-    async inviteGhostByEmail({ email, groupName, inviterName }) {
+    // AUTO-CONNECT: we also pass `groupId` and `ghostMemberId` so the invite
+    // row records WHICH ghost in WHICH group this invitation is for. When the
+    // invitee later opens their link and accept_invite runs, it can connect the
+    // two users AND link that exact ghost row to their new account automatically
+    // — no manual "Link to account" step needed.
+    async inviteGhostByEmail({ email, groupName, inviterName, groupId, ghostMemberId }) {
       // Call the Edge Function. supabase.functions.invoke handles auth headers.
       // We only need to inspect `error`; the response body (data) is ignored.
       let error;
       try {
         ({ error } = await supabase.functions.invoke('send-invite', {
-          body: { email, groupName, inviterName },
+          body: { email, groupName, inviterName, groupId, ghostMemberId },
         }));
       } catch (fetchErr) {
         // The fetch itself threw — likely the function is not deployed, or a
@@ -1163,6 +1164,39 @@ export function useExpenseStore(userId, profile) {
       }
 
       return { ok: true };
+    },
+
+    // ── Accept an invite (auto-connect + auto-link the ghost) ────────────────
+    // Called once, automatically, when a signed-in user arrives from an invite
+    // link (the token was stashed in localStorage by main.jsx). It runs the
+    // db/09 `accept_invite(invite_token)` SQL function, which — as the signed-in
+    // invitee — creates the accepted connection between the two users and links
+    // the ghost row that the inviter prepared to this user's account.
+    //
+    // Like inviteGhostByEmail, this does NOT use the global error banner; the
+    // App shows a small inline notice from the returned result instead.
+    //
+    // Returns: { ok: true,  inviter, group }   on success
+    //          { ok: false, message: string }  on failure
+    async acceptInvite(token) {
+      const { data, error } = await supabase.rpc('accept_invite', {
+        invite_token: token,
+      });
+
+      // The function reports trouble two ways: a transport/SQL `error`, or a
+      // 200 response whose JSON body says { ok: false, error: '...' } (e.g. the
+      // invite was sent to a different email, or it expired). Handle both.
+      if (error || data?.ok === false) {
+        return {
+          ok: false,
+          message: data?.error || error?.message || 'Could not accept the invite.',
+        };
+      }
+
+      // Success: refetch so the newly-joined group and the new connection show
+      // up right away without needing a manual reload.
+      await fetchRef.current();
+      return { ok: true, inviter: data.inviter, group: data.group };
     },
 
     // ── Clear any error (used by retry / dismiss buttons) ────────────────────
