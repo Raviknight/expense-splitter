@@ -172,12 +172,19 @@ function computeNetBalances(people, entries) {
     const mode = e.splitMode || 'equal';
     if (e.paidBy in paid) paid[e.paidBy] += amt;
 
+    // Participants: WHO this expense is split among, frozen at creation time
+    // (store.js attaches display names). Equal/full splits use ONLY these
+    // people, so a member added to the group LATER is not retroactively pulled
+    // into old expenses. Fall back to all `people` when an expense has no
+    // participant list (legacy / pre-db-10 expenses) or somehow lists nobody.
+    const parts = (e.participants && e.participants.length) ? e.participants : people;
+
     if (mode === 'personal') {
       // Payer keeps it: they owe their own expense, nets to 0 for them.
       if (e.paidBy in owed) owed[e.paidBy] += amt;
     } else if (mode === 'full') {
-      // Everyone except the payer owes the full amount.
-      people.forEach(p => { if (p !== e.paidBy) owed[p] += amt; });
+      // Every PARTICIPANT except the payer owes the full amount.
+      parts.forEach(p => { if (p !== e.paidBy && p in owed) owed[p] += amt; });
     } else if (mode === 'custom') {
       // Custom: the per-person amounts were typed by the user and live in
       // e.splitDetail ({ name: amount }). Each named person owes exactly their
@@ -188,9 +195,11 @@ function computeNetBalances(people, entries) {
         if (name in owed) owed[name] += Number(share || 0);
       });
     } else {
-      // Equal: divide evenly among ALL people.
-      const share = amt / people.length;
-      people.forEach(p => { owed[p] += share; });
+      // Equal: divide evenly among the PARTICIPANTS only. Guard against an
+      // empty list (would divide by zero) by falling back to all people.
+      const split = parts.length ? parts : people;
+      const share = amt / split.length;
+      split.forEach(p => { if (p in owed) owed[p] += share; });
     }
   });
 
@@ -682,10 +691,14 @@ export default function App() {
       }
       const mode = e.splitMode || 'equal';
       paid[e.paidBy] = (paid[e.paidBy] || 0) + amt;
+      // Participants frozen at creation (display names from store.js). Equal/
+      // full splits use only these people; fall back to all `people` for legacy
+      // expenses with no participant list.
+      const parts = (e.participants && e.participants.length) ? e.participants : people;
       if (mode === 'personal') {
         owed[e.paidBy] = (owed[e.paidBy] || 0) + amt;
       } else if (mode === 'full') {
-        people.forEach(p => { if (p !== e.paidBy) owed[p] = (owed[p] || 0) + amt; });
+        parts.forEach(p => { if (p !== e.paidBy) owed[p] = (owed[p] || 0) + amt; });
         shared += amt;
       } else if (mode === 'custom') {
         // Custom: each person owes exactly the amount the user typed for them,
@@ -698,8 +711,11 @@ export default function App() {
         });
         shared += amt;
       } else {
-        const share = amt / people.length;
-        people.forEach(p => { owed[p] = (owed[p] || 0) + share; });
+        // Equal: divide among PARTICIPANTS only. Guard against an empty list
+        // (divide-by-zero) by falling back to all people.
+        const split = parts.length ? parts : people;
+        const share = amt / split.length;
+        split.forEach(p => { owed[p] = (owed[p] || 0) + share; });
         shared += amt;
       }
     });

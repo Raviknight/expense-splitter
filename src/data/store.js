@@ -320,6 +320,25 @@ export function useExpenseStore(userId, profile) {
               ui.splitDetail = splitDetail;
             }
 
+            // Participants: WHO this expense is split among, frozen when the
+            // expense was created. The DB stores `participants` as an array of
+            // group_members ids (added by db/10). We translate those ids into
+            // display NAMES here, dropping any id that's no longer a member
+            // (someone removed from the group). If the column is missing/null/
+            // empty (pre-db-10 expenses, or before db/10 is run), we fall back
+            // to the group's full member list so old expenses behave exactly as
+            // they did before — split among everyone currently in the group.
+            if (Array.isArray(e.participants) && e.participants.length > 0) {
+              const partNames = e.participants
+                .map(memberId => memberIdToName[memberId])
+                .filter(Boolean);
+              // If, after filtering out departed members, nobody is left, fall
+              // back to all people (never leave an expense with zero participants).
+              ui.participants = partNames.length > 0 ? partNames : [...people];
+            } else {
+              ui.participants = [...people];
+            }
+
             return ui;
           });
 
@@ -703,6 +722,18 @@ export function useExpenseStore(userId, profile) {
         // Per-person amounts for a custom split (or null for the other modes).
         split_detail: splitDetailForDb,
       };
+
+      // Participants: freeze WHO this expense is split among.
+      //  • New expense (insert): snapshot the group's CURRENT member ids
+      //    (every real + ghost member present right now). After this, adding a
+      //    new member to the group will NOT pull them into this old expense.
+      //  • Editing an existing expense (update): do NOT touch participants — we
+      //    omit the column from the update so the original snapshot is kept
+      //    (changing an amount or split mode shouldn't re-add members who joined
+      //    later). See the update branch below where we strip it from the row.
+      if (!isUpdate) {
+        row.participants = Object.values(group._nameToMemberId);
+      }
 
       const kind = isUpdate ? 'expense.update' : 'expense.insert';
       const op   = { opId: crypto.randomUUID(), kind, payload: row, groupId };
