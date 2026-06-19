@@ -74,6 +74,13 @@ begin
       'This invite was sent to a different email address.');
   end if;
 
+  -- Safety net: make sure the accepting user has a profile row. Normally the
+  -- signup trigger creates one, but if an account is missing it the connection's
+  -- foreign key (addressee -> profiles.id) would fail. Create it if absent.
+  insert into profiles (id, display_name, email)
+    values (me, coalesce(nullif(split_part(my_email, '@', 1), ''), 'User'), my_email)
+    on conflict (id) do nothing;
+
   -- 1) Accepted connection between inviter and the new user.
   insert into connections (requester, addressee, status)
     values (inv.inviter, me, 'accepted')
@@ -98,6 +105,18 @@ end;
 $$;
 
 grant execute on function accept_invite(text) to authenticated;
+
+-- ------------------------------------------------------------
+-- BACKFILL: create a profile for any existing account that is missing one.
+-- (Normally the signup trigger handles this; this repairs accounts created
+-- before/around setup so connections + invites work for everyone.)
+-- ------------------------------------------------------------
+insert into profiles (id, display_name, email)
+  select u.id,
+         coalesce(nullif(split_part(u.email, '@', 1), ''), 'User'),
+         u.email
+  from auth.users u
+  where not exists (select 1 from profiles p where p.id = u.id);
 
 -- Done. Re-deploy the send-invite Edge Function (it now creates an invite row),
 -- and the app will auto-connect invitees when they sign up.
