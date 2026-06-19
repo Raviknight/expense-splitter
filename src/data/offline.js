@@ -107,6 +107,19 @@ export function applyOpToGroups(groups, op) {
     // Work on a copy of the expenses array.
     let expenses = [...g.expenses];
 
+    // Helper: turn a DB `participants` id array into display NAMES, mirroring the
+    // read layer in store.js. Falls back to ALL current member names when the
+    // payload has no participants (legacy/personal) so the balance math (which
+    // splits among `e.participants`) stays correct in the optimistic view too.
+    const allNames = g._memberIdToName ? Object.values(g._memberIdToName) : [];
+    const participantNames = (ids) => {
+      if (Array.isArray(ids) && ids.length > 0) {
+        const names = ids.map(id => g._memberIdToName?.[id]).filter(Boolean);
+        return names.length > 0 ? names : [...allNames];
+      }
+      return [...allNames];
+    };
+
     if (kind === 'expense.insert') {
       // Build the same shape fetchAll's .map(e => ...) produces.
       const uiExpense = {
@@ -118,6 +131,8 @@ export function applyOpToGroups(groups, op) {
         paidBy:    g._memberIdToName[payload.paid_by] || 'Unknown',
         splitMode: payload.split_mode,
         note:      payload.note || '',
+        // Who this expense is split among (names), so balances are right now.
+        participants: participantNames(payload.participants),
         // Mark as a local-only row so we can tell it apart if needed.
         _offline:  true,
       };
@@ -136,6 +151,12 @@ export function applyOpToGroups(groups, op) {
           paidBy:    g._memberIdToName[payload.paid_by] || e.paidBy,
           splitMode: payload.split_mode,
           note:      payload.note || '',
+          // If the save included participants (equal/full selection, or custom),
+          // reflect the new set; otherwise keep what the expense already had
+          // (matches the store: an update omits the column to preserve it).
+          participants: ('participants' in payload)
+            ? participantNames(payload.participants)
+            : e.participants,
           _offline:  true,
         };
       });

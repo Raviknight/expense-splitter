@@ -723,17 +723,44 @@ export function useExpenseStore(userId, profile) {
         split_detail: splitDetailForDb,
       };
 
-      // Participants: freeze WHO this expense is split among.
-      //  • New expense (insert): snapshot the group's CURRENT member ids
-      //    (every real + ghost member present right now). After this, adding a
-      //    new member to the group will NOT pull them into this old expense.
-      //  • Editing an existing expense (update): do NOT touch participants — we
-      //    omit the column from the update so the original snapshot is kept
-      //    (changing an amount or split mode shouldn't re-add members who joined
-      //    later). See the update branch below where we strip it from the row.
-      if (!isUpdate) {
+      // Participants: WHO this expense is split among (a list of group_members
+      // ids). We decide them in priority order:
+      //
+      //  1. The user picked explicitly in the "Split among" selector
+      //     (equal/full): uiExpense.participants is an array of display NAMES.
+      //     Translate names→ids and store exactly those — on INSERT AND UPDATE
+      //     alike, so editing an expense to fix its participants actually saves.
+      //
+      //  2. Custom split: nobody used the picker, but the per-person split_detail
+      //     already says who's involved (the people with amounts). Record those
+      //     same member ids as the participants.
+      //
+      //  3. Fallback (personal, or no selection at all):
+      //       • INSERT → snapshot the group's CURRENT member ids (every real +
+      //         ghost member present right now). Adding a member later will NOT
+      //         pull them into this old expense.
+      //       • UPDATE → leave participants untouched: we omit the column from
+      //         the update below so the original snapshot is preserved.
+      let participantIds = null; // null = "don't set it" (handled per-branch)
+      if (Array.isArray(uiExpense.participants) && uiExpense.participants.length) {
+        // 1. Explicit selection (names → ids). Drop any name we can't resolve.
+        participantIds = uiExpense.participants
+          .map(name => group._nameToMemberId[name])
+          .filter(Boolean);
+      } else if (uiExpense.splitMode === 'custom' && splitDetailForDb) {
+        // 2. Custom: the ids that have an amount in split_detail.
+        participantIds = Object.keys(splitDetailForDb);
+      }
+
+      if (participantIds && participantIds.length) {
+        // Cases 1 & 2: set on both insert and update.
+        row.participants = participantIds;
+      } else if (!isUpdate) {
+        // 3a. Fallback on insert: snapshot all current members.
         row.participants = Object.values(group._nameToMemberId);
       }
+      // 3b. Fallback on update: do nothing here; the update branch below strips
+      //     the column when it's absent, preserving the original snapshot.
 
       const kind = isUpdate ? 'expense.update' : 'expense.insert';
       const op   = { opId: crypto.randomUUID(), kind, payload: row, groupId };

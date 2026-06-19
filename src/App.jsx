@@ -2794,6 +2794,39 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
   const [saving, setSaving] = useState(false);
   const nameRef = useRef(null);
 
+  // ── "Split among" state (only used for the equal / full split modes) ─────────
+  // Which members this expense is split among. We keep a plain map
+  // { personName: true/false }. Defaults:
+  //   • Editing an existing expense → start from its frozen participants (names),
+  //     falling back to "everyone" if the expense has none (legacy rows).
+  //   • A brand-new expense → everyone is checked.
+  // Personal (payer only) and Custom (its per-person rows already say who's in)
+  // don't use this — we hide the section for those two modes.
+  const [splitAmong, setSplitAmong] = useState(() => {
+    const start = {};
+    // The set of names to pre-check. expense.participants is an array of NAMES
+    // attached by the read layer (or undefined on a fresh add).
+    const initial = (expense?.participants && expense.participants.length)
+      ? expense.participants
+      : people;
+    people.forEach(p => { start[p] = initial.includes(p); });
+    return start;
+  });
+
+  // The names currently checked, in the people order (used for the guard + save).
+  const splitAmongNames = people.filter(p => splitAmong[p]);
+
+  // Toggle one person in/out of the split.
+  const toggleSplitAmong = (p) =>
+    setSplitAmong(s => ({ ...s, [p]: !s[p] }));
+
+  // "All" convenience: check everyone at once.
+  const selectAllSplitAmong = () => {
+    const next = {};
+    people.forEach(p => { next[p] = true; });
+    setSplitAmong(next);
+  };
+
   // ── Custom split state ──────────────────────────────────────────────────────
   // customMode: 'amount' (people type currency amounts) or 'percent' (they type
   //   percentages that we convert to amounts on save).
@@ -2897,10 +2930,19 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
     setCustomVals(next);
   };
 
+  // Does the active split mode use the "Split among" picker? Only equal & full.
+  // (personal = payer only; custom = its own per-person rows decide who's in.)
+  const usesSplitAmong = !isSolo && (splitMode === 'equal' || splitMode === 'full');
+
+  // For equal/full we require at least one person to split among.
+  const splitAmongOk = !usesSplitAmong || splitAmongNames.length > 0;
+
   const valid =
     name.trim() && parseFloat(amount) > 0 && date &&
     // For a custom split the per-person values must add up correctly.
-    customComplete;
+    customComplete &&
+    // For equal/full at least one participant must be picked.
+    splitAmongOk;
 
   const save = async () => {
     if (!valid || saving) return;
@@ -2921,6 +2963,13 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
       // Only custom splits carry per-person amounts; every other mode leaves
       // this undefined so the store stores null (no per-person detail).
       splitDetail: finalMode === 'custom' ? buildSplitDetail() : undefined,
+      // For equal/full, pass the chosen participant NAMES so the store can save
+      // exactly who this expense is split among. For personal/custom we leave
+      // this undefined and let the store derive it (custom → people with
+      // amounts; personal/none → all members on insert, preserved on update).
+      participants: (finalMode === 'equal' || finalMode === 'full')
+        ? splitAmongNames
+        : undefined,
     });
     setSaving(false);
   };
@@ -3072,6 +3121,52 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
                   {splitMode === 'personal' && `Just ${paidBy}'s expense. No one owes anyone for this.`}
                   {splitMode === 'custom' && "Type each person's share below. Leave someone blank/0 to leave them out."}
                 </div>
+
+                {/* ── Split among (who's included) ─────────────────────────────
+                 *  Shown only for the equal & full modes. One toggle chip per
+                 *  member: tap to include/exclude them from this expense. This
+                 *  lets you fix an expense where someone was wrongly included.
+                 *  Custom hides this (its amount rows already say who's in);
+                 *  personal hides it (it's just the payer). */}
+                {usesSplitAmong && (
+                  <div className="mt-3 rounded-lg border border-stone-200 bg-stone-50 p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-xs font-medium text-stone-600">Split among</div>
+                      <button
+                        type="button"
+                        onClick={selectAllSplitAmong}
+                        className="text-xs font-medium text-indigo-600 hover:text-indigo-800"
+                      >
+                        All
+                      </button>
+                    </div>
+                    {/* A chip per member; indigo when included, plain when not. */}
+                    <div className="flex flex-wrap gap-2">
+                      {people.map(p => (
+                        <button
+                          key={p}
+                          type="button"
+                          onClick={() => toggleSplitAmong(p)}
+                          aria-pressed={!!splitAmong[p]}
+                          className={`px-3 py-1.5 rounded-full border text-xs font-medium transition truncate max-w-[10rem] ${
+                            splitAmong[p]
+                              ? 'bg-indigo-600 text-white border-indigo-600'
+                              : 'bg-white border-stone-300 text-stone-600 hover:border-stone-500'
+                          }`}
+                        >
+                          {p}
+                        </button>
+                      ))}
+                    </div>
+                    {/* Min-one guard: Save is disabled (via `valid`) until at
+                     *  least one person is picked; this hint explains why. */}
+                    {splitAmongNames.length === 0 && (
+                      <div className="text-amber-700 text-[11px] mt-2">
+                        Pick at least one person to split among.
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* ── Custom split editor ─────────────────────────────────────
                  *  One numeric input per person, plus an "amount vs %" toggle and
