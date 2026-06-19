@@ -450,6 +450,19 @@ export default function App() {
 
   const [editing, setEditing] = useState(null);
   const [showGroups, setShowGroups] = useState(false);
+  // How the GroupsModal should OPEN. Most entry points just want the normal
+  // list ({ view: 'list' }). A "Create a group" button opens it on the form
+  // ({ view: 'form' }); the in-group "People" button opens it straight on the
+  // members panel ({ view: 'members', group }). We keep `showGroups` as the
+  // simple on/off flag and read this alongside it when rendering the modal.
+  const [groupsStart, setGroupsStart] = useState({ view: 'list', group: null });
+  // Open the groups modal on a chosen view. Call openGroups() for the list,
+  // openGroups('form') to create a new group, or
+  // openGroups('members', group) to manage that group's people.
+  const openGroups = (view = 'list', group = null) => {
+    setGroupsStart({ view, group });
+    setShowGroups(true);
+  };
   // Which screen are we on?
   //   'home'  → the groups dashboard (cards for every group). The app opens here.
   //   'group' → the detail UI for the one selected (active) group.
@@ -590,7 +603,7 @@ export default function App() {
             Create your first group to start tracking shared expenses.
           </div>
           <button
-            onClick={() => setShowGroups(true)}
+            onClick={() => openGroups('form')}
             className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700"
           >
             <Plus className="w-4 h-4" />
@@ -604,6 +617,8 @@ export default function App() {
               activeGroupId={activeGroupId}
               myName={profile?.display_name || 'Me'}
               profile={profile}
+              startView={groupsStart.view}
+              startGroup={groupsStart.group}
               onClose={() => setShowGroups(false)}
               onSwitch={(id) => { actions.switchGroup(id); setShowGroups(false); }}
               onCreateGroup={async (name, type, extraPeople, currency) => {
@@ -835,13 +850,15 @@ export default function App() {
         error={error}
         onClearError={actions.clearError}
         onOpenGroup={switchGroup}
-        onNewGroup={() => setShowGroups(true)}
+        onNewGroup={() => openGroups('form')}
         groupsModal={showGroups && (
           <GroupsModal
             groups={groups}
             activeGroupId={activeGroupId}
             myName={profile?.display_name || 'Me'}
             profile={profile}
+            startView={groupsStart.view}
+            startGroup={groupsStart.group}
             onClose={() => setShowGroups(false)}
             onSwitch={switchGroup}
             onCreateGroup={async (name, type, extraPeople, currency) => {
@@ -942,7 +959,7 @@ export default function App() {
             All groups
           </button>
           <div className="flex items-start justify-between gap-3">
-            <button onClick={() => setShowGroups(true)} className="text-left min-w-0 group">
+            <button onClick={() => openGroups('list')} className="text-left min-w-0 group">
               <div className="text-[11px] uppercase tracking-[0.18em] text-stone-500 font-medium flex items-center gap-1">
                 {isSolo ? <><User className="w-3 h-3" /> Personal</> : <><Users className="w-3 h-3" /> {people.join(' & ')}</>}
               </div>
@@ -951,9 +968,27 @@ export default function App() {
                 <ChevronDown className="w-4 h-4 text-stone-400 group-hover:text-stone-700 shrink-0" />
               </div>
             </button>
-            <div className="text-right shrink-0">
-              <div className="text-[11px] uppercase tracking-[0.14em] text-stone-500">Total</div>
-              <div className="text-lg font-semibold tabular-nums">{fmt(total)}</div>
+            <div className="flex items-center gap-2 shrink-0">
+              {/* People button: opens the members panel for THIS group in one
+                  tap (no backing out to the groups list). Only shown for shared
+                  groups — a solo group has no one to manage. On wider screens we
+                  show the "People" label; on phones the icon alone keeps it
+                  compact. */}
+              {!isSolo && (
+                <button
+                  onClick={() => openGroups('members', activeGroup)}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-stone-300 text-stone-700 text-sm font-medium hover:bg-stone-100"
+                  aria-label="Manage people in this group"
+                  title="Manage people in this group"
+                >
+                  <Users className="w-4 h-4" />
+                  <span className="hidden sm:inline">People</span>
+                </button>
+              )}
+              <div className="text-right">
+                <div className="text-[11px] uppercase tracking-[0.14em] text-stone-500">Total</div>
+                <div className="text-lg font-semibold tabular-nums">{fmt(total)}</div>
+              </div>
             </div>
           </div>
 
@@ -1062,6 +1097,8 @@ export default function App() {
           activeGroupId={activeGroupId}
           myName={profile?.display_name || 'Me'}
           profile={profile}
+          startView={groupsStart.view}
+          startGroup={groupsStart.group}
           onClose={() => setShowGroups(false)}
           onSwitch={switchGroup}
           onCreateGroup={async (name, type, extraPeople, currency) => {
@@ -1812,12 +1849,21 @@ function SummaryTab({ expenses, settlements, balances, sharedPool, total, people
 
 /* ============ Groups modal ============ */
 
-function GroupsModal({ groups, activeGroupId, myName, profile, onClose, onSwitch, onCreateGroup, onUpdateGroup, onRequestDelete, onAddPerson, onRemovePerson, onLinkGhost, onInviteGhost }) {
+function GroupsModal({ groups, activeGroupId, myName, profile, startView = 'list', startGroup = null, onClose, onSwitch, onCreateGroup, onUpdateGroup, onRequestDelete, onAddPerson, onRemovePerson, onLinkGhost, onInviteGhost }) {
   // view can be: 'list' | 'form' | 'members'
-  const [view, setView] = useState('list');
+  // The caller can ask the modal to OPEN on a specific view via `startView`:
+  //   'form'    → jump straight to the "New group" form (skip the list step).
+  //   'members' → jump straight to the People panel for `startGroup`.
+  // Anything else (or unset) opens on the normal groups list.
+  const [view, setView] = useState(startView);
+  // When opening on the 'form' view we want a NEW group, so editingGroup starts
+  // null. (Edit-an-existing-group still works from the list via setEditingGroup.)
   const [editingGroup, setEditingGroup] = useState(null);
   // managingGroup is set when the user opens the Members panel for a group.
-  const [managingGroup, setManagingGroup] = useState(null);
+  // If the caller asked to open straight on 'members', seed it with startGroup.
+  const [managingGroup, setManagingGroup] = useState(
+    startView === 'members' ? startGroup : null
+  );
   // State for confirming ghost removal.
   const [confirmRemoveMember, setConfirmRemoveMember] = useState(null); // { group, personName }
 
@@ -2414,10 +2460,11 @@ function GroupForm({ group, myName, profile, onSave, onCancel }) {
   const [type, setType] = useState(initialType);
 
   // Per-group currency. When EDITING, default to the group's current currency.
-  // When CREATING, default to the device-region guess, else the profile's
-  // preferred currency, else 'USD'. The user can change it either way.
+  // When CREATING, default to the user's PROFILE preference first (their chosen
+  // currency wins), then the device-region guess, else 'USD'. The user can
+  // change it either way.
   const initialCurrency = isNew
-    ? (localeDefaultCurrency() || profile?.preferred_currency || 'USD')
+    ? (profile?.preferred_currency || localeDefaultCurrency() || 'USD')
     : (group.currency || 'USD');
   const [currency, setCurrency] = useState(initialCurrency);
 
