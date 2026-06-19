@@ -103,6 +103,7 @@ don't return data).
 | `db/06_add_group_currency.sql` | Adds `groups.currency` (default 'USD') so each group has its own currency. | Once. New groups default to USD/locale until run. |
 | `db/07_custom_split.sql` | Allows `split_mode='custom'` and adds `expenses.split_detail` (jsonb per-person amounts). | Once. Custom split errors until run. |
 | `db/08_avatars.sql` | Creates the public `avatars` Storage bucket + upload policies and adds `profiles.avatar_url`. | Once. Profile photo upload errors until run. |
+| `db/09_invites.sql` | Adds the `invites` table + `accept_invite(token)` security-definer function for auto-connect invites. | Once. Invites don't auto-connect until run. Re-deploy `send-invite` after. |
 
 > `db/02` is personal to the owner. The app itself never seeds anyone's data — new users
 > start empty.
@@ -242,11 +243,13 @@ only path.
 - **Custom domain + branded email** — live at **https://splitab.app** (GitHub Pages custom domain
   via `public/CNAME`; Cloudflare DNS). Email sends from `hello@splitab.app` via Resend (domain
   verified), so magic link / reset / invites reach any address.
-- **Ghost email-invite** — `MembersPanel` "Invite by email" → `inviteGhostByEmail` in `store.js`
-  calls the `send-invite` Supabase Edge Function (`supabase/functions/send-invite/index.ts`),
-  which emails an invite via Resend. The function must be deployed in the Supabase dashboard with
-  a `RESEND_API_KEY` secret. Auto-link on signup is intentionally not built; the invitee signs up,
-  connects, then the owner uses the existing "Link to account" flow.
+- **Ghost email-invite with AUTO-CONNECT** — `MembersPanel` "Invite by email" → `inviteGhostByEmail`
+  (passes groupId + ghostMemberId) → `send-invite` Edge Function creates an `invites` row (db/09)
+  with a token and emails a `?invite=<token>` link via Resend. On open, `main.jsx` stashes the token
+  in localStorage (survives the auth redirect); after sign-in `App.jsx` calls `actions.acceptInvite`
+  → the `accept_invite` SQL function (security definer) creates an accepted connection AND links the
+  ghost to the new user (email must match the invited address). Needs db/09 + a re-deploy of
+  `send-invite` (with the `RESEND_API_KEY` secret).
 
 - **Receipt/statement scanning (AI vision)** — `ImportModal` "Scan" tab → `scanReceipt` in
   `store.js` calls the `scan-receipt` Supabase Edge Function (`supabase/functions/scan-receipt/`),
