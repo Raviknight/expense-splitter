@@ -85,7 +85,22 @@ function SendRequestForm({ onSent, currentUserId }) {
       .rpc('find_profile_by_email', { lookup_email: trimmed });
 
     if (lookupErr) {
-      setMessage({ text: 'Something went wrong looking up that email. Try again.', type: 'error' });
+      // The lookup uses the find_profile_by_email() database function (db/03).
+      // If that script hasn't been run, the function is missing and the call
+      // fails — surface a clear instruction instead of a vague "try again".
+      const m = (lookupErr.message || '').toLowerCase();
+      const missingFn =
+        lookupErr.code === 'PGRST202' ||              // PostgREST: function not found
+        m.includes('find_profile_by_email') ||
+        m.includes('schema cache') ||
+        m.includes('function') ||
+        m.includes('not found');
+      setMessage({
+        text: missingFn
+          ? 'Connection lookup needs a one-time setup — run db/03_find_profile_by_email.sql in Supabase.'
+          : ('Lookup failed: ' + (lookupErr.message || 'please try again.')),
+        type: 'error',
+      });
       setBusy(false);
       return;
     }
