@@ -83,9 +83,11 @@ export function useConnections() {
     c => c.addressee === user?.id && c.status === 'pending'
   );
 
-  // Requests I sent — shows the other person what I'm waiting on.
+  // Requests I sent that are NOT yet accepted (pending or declined). Once a
+  // request is accepted the person moves into "My connections" below, so we
+  // drop accepted ones here to avoid showing them in both places.
   const outgoing = connections.filter(
-    c => c.requester === user?.id
+    c => c.requester === user?.id && c.status !== 'accepted'
   );
 
   // Accepted connections — these are my "friends" in the app.
