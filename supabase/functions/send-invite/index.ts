@@ -59,7 +59,8 @@ Deno.serve(async (req) => {
     if (userErr || !user) return json({ error: "You must be signed in." }, 401);
 
     // 2) Read + validate input.
-    const { email, groupName, inviterName } = await req.json().catch(() => ({}));
+    const { email, groupName, inviterName, groupId, ghostMemberId } =
+      await req.json().catch(() => ({}));
     if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
       return json({ error: "A valid email address is required." }, 400);
     }
@@ -67,6 +68,23 @@ Deno.serve(async (req) => {
     const inviter = (inviterName || user.email || "A friend").toString();
     const group   = (groupName || "a group").toString();
     const subject = `${inviter} invited you to split expenses on Splitab`;
+
+    // 3) Create an invite token so the app can auto-connect them on signup
+    //    (db/09 invites table + accept_invite function). The link carries the
+    //    token; when they open it signed in, the app calls accept_invite(token).
+    const token = crypto.randomUUID();
+    const { error: invErr } = await supabase.from("invites").insert({
+      token,
+      inviter: user.id,
+      email: String(email).toLowerCase(),
+      group_id: groupId ?? null,
+      ghost_member_id: ghostMemberId ?? null,
+    });
+    if (invErr) {
+      // Most likely the invites table doesn't exist yet (db/09 not run).
+      return json({ error: "Invite setup incomplete — run db/09_invites.sql in Supabase.", detail: invErr.message }, 500);
+    }
+    const inviteLink = `${APP_URL}?invite=${token}`;
 
     const html = `
       <table width="100%" cellpadding="0" cellspacing="0" style="background:#FAFAF7;padding:32px 0;font-family:-apple-system,Segoe UI,Roboto,sans-serif;">
@@ -82,12 +100,12 @@ Deno.serve(async (req) => {
               <strong>${escapeHtml(inviter)}</strong> added you to <strong>${escapeHtml(group)}</strong> and wants to split trip expenses with you. Sign up (free) to see what you're owed.
             </td></tr>
             <tr><td align="center" style="padding-bottom:24px;">
-              <a href="${APP_URL}" style="background:#4f46e5;color:#fff;text-decoration:none;font-size:15px;font-weight:500;padding:12px 28px;border-radius:12px;display:inline-block;">
+              <a href="${inviteLink}" style="background:#4f46e5;color:#fff;text-decoration:none;font-size:15px;font-weight:500;padding:12px 28px;border-radius:12px;display:inline-block;">
                 Join on Splitab
               </a>
             </td></tr>
             <tr><td align="center" style="font-size:12px;color:#a8a29e;line-height:1.5;">
-              Or open this link: <span style="color:#78716c;">${APP_URL}</span>
+              Or open this link: <span style="color:#78716c;word-break:break-all;">${inviteLink}</span>
             </td></tr>
           </table>
           <table width="100%" style="max-width:460px;padding-top:16px;">
