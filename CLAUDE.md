@@ -103,7 +103,8 @@ don't return data).
 | `db/06_add_group_currency.sql` | Adds `groups.currency` (default 'USD') so each group has its own currency. | Once. New groups default to USD/locale until run. |
 | `db/07_custom_split.sql` | Allows `split_mode='custom'` and adds `expenses.split_detail` (jsonb per-person amounts). | Once. Custom split errors until run. |
 | `db/08_avatars.sql` | Creates the public `avatars` Storage bucket + upload policies and adds `profiles.avatar_url`. | Once. Profile photo upload errors until run. |
-| `db/09_invites.sql` | Adds the `invites` table + `accept_invite(token)` security-definer function for auto-connect invites. | Once. Invites don't auto-connect until run. Re-deploy `send-invite` after. |
+| `db/09_invites.sql` | Adds the `invites` table + `accept_invite(token)` security-definer function for auto-connect invites. Also backfills missing `profiles`. | Once. Invites don't auto-connect until run. Re-deploy `send-invite` after. |
+| `db/10_expense_participants.sql` | Adds `expenses.participants` (jsonb member-id list) so an expense is split among its frozen participants; backfills existing expenses. | Once. Old expenses change when adding members until run. |
 
 > `db/02` is personal to the owner. The app itself never seeds anyone's data — new users
 > start empty.
@@ -257,15 +258,33 @@ only path.
   into the existing import preview. Deploy the function with a `GEMINI_API_KEY` secret (optional
   `GEMINI_MODEL`). Design notes in `RECEIPT-SCANNING-PLAN.md`.
 
-**Not built yet:**
-- **Per-person balance DISPLAY for 3+ groups with recorded settlements** — the settle-up
-  *suggestions* use correct net-balance math, but the older balance *display* at the top of the
-  Summary still treats settlements as a `full` split (exact for 2 people only). Align it with
-  `computeNetBalances` if needed.
+- **Per-expense participants** — each expense stores `participants` (db/10), the frozen set of
+  members it's split among (snapshot at creation). Equal/Full split among the expense's
+  participants, not live membership, so adding a member later doesn't change old expenses. The
+  expense form has a "Split among" selector (equal/full) to include/exclude people. Backfill in
+  db/10 locks existing expenses to their then-current members.
+
+## 8. Roadmap / deferred decisions (recorded so we don't lose them)
+
+- **Information architecture (NEXT / in progress)** — avatar (top-right) → Profile (personal info:
+  name, photo, email); gear → Settings/Account (default currency, notifications, password, dark
+  mode, sign out); edit/delete/export a group from INSIDE the group (the group-name chevron menu),
+  not via the groups list; solo groups show their running total on top.
+- **Long-term growth → TIME-BASED FILTERS, not settle-and-archive.** Decision: archiving assumes
+  clean settlement, but roommates pay late and partial. So keep ONE continuous running balance
+  (partial settlements just reduce it; carried debt is natural) and let users *filter the view* by
+  month/period. Default to "this month", past periods browsable. Pair with **pagination / lazy-load**
+  of the expense list for performance (today the store loads ALL of a group's expenses at once).
+- **Activity feed** — per-group log of expenses / settlements / member changes, next to Connections.
+- **Donation link** — a simple "Support Splitab" link to Ko-fi / Buy Me a Coffee in Settings. No
+  payment system to build (the provider handles money). Only meaningful if shared publicly.
+- **Bank linking — DECIDED: skip.** Regulated (Plaid/aggregators), real cost, compliance/liability
+  for bank data. CSV import + receipt scanning cover "get transactions in" without the burden.
+  Revisit only if this becomes a funded commercial product.
 
 ---
 
-## 8. Conventions for changes
+## 9. Conventions for changes
 
 - Match Supabase **table/column names exactly** (`split_mode`, `paid_by`, `ghost_name`,
   `owner_id`, `group_id`, etc.) — see `db/01_schema.sql`.
