@@ -3,7 +3,7 @@ import {
   Plus, Pencil, Trash2, X, ArrowDownUp, Receipt, Users, PieChart, Search,
   ChevronDown, ChevronRight, Check, ArrowLeft, Handshake, User,
   AlertCircle, RefreshCw, UserPlus, Ghost, Upload, FileSpreadsheet,
-  BarChart3, Download, Printer, ScanLine, Loader2,
+  BarChart3, Download, Printer, ScanLine, Loader2, Activity,
 } from 'lucide-react';
 import { useAuth } from './auth/AuthProvider.jsx';
 import { useConnections } from './auth/useConnections.js';
@@ -132,6 +132,85 @@ function localeDefaultCurrency() {
   } catch (e) {
     return null;
   }
+}
+
+/* ============ Activity timeline helpers ============
+ *
+ * The Activity tab and the home "N new" badge both work off the SAME existing
+ * data (every expense, settlement, and member already has a created_at). These
+ * small pure helpers turn that data into a friendly timeline.
+ */
+
+// Turn an ISO timestamp into a short, friendly "how long ago" string:
+//   under a minute → "just now"
+//   minutes        → "5m"
+//   hours          → "3h"
+//   days (< 7)     → "2d"
+//   older          → a short date like "Jun 12"
+// Guards against a missing or unparseable date by returning '' (the UI then
+// simply shows no time, instead of "NaN" or "Invalid Date").
+function timeAgo(iso) {
+  if (!iso) return '';
+  const then = new Date(iso).getTime();
+  if (isNaN(then)) return '';
+
+  const diffMs = Date.now() - then;
+  // A tiny clock skew can make a brand-new row look like the future; clamp to 0.
+  const secs = Math.max(0, Math.floor(diffMs / 1000));
+
+  if (secs < 60) return 'just now';
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d`;
+
+  // Older than a week → a short month/day label (e.g. "Jun 12").
+  try {
+    return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  } catch (e) {
+    return '';
+  }
+}
+
+// "Last seen" bookkeeping for the home "N new" badge. We remember, per group,
+// the moment the user last OPENED it (a millisecond timestamp) in localStorage.
+// Anything created after that counts as "new". Wrapped in try/catch so a
+// private-mode browser that blocks storage never breaks the app.
+const LAST_SEEN_PREFIX = 'slitab.lastseen.';
+
+function getLastSeen(groupId) {
+  try {
+    const raw = localStorage.getItem(LAST_SEEN_PREFIX + groupId);
+    const n = raw ? Number(raw) : 0;
+    return isNaN(n) ? 0 : n;
+  } catch (e) {
+    return 0;
+  }
+}
+
+function setLastSeen(groupId, ts) {
+  try {
+    localStorage.setItem(LAST_SEEN_PREFIX + groupId, String(ts));
+  } catch (e) {
+    /* storage unavailable (private mode) — the badge just won't clear; harmless */
+  }
+}
+
+// Count how many activity items (expenses + settlements + member joins) in a
+// group were created AFTER `since` (a millisecond timestamp). Used for the home
+// card "N new" badge. Rows with a missing/invalid createdAt are ignored.
+function countNewActivity(group, since) {
+  const after = (iso) => {
+    if (!iso) return false;
+    const t = new Date(iso).getTime();
+    return !isNaN(t) && t > since;
+  };
+  let n = 0;
+  (group.expenses || []).forEach(e => { if (after(e.createdAt)) n++; });
+  (group._memberJoins || []).forEach(m => { if (after(m.createdAt)) n++; });
+  return n;
 }
 
 /* ============ Settle-up math (works for any group size) ============
@@ -785,6 +864,9 @@ export default function App() {
     setFilterCat('All');
     setSearch('');
     setTab('expenses');
+    // Mark this group as "seen now" so its home-card "N new" badge clears.
+    // (Anything created after this moment will count as new again.)
+    setLastSeen(groupId, Date.now());
     // Opening a group from anywhere moves us into the group detail view.
     setView('group');
   };
@@ -833,6 +915,7 @@ export default function App() {
       ]
     : [
         { id: 'expenses',   label: 'Expenses',   icon: Receipt },
+        { id: 'activity',   label: 'Activity',   icon: Activity },
         { id: 'insights',   label: 'Insights',   icon: BarChart3 },
         { id: 'summary',    label: 'Settle Up',  icon: Handshake },
       ];
@@ -1065,6 +1148,9 @@ export default function App() {
             onPick={(c) => { setFilterCat(c); setTab('expenses'); }}
           />
         )}
+        {tab === 'activity' && !isSolo && (
+          <ActivityTab group={activeGroup} />
+        )}
         {tab === 'summary' && !isSolo && (
           <SummaryTab
             expenses={realExpenses}
@@ -1293,19 +1379,32 @@ function GroupCard({ group, myName, onOpen }) {
   const shown = people.slice(0, 4);
   const overflow = people.length - shown.length;
 
+  // "N new" badge: how many activity items (expenses + settlements + member
+  // joins) appeared since the user last opened THIS group. Solo groups have no
+  // shared activity worth flagging, so we skip the badge for them.
+  const newCount = isSolo ? 0 : countNewActivity(group, getLastSeen(group.id));
+  const newLabel = newCount > 9 ? '9+' : String(newCount);
+
   return (
     <button
       onClick={onOpen}
       className="text-left bg-white border border-stone-200 rounded-2xl p-4 shadow-sm hover:border-stone-300 hover:shadow active:scale-[0.99] transition flex flex-col gap-3"
     >
-      {/* Title + solo tag */}
+      {/* Title + solo tag + "N new" activity badge */}
       <div className="flex items-start justify-between gap-2">
         <div className="font-semibold text-stone-900 truncate">{group.name}</div>
-        {isSolo && (
-          <span className="shrink-0 text-[10px] uppercase tracking-wider text-stone-500 bg-stone-100 border border-stone-200 rounded-full px-2 py-0.5">
-            solo
-          </span>
-        )}
+        <div className="flex items-center gap-1.5 shrink-0">
+          {newCount > 0 && (
+            <span className="text-[10px] font-semibold text-white bg-indigo-600 rounded-full px-2 py-0.5">
+              {newLabel} new
+            </span>
+          )}
+          {isSolo && (
+            <span className="text-[10px] uppercase tracking-wider text-stone-500 bg-stone-100 border border-stone-200 rounded-full px-2 py-0.5">
+              solo
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Member avatars: profile photo when available, else initials.
@@ -1343,6 +1442,118 @@ function GroupCard({ group, myName, onOpen }) {
         </div>
       )}
     </button>
+  );
+}
+
+/* ============ Activity tab (shared groups only) ============
+ *
+ * A single chronological feed of everything that happened in this group, newest
+ * first. It reuses data the store already provides — no new tables or queries:
+ *   • each real expense        → "{paidBy} added {name}"   (category emoji + amount)
+ *   • each settlement          → "{from} paid {to}"        (handshake + amount)
+ *   • each member who joined   → "{name} joined" / "{name} was added" (ghost)
+ *
+ * Every item carries a createdAt (an ISO timestamp). We merge the three kinds
+ * into one list, sort newest-first, and render a simple timeline.
+ */
+function ActivityTab({ group }) {
+  const expenses    = group?.expenses || [];      // real expenses + settlements
+  const memberJoins = group?._memberJoins || [];
+
+  // Build a flat list of timeline items, each with a sortable timestamp `ts`.
+  const items = useMemo(() => {
+    const list = [];
+
+    expenses.forEach(e => {
+      if (e.type === 'settlement') {
+        // A recorded payment between two people.
+        list.push({
+          key:      'settle-' + e.id,
+          kind:     'settlement',
+          title:    `${e._settleFrom} paid ${e._settleTo}`,
+          amount:   Number(e.amount || 0),
+          iso:      e.createdAt,
+        });
+      } else {
+        // A normal expense. The app doesn't track a separate "creator", so we
+        // attribute it to whoever paid — that's the person the row is about.
+        list.push({
+          key:      'exp-' + e.id,
+          kind:     'expense',
+          emoji:    catMeta(e.category).emoji,
+          title:    `${e.paidBy} added ${e.name}`,
+          amount:   Number(e.amount || 0),
+          iso:      e.createdAt,
+        });
+      }
+    });
+
+    memberJoins.forEach((m, i) => {
+      list.push({
+        key:    'join-' + m.name + '-' + i,
+        kind:   'join',
+        title:  m.isGhost ? `${m.name} was added` : `${m.name} joined`,
+        iso:    m.createdAt,
+      });
+    });
+
+    // Newest first. Items with no/invalid date sort to the bottom (ts = 0).
+    const ts = (iso) => {
+      if (!iso) return 0;
+      const t = new Date(iso).getTime();
+      return isNaN(t) ? 0 : t;
+    };
+    return list
+      .map(it => ({ ...it, ts: ts(it.iso) }))
+      .sort((a, b) => b.ts - a.ts);
+  }, [expenses, memberJoins]);
+
+  if (items.length === 0) {
+    return (
+      <div className="text-center py-16 text-stone-400">
+        <Activity className="w-8 h-8 mx-auto mb-2 opacity-60" />
+        <div className="text-sm">No activity yet.</div>
+        <div className="text-xs mt-1">Adding expenses and people will show up here.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden divide-y divide-stone-100">
+      {items.map(it => (
+        <div key={it.key} className="flex items-center gap-3 px-3 py-2.5">
+          {/* Left icon dot — a little colored circle keyed to the item kind. */}
+          <div className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-sm ${
+            it.kind === 'settlement'
+              ? 'bg-emerald-50 text-emerald-700'
+              : it.kind === 'join'
+                ? 'bg-indigo-50 text-indigo-600'
+                : 'bg-stone-100'
+          }`}>
+            {it.kind === 'settlement'
+              ? <Handshake className="w-4 h-4" />
+              : it.kind === 'join'
+                ? <User className="w-4 h-4" />
+                : <span>{it.emoji}</span>}
+          </div>
+
+          {/* Title + relative time. */}
+          <div className="flex-1 min-w-0">
+            <div className="text-sm text-stone-800 truncate">{it.title}</div>
+            <div className="text-[11px] text-stone-400">{timeAgo(it.iso)}</div>
+          </div>
+
+          {/* Right-aligned amount (expenses + settlements only). */}
+          {(it.kind === 'expense' || it.kind === 'settlement') && (
+            <div className={`shrink-0 text-sm font-semibold tabular-nums ${
+              it.kind === 'settlement' ? 'text-emerald-700' : 'text-stone-900'
+            }`}>
+              {fmt(it.amount)}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
   );
 }
 

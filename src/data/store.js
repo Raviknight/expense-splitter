@@ -187,9 +187,11 @@ export function useExpenseStore(userId, profile) {
       const groupIds = rawGroups.map(g => g.id);
 
       // 2. Load all members for all groups in one query.
+      // We include `created_at` so the Activity timeline can show "X joined".
+      // It's an existing column on every row — no schema change needed.
       const { data: rawMembers, error: mErr } = await supabase
         .from('group_members')
-        .select('id, group_id, user_id, ghost_name')
+        .select('id, group_id, user_id, ghost_name, created_at')
         .in('group_id', groupIds);
 
       if (mErr) throw mErr;
@@ -260,7 +262,7 @@ export function useExpenseStore(userId, profile) {
       // 5. Load all settlements for all groups in one query.
       const { data: rawSettlements, error: sErr } = await supabase
         .from('settlements')
-        .select('id, group_id, from_member, to_member, amount, date, note')
+        .select('id, group_id, from_member, to_member, amount, date, note, created_at')
         .in('group_id', groupIds)
         .order('date', { ascending: false });
 
@@ -303,6 +305,9 @@ export function useExpenseStore(userId, profile) {
               paidBy:    memberIdToName[e.paid_by] || 'Unknown',
               splitMode: e.split_mode,     // DB uses snake_case; UI uses camelCase
               note:      e.note || '',
+              // When the expense was recorded — feeds the Activity timeline and
+              // the "N new" home badge. Existing column, no schema change.
+              createdAt: e.created_at,
             };
 
             // Custom split: the DB stores split_detail as { member_id: amount }.
@@ -356,6 +361,9 @@ export function useExpenseStore(userId, profile) {
             paidBy:    memberIdToName[s.from_member] || 'Unknown',
             splitMode: 'full',
             note:      s.note || '',
+            // When the settlement was recorded — feeds the Activity timeline and
+            // the "N new" home badge.
+            createdAt: s.created_at,
             // Keep raw IDs so we can delete from the correct table.
             _settlementId: s.id,
             // Plain from/to display names so the settle-up math can treat a
@@ -381,6 +389,16 @@ export function useExpenseStore(userId, profile) {
           memberAvatars[displayName] = m.user_id ? (avatarMap[m.user_id] || null) : null;
         });
 
+        // One "joined" event per member for the Activity timeline.
+        //   name      : display name (real member's profile name, or ghost name)
+        //   isGhost   : true when there's no linked account (no user_id)
+        //   createdAt : when the member row was created (existing column)
+        const memberJoins = members.map(m => ({
+          name:      memberDisplayName(m, profilesMap),
+          isGhost:   !m.user_id,
+          createdAt: m.created_at,
+        }));
+
         return {
           id:             g.id,
           name:           g.name,
@@ -401,6 +419,9 @@ export function useExpenseStore(userId, profile) {
           // Per-member avatar URLs for the UI. Shape: { [displayName]: url|null }.
           // Ghosts and members without a photo are null → Avatar shows initials.
           _memberAvatars: memberAvatars,
+          // "X joined" events for the Activity timeline. Shape:
+          // [{ name, isGhost, createdAt }]. One entry per member.
+          _memberJoins: memberJoins,
         };
       });
 
