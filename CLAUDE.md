@@ -252,11 +252,13 @@ only path.
   ghost to the new user (email must match the invited address). Needs db/09 + a re-deploy of
   `send-invite` (with the `RESEND_API_KEY` secret).
 
-- **Receipt/statement scanning (AI vision)** — `ImportModal` "Scan" tab → `scanReceipt` in
-  `store.js` calls the `scan-receipt` Supabase Edge Function (`supabase/functions/scan-receipt/`),
-  which sends the image/PDF to Google Gemini (free tier) and returns extracted expenses that flow
-  into the existing import preview. Deploy the function with a `GEMINI_API_KEY` secret (optional
-  `GEMINI_MODEL`). Design notes in `RECEIPT-SCANNING-PLAN.md`.
+- **Receipt/statement scanning (Groq)** — `ImportModal` "Scan" tab → `scanReceipt` in `store.js`
+  calls the `scan-receipt` Edge Function (`supabase/functions/scan-receipt/`). IMAGES go to a Groq
+  vision model; PDFs are text-extracted in-function via `unpdf` (free) and sent to a cheap Groq text
+  model (text has roomier free limits than vision — the money-saving design). Returns expenses into
+  the existing import preview. Deploy with a `GROQ_API_KEY` secret (optional `GROQ_VISION_MODEL` /
+  `GROQ_TEXT_MODEL` overrides). Toggled by `SCAN_ENABLED` in `App.jsx`. (Earlier Gemini version
+  hit free-tier vision quota; Groq replaced it.) Notes in `RECEIPT-SCANNING-PLAN.md`.
 
 - **Per-expense participants** — each expense stores `participants` (db/10), the frozen set of
   members it's split among (snapshot at creation). Equal/Full split among the expense's
