@@ -951,7 +951,7 @@ export default function App() {
         </div>
       )}
 
-      <header className="sticky top-0 z-20 bg-[#FAFAF7]/95 backdrop-blur border-b border-stone-200">
+      <header className="sticky top-11 z-20 bg-[#FAFAF7]/95 backdrop-blur border-b border-stone-200">
         <div className="max-w-3xl mx-auto px-4 pt-4 pb-3">
           {/* Back control: returns to the groups dashboard (view = 'home'). */}
           <button
@@ -1239,7 +1239,7 @@ function HomeScreen({
         </div>
       )}
 
-      <header className="sticky top-0 z-20 bg-[#FAFAF7]/95 backdrop-blur border-b border-stone-200">
+      <header className="sticky top-11 z-20 bg-[#FAFAF7]/95 backdrop-blur border-b border-stone-200">
         <div className="max-w-3xl mx-auto px-4 pt-5 pb-4 flex items-center justify-between gap-3">
           <h1 className="text-xl font-semibold">Your groups</h1>
           <button

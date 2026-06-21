@@ -84,9 +84,11 @@ export default function AuthGate({ children }) {
 
   return (
     <div className="min-h-screen bg-[#FAFAF7]">
-      {/* Slim auth bar — sits above App's own sticky header */}
-      <div className="bg-stone-900 text-white">
-        <div className="max-w-3xl mx-auto px-4 py-1.5 flex items-center justify-between gap-3">
+      {/* Slim auth bar — sticky so Profile/Settings/Connections stay reachable
+          while scrolling. Fixed height (h-11) so the page headers below can
+          offset by exactly that much (they use `sticky top-11`). */}
+      <div className="sticky top-0 z-30 bg-stone-900 text-white h-11">
+        <div className="max-w-3xl mx-auto px-4 h-full flex items-center justify-between gap-3">
           {/* Left: tap the avatar to open your Profile (photo, name, email).
               The name label next to it is part of the same button on wider
               screens. profile.avatar_url is undefined until db/08 is run →
