@@ -11,11 +11,10 @@ import { useExpenseStore } from './data/store.js';
 import { parseCsv, PROVIDER_PRESETS, buildExpenses } from './data/csv.js';
 import Avatar from './ui/Avatar.jsx';
 
-// Feature flag: receipt/statement scanning (AI vision) is HIDDEN for now while we
-// sort out a reliable vision API (Gemini free tier kept hitting quota limits).
-// The whole scan code path is kept intact — flip this to true to re-enable the
-// "Scan" button + tab once a working GEMINI_API_KEY (or other provider) is set.
-const SCAN_ENABLED = false;
+// Feature flag: receipt/statement scanning. ON now that the scan-receipt Edge
+// Function uses Groq (vision for images; self-extracted text + a cheap text model
+// for PDFs). Requires a GROQ_API_KEY secret on the deployed function.
+const SCAN_ENABLED = true;
 
 /* ============ Categories & auto-categorization ============ */
 
