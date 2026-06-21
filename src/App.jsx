@@ -473,6 +473,9 @@ export default function App() {
   // Which tab the import/scan modal opens on: 'csv' (file import) or 'scan' (photo).
   const [importStartMode, setImportStartMode] = useState('csv');
   const [confirmDeleteGroup, setConfirmDeleteGroup] = useState(null);
+  // Whether the group-header actions menu (Edit / People / Export / Delete) is
+  // open. Tapping the group name "Name ▾" toggles it; picking an item closes it.
+  const [showGroupMenu, setShowGroupMenu] = useState(false);
 
   // ── Invite auto-accept notice ─────────────────────────────────────────────
   // A small toast shown after we automatically accept an invite the user
@@ -959,19 +962,46 @@ export default function App() {
             All groups
           </button>
           <div className="flex items-start justify-between gap-3">
-            <button onClick={() => openGroups('list')} className="text-left min-w-0 group">
-              <div className="text-[11px] uppercase tracking-[0.18em] text-stone-500 font-medium flex items-center gap-1">
-                {isSolo ? <><User className="w-3 h-3" /> Personal</> : <><Users className="w-3 h-3" /> {people.join(' & ')}</>}
-              </div>
-              <div className="flex items-center gap-1.5 mt-0.5">
-                <h1 className="text-xl font-semibold truncate">{activeGroup.name}</h1>
-                <ChevronDown className="w-4 h-4 text-stone-400 group-hover:text-stone-700 shrink-0" />
-              </div>
-            </button>
+            {/* Group name "Name ▾" — opens an actions menu (Edit / People /
+                Export / Delete) so you never have to back out to the groups
+                list to manage THIS group. The menu lives in a relatively
+                positioned wrapper so it can drop down right under the name. */}
+            <div className="relative min-w-0">
+              <button
+                onClick={() => setShowGroupMenu(o => !o)}
+                className="text-left min-w-0 group"
+                aria-haspopup="menu"
+                aria-expanded={showGroupMenu}
+              >
+                <div className="text-[11px] uppercase tracking-[0.18em] text-stone-500 font-medium flex items-center gap-1">
+                  {isSolo ? <><User className="w-3 h-3" /> Personal</> : <><Users className="w-3 h-3" /> {people.join(' & ')}</>}
+                </div>
+                <div className="flex items-center gap-1.5 mt-0.5">
+                  <h1 className="text-xl font-semibold truncate">{activeGroup.name}</h1>
+                  <ChevronDown className={`w-4 h-4 text-stone-400 group-hover:text-stone-700 shrink-0 transition-transform ${showGroupMenu ? 'rotate-180' : ''}`} />
+                </div>
+              </button>
+
+              {showGroupMenu && (
+                <GroupActionsMenu
+                  isSolo={isSolo}
+                  onClose={() => setShowGroupMenu(false)}
+                  onEdit={() => { setShowGroupMenu(false); openGroups('form', activeGroup); }}
+                  onPeople={() => { setShowGroupMenu(false); openGroups('members', activeGroup); }}
+                  onExportCsv={() => { setShowGroupMenu(false); exportCsv(); }}
+                  onExportPdf={() => { setShowGroupMenu(false); exportPdf(); }}
+                  onDelete={groups.length > 1
+                    ? () => { setShowGroupMenu(false); setConfirmDeleteGroup(activeGroup); }
+                    : null}
+                />
+              )}
+            </div>
+
             <div className="flex items-center gap-2 shrink-0">
               {/* People button: opens the members panel for THIS group in one
                   tap (no backing out to the groups list). Only shown for shared
-                  groups — a solo group has no one to manage. On wider screens we
+                  groups — a solo group has no one to manage. The same action
+                  also lives in the group-name menu above. On wider screens we
                   show the "People" label; on phones the icon alone keeps it
                   compact. */}
               {!isSolo && (
@@ -1313,6 +1343,66 @@ function GroupCard({ group, myName, onOpen }) {
         </div>
       )}
     </button>
+  );
+}
+
+/* ============ Group actions menu (group-header "Name ▾") ============
+ *
+ * A small dropdown that opens under the group name in the detail header. It
+ * collects every "manage THIS group" action in one place so the owner never
+ * has to back out to the groups list:
+ *   • Edit        — open the group form pre-filled (rename / change currency)
+ *   • People      — open the members panel (shared groups only)
+ *   • Export CSV  — download the group's expenses as a .csv
+ *   • Save as PDF — open the printable report
+ *   • Delete group — confirm-then-delete (hidden when this is the only group;
+ *                    the parent passes onDelete=null in that case)
+ *
+ * A full-screen transparent backdrop sits behind the menu so a tap anywhere
+ * outside closes it (same idea as the modals' click-outside-to-close).
+ */
+function GroupActionsMenu({ isSolo, onClose, onEdit, onPeople, onExportCsv, onExportPdf, onDelete }) {
+  // One row in the menu. `danger` tints it red for the destructive Delete item.
+  const Item = ({ icon: Icon, label, onClick, danger }) => (
+    <button
+      role="menuitem"
+      onClick={onClick}
+      className={
+        'w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-left transition ' +
+        (danger
+          ? 'text-rose-600 hover:bg-rose-50'
+          : 'text-stone-700 hover:bg-stone-50')
+      }
+    >
+      <Icon className="w-4 h-4 shrink-0" />
+      <span className="font-medium">{label}</span>
+    </button>
+  );
+
+  return (
+    <>
+      {/* Click-outside backdrop. Transparent; just catches the tap to close. */}
+      <div className="fixed inset-0 z-30" onClick={onClose} />
+
+      {/* The menu itself, anchored under the group name. */}
+      <div
+        role="menu"
+        className="absolute left-0 mt-2 z-40 w-52 rounded-xl border border-stone-200 bg-white shadow-xl py-1 overflow-hidden"
+      >
+        <Item icon={Pencil} label="Edit group" onClick={onEdit} />
+        {/* People only makes sense for a shared group. */}
+        {!isSolo && <Item icon={Users} label="People" onClick={onPeople} />}
+        <Item icon={Download} label="Export CSV" onClick={onExportCsv} />
+        <Item icon={Printer} label="Save as PDF" onClick={onExportPdf} />
+        {/* Delete is hidden when this is the user's only group. */}
+        {onDelete && (
+          <>
+            <div className="my-1 border-t border-stone-100" />
+            <Item icon={Trash2} label="Delete group" onClick={onDelete} danger />
+          </>
+        )}
+      </div>
+    </>
   );
 }
 
@@ -1856,9 +1946,15 @@ function GroupsModal({ groups, activeGroupId, myName, profile, startView = 'list
   //   'members' → jump straight to the People panel for `startGroup`.
   // Anything else (or unset) opens on the normal groups list.
   const [view, setView] = useState(startView);
-  // When opening on the 'form' view we want a NEW group, so editingGroup starts
-  // null. (Edit-an-existing-group still works from the list via setEditingGroup.)
-  const [editingGroup, setEditingGroup] = useState(null);
+  // editingGroup decides whether the 'form' view CREATES or EDITS.
+  //   • Opening on 'form' with a startGroup → edit THAT group (pre-filled).
+  //     This is what the in-group "Edit" action uses so the owner never has to
+  //     back out to the list to rename / change a group's currency.
+  //   • Opening on 'form' with no startGroup → create a NEW group (null).
+  //   • Edit-an-existing-group from the list still works via setEditingGroup.
+  const [editingGroup, setEditingGroup] = useState(
+    startView === 'form' ? startGroup : null
+  );
   // managingGroup is set when the user opens the Members panel for a group.
   // If the caller asked to open straight on 'members', seed it with startGroup.
   const [managingGroup, setManagingGroup] = useState(

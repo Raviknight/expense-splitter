@@ -5,25 +5,30 @@
 //   1. loading  — session check is in progress → show a spinner
 //   2. no session — nobody is signed in → show <AuthScreen />
 //   3. signed in — render children (the normal <App />) plus a top bar
-//      with the user's name, a "Connections" button, and a sign-out button.
+//      with the user's avatar (→ Profile), a Connections button, and a gear
+//      icon (→ Settings). Sign-out now lives inside the Settings screen.
 //
-// The Connections screen is rendered as a full-page overlay so it doesn't
-// require any routing library.
+// The Connections, Profile, and Settings screens are each rendered as a
+// full-page overlay so we don't need any routing library.
 
 import { useState } from 'react';
-import { LogOut, Users, Settings } from 'lucide-react';
+import { Users, Settings as SettingsIcon } from 'lucide-react';
 import { useAuth } from './AuthProvider.jsx';
 import AuthScreen from './AuthScreen.jsx';
 import Connections from './Connections.jsx';
 import Profile from './Profile.jsx';
+import Settings from './Settings.jsx';
 import ResetPassword from './ResetPassword.jsx';
 import Avatar from '../ui/Avatar.jsx';
 
 export default function AuthGate({ children }) {
-  const { session, profile, user, loading, signOut, recoveryMode } = useAuth();
+  const { session, profile, user, loading, recoveryMode } = useAuth();
   const [showConnections, setShowConnections] = useState(false);
-  // Profile overlay — same pattern as Connections.
+  // Profile overlay — opened by tapping the avatar. Same pattern as Connections.
   const [showProfile, setShowProfile] = useState(false);
+  // Settings overlay — opened by the gear icon. Holds currency, appearance,
+  // password, notifications (placeholder), and sign out.
+  const [showSettings, setShowSettings] = useState(false);
 
   // ---- 1. Initial load ----
   if (loading) {
@@ -72,17 +77,29 @@ export default function AuthGate({ children }) {
     return <Profile onClose={() => setShowProfile(false)} />;
   }
 
+  // If the Settings screen is open, render it as a full-page overlay too.
+  if (showSettings) {
+    return <Settings onClose={() => setShowSettings(false)} />;
+  }
+
   return (
     <div className="min-h-screen bg-[#FAFAF7]">
       {/* Slim auth bar — sits above App's own sticky header */}
       <div className="bg-stone-900 text-white">
         <div className="max-w-3xl mx-auto px-4 py-1.5 flex items-center justify-between gap-3">
-          {/* Left: signed-in-as label. Shows the user's photo (or initials).
-              profile.avatar_url is undefined until db/08 is run → initials. */}
-          <div className="flex items-center gap-1.5 min-w-0">
+          {/* Left: tap the avatar to open your Profile (photo, name, email).
+              The name label next to it is part of the same button on wider
+              screens. profile.avatar_url is undefined until db/08 is run →
+              the Avatar shows initials in that case. */}
+          <button
+            onClick={() => setShowProfile(true)}
+            className="flex items-center gap-1.5 min-w-0 rounded-lg px-1 py-0.5 hover:bg-stone-700 transition"
+            title="Your profile"
+            aria-label="Open your profile"
+          >
             <Avatar name={displayName} url={profile?.avatar_url} size={20} />
             <span className="text-xs text-stone-300 truncate hidden sm:block">{displayName}</span>
-          </div>
+          </button>
 
           {/* Right: action buttons */}
           <div className="flex items-center gap-1 shrink-0">
@@ -95,23 +112,16 @@ export default function AuthGate({ children }) {
               <span className="hidden sm:inline">Connections</span>
             </button>
 
-            {/* Settings / Profile button — opens Profile overlay */}
+            {/* Gear icon — opens the Settings overlay (currency, appearance,
+                password, notifications, sign out). */}
             <button
-              onClick={() => setShowProfile(true)}
+              onClick={() => setShowSettings(true)}
               className="flex items-center gap-1.5 text-xs text-stone-300 hover:text-white px-2.5 py-1.5 rounded-lg hover:bg-stone-700 transition"
-              title="Profile &amp; settings"
+              title="Settings"
+              aria-label="Open settings"
             >
-              <Settings className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Profile</span>
-            </button>
-
-            <button
-              onClick={signOut}
-              className="flex items-center gap-1.5 text-xs text-stone-300 hover:text-white px-2.5 py-1.5 rounded-lg hover:bg-stone-700 transition"
-              title="Sign out"
-            >
-              <LogOut className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Sign out</span>
+              <SettingsIcon className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Settings</span>
             </button>
           </div>
         </div>
