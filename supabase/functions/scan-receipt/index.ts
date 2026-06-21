@@ -19,7 +19,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const GROQ_API_KEY     = Deno.env.get("GROQ_API_KEY");
-const GROQ_VISION_MODEL = Deno.env.get("GROQ_VISION_MODEL") || "llama-3.2-11b-vision-preview";
+const GROQ_VISION_MODEL = Deno.env.get("GROQ_VISION_MODEL") || "meta-llama/llama-4-scout-17b-16e-instruct";
 const GROQ_TEXT_MODEL   = Deno.env.get("GROQ_TEXT_MODEL")   || "llama-3.3-70b-versatile";
 const SUPABASE_URL      = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
