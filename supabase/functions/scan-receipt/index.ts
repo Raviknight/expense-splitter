@@ -40,26 +40,15 @@ function json(body: unknown, status = 200) {
 }
 
 const PROMPT = `You extract expenses from a receipt or bank/card statement for a bill-splitting app.
-Return ONLY a JSON object of the form {"expenses":[{"date":"YYYY-MM-DD","description":"string","amount":number,"category":"string"}]}.
+Return ONLY a JSON object of the form {"expenses":[{"date":"YYYY-MM-DD","description":"string","amount":number,"category":"string","uncertain":boolean,"note":"string"}]}.
 Rules:
 - amount is a positive number (no currency symbols).
 - Ignore subtotals, taxes, tips, balances and running totals UNLESS the document only shows a single total (then return that one).
 - Itemized receipt: prefer the line items; otherwise return one expense (merchant name as description, final total as amount).
 - If a transaction's date is missing, use the document date; if none, use "".
 - category: a short guess like Groceries, Restaurants, Fuel, Lodging, Transportation, Shopping, or Other.
-- Return {"expenses":[]} if there are no purchases.`;
-
-// Pull the model's JSON content out of an OpenAI-style Groq response.
-function parseExpenses(content: string): any[] {
-  try {
-    const cleaned = String(content).replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
-    const obj = JSON.parse(cleaned);
-    const arr = Array.isArray(obj) ? obj : (obj?.expenses ?? []);
-    return Array.isArray(arr) ? arr : [];
-  } catch {
-    return [];
-  }
-}
+- CONFIDENCE: set "uncertain": true for any row where a value was illegible, blurry, or a low-confidence guess (e.g. you couldn't clearly read the amount or merchant), and put a short reason in "note" (e.g. "amount blurry"). Set "uncertain": false when you're confident.
+- Return {"expenses":[]} if there are no purchases, and {"expenses":[],"unreadable":true} if the image/text is too unclear to read at all.`;
 
 function normalize(rows: any[]) {
   return rows.map((e) => ({
@@ -67,7 +56,22 @@ function normalize(rows: any[]) {
     description: String(e?.description ?? "").trim() || "Scanned expense",
     amount: Math.abs(Number(e?.amount)) || 0,
     category: String(e?.category ?? "Other").trim() || "Other",
+    // Confidence flag from the model so the preview can highlight rows to review.
+    uncertain: e?.uncertain === true,
+    note: String(e?.note ?? "").trim(),
   })).filter((e) => e.amount > 0);
+}
+
+// Parse the model output into { expenses, unreadable }.
+function parseResult(content: string): { rows: any[]; unreadable: boolean } {
+  try {
+    const cleaned = String(content).replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
+    const obj = JSON.parse(cleaned);
+    const rows = Array.isArray(obj) ? obj : (obj?.expenses ?? []);
+    return { rows: Array.isArray(rows) ? rows : [], unreadable: obj?.unreadable === true };
+  } catch {
+    return { rows: [], unreadable: false };
+  }
 }
 
 async function callGroq(body: Record<string, unknown>) {
@@ -150,8 +154,9 @@ Deno.serve(async (req) => {
       return json({ error: "Unsupported file type. Upload an image or a PDF." }, 415);
     }
 
-    const expenses = normalize(parseExpenses(content));
-    return json({ ok: true, expenses });
+    const { rows, unreadable } = parseResult(content);
+    const expenses = normalize(rows);
+    return json({ ok: true, expenses, unreadable });
   } catch (e) {
     return json({ error: String((e as Error)?.message ?? e) }, 500);
   }

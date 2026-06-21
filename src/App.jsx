@@ -3720,6 +3720,10 @@ function ImportModal({ people, isSolo, myName, startMode = 'csv', onClose, onImp
       if (!res?.ok) {
         setScanError(res?.message || 'Scanning failed — please try again.');
         setScanRows(null);
+      } else if (res.unreadable && (res.expenses || []).length === 0) {
+        // The scanner said the file was too unclear to read at all.
+        setScanError('Couldn’t read this clearly — try a sharper photo, better lighting, or a single page.');
+        setScanRows(null);
       } else {
         // Map the AI's expenses into the SAME row shape the CSV preview uses:
         //   description → name, keep amount/date, fill category/date sensibly.
@@ -3734,7 +3738,11 @@ function ImportModal({ people, isSolo, myName, startMode = 'csv', onClose, onImp
             date:     hasDate ? ex.date : today,
             category: (ex.category || '').trim() || autoCategorize(name),
           };
-          if (!hasDate) row._warning = 'No date found — set to today.';
+          // Build a "please review" flag from the model's confidence + a guessed date.
+          const flags = [];
+          if (ex.uncertain) flags.push(ex.note ? `Low confidence — ${ex.note}` : 'Low confidence — please check');
+          if (!hasDate) flags.push('No date found — set to today.');
+          if (flags.length) row._warning = flags.join(' · ');
           return row;
         }).filter(r => r.amount > 0);
         setScanRows(mapped);
@@ -4048,7 +4056,7 @@ function ImportModal({ people, isSolo, myName, startMode = 'csv', onClose, onImp
                           Importing {built.expenses.length} expense{built.expenses.length === 1 ? '' : 's'}
                           {built.skipped > 0 && ` (${built.skipped} row${built.skipped === 1 ? '' : 's'} skipped — no valid amount)`}.
                           {built.expenses.some(e => e._warning) && (mode === 'scan'
-                            ? ' Highlighted rows had no date — set to today.'
+                            ? ' ⚠️ Highlighted rows were unclear — please check them before importing (hover/tap a row for why).'
                             : ' Highlighted rows had an unreadable date set to today.')}
                         </div>
                       </>
