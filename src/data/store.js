@@ -148,6 +148,15 @@ export function useExpenseStore(userId, profile) {
   // Keep a stable ref so realtime callbacks always call the latest fetch.
   const fetchRef = useRef(null);
 
+  // Watchdog timer: a backgrounded PWA can resume with a stale auth token whose
+  // refresh stalls, leaving a query pending forever and the spinner stuck. This
+  // guarantees loading is always cleared so the user at least sees cached data.
+  const watchdogRef = useRef(null);
+
+  // The realtime channel, kept in a ref so we can tear it down and rebuild it
+  // when the app resumes from the background (the live socket dies while suspended).
+  const channelRef = useRef(null);
+
   // Helper: update outbox ref + localStorage + pendingCount in one shot.
   const commitOutbox = useCallback((newOutbox) => {
     outboxRef.current = newOutbox;
@@ -160,6 +169,12 @@ export function useExpenseStore(userId, profile) {
   // then for each group loads members and expenses in parallel.
   const fetchAll = useCallback(async () => {
     if (!userId) return;
+
+    // Watchdog: if a query stalls (stale token after resume, dead socket, etc.)
+    // never let the spinner hang — force loading off after 12s. Cached snapshot
+    // data stays on screen; a later successful fetch reconciles it.
+    if (watchdogRef.current) clearTimeout(watchdogRef.current);
+    watchdogRef.current = setTimeout(() => setLoading(false), 12000);
 
     try {
       setError(null);
@@ -452,6 +467,7 @@ export function useExpenseStore(userId, profile) {
         setError(err.message || 'Failed to load data. Please try again.');
       }
     } finally {
+      if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
       setLoading(false);
     }
   }, [userId, profile]);
@@ -598,28 +614,57 @@ export function useExpenseStore(userId, profile) {
   // We skip the refetch while we have unsynced ops in the outbox: a refetch
   // at that point would wipe the optimistic state. The reconciliation happens
   // after flushOutbox() succeeds instead.
-  useEffect(() => {
+  // (Re)open the realtime channel. Kept as a callable so the resume handler can
+  // rebuild it after the socket dies during background suspension.
+  const subscribeRealtime = useCallback(() => {
     if (!userId) return;
+    if (channelRef.current) { supabase.removeChannel(channelRef.current); channelRef.current = null; }
 
-    const channel = supabase
+    const onChange = () => { if (outboxRef.current.length === 0) fetchRef.current?.(); };
+    channelRef.current = supabase
       .channel('expense-splitter-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'groups' },
-        () => { if (outboxRef.current.length === 0) fetchRef.current(); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'group_members' },
-        () => { if (outboxRef.current.length === 0) fetchRef.current(); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'expenses' },
-        () => { if (outboxRef.current.length === 0) fetchRef.current(); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'settlements' },
-        () => { if (outboxRef.current.length === 0) fetchRef.current(); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'connections' },
-        () => { if (outboxRef.current.length === 0) fetchRef.current(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'groups' }, onChange)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'group_members' }, onChange)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'expenses' }, onChange)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'settlements' }, onChange)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'connections' }, onChange)
       .subscribe();
+  }, [userId]);
 
+  useEffect(() => {
+    subscribeRealtime();
     // Clean up when the user signs out or component unmounts.
     return () => {
-      supabase.removeChannel(channel);
+      if (channelRef.current) { supabase.removeChannel(channelRef.current); channelRef.current = null; }
     };
-  }, [userId]);
+  }, [subscribeRealtime]);
+
+  // ── resume from background ───────────────────────────────────────────────────
+  // A PWA/tab suspended in the background comes back with a dead realtime socket
+  // and possibly a stale auth token — which is what leaves the app "stuck loading"
+  // until a manual close/reopen. When we return to the foreground (or regain
+  // network), rebuild the socket, nudge the token, and refetch fresh data.
+  useEffect(() => {
+    if (!userId) return;
+    let lastRun = 0;
+    const resume = () => {
+      if (document.visibilityState === 'hidden') return;
+      const now = Date.now();
+      if (now - lastRun < 3000) return;   // one event; visibilitychange + focus can both fire
+      lastRun = now;
+      subscribeRealtime();
+      // getSession() refreshes an expired token; refetch either way to unstick the UI.
+      Promise.resolve(supabase.auth.getSession()).finally(() => fetchRef.current?.());
+    };
+    document.addEventListener('visibilitychange', resume);
+    window.addEventListener('focus', resume);
+    window.addEventListener('online', resume);
+    return () => {
+      document.removeEventListener('visibilitychange', resume);
+      window.removeEventListener('focus', resume);
+      window.removeEventListener('online', resume);
+    };
+  }, [userId, subscribeRealtime]);
 
   // ── helper: find group ─────────────────────────────────────────────────────
   const findGroup = (groupId) => groups.find(g => g.id === groupId);
