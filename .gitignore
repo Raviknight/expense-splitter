@@ -22,7 +22,12 @@ desktop.ini
 *.log
 npm-debug.log*
 
-# Build intermediates (docs/ is intentionally tracked for GitHub Pages)
+# Build intermediates (docs/ is intentionally tracked for GitHub Pages).
+# The dev server writes a fixed docs/bundle.js (+ source map); production builds
+# emit a content-hashed bundle-<hash>.js instead. Only the hashed bundle is
+# meant to be committed — never the dev bundle.js (see the deploy gotcha in CLAUDE.md).
+docs/bundle.js
+docs/bundle.js.map
 
 # Stray/personal files that shouldn't be in the repo
 supabase/functions/scan-receipt/Family Tree.csv
