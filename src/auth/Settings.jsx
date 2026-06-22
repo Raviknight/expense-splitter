@@ -24,6 +24,7 @@ import { useState, useEffect } from 'react';
 import {
   X, Settings as SettingsIcon, Save, Check, AlertCircle,
   Lock, Eye, EyeOff, DollarSign, Sun, Moon, Bell, LogOut,
+  Crown, Sparkles,
 } from 'lucide-react';
 import { supabase } from '../supabaseClient.js';
 import { useAuth } from './AuthProvider.jsx';
@@ -44,6 +45,16 @@ const CURRENCIES = [
 export default function Settings({ onClose }) {
   // Pull what we need from the auth context.
   const { user, profile, refreshProfile, signOut } = useAuth();
+
+  // ── Premium status ────────────────────────────────────────────────────────
+  // `profile.is_premium` comes from the profiles table (added by db/11). Before
+  // db/11 is run the column is missing, so this is undefined → treated as false.
+  const isPremium = profile?.is_premium === true;
+  // How the user got premium, when present: 'comp' (complimentary / granted by
+  // hand), 'lemonsqueezy', or 'stripe'. Used to label the status card.
+  const premiumSource = profile?.premium_source || null;
+  // Phase 1 has no checkout yet — the Upgrade button shows a "coming soon" note.
+  const [showUpgradeNote, setShowUpgradeNote] = useState(false);
 
   // ── Currency picker state ─────────────────────────────────────────────────
   // Default to 'USD' when the profile has no preferred_currency yet.
@@ -206,6 +217,89 @@ export default function Settings({ onClose }) {
 
       {/* ── Main content ── */}
       <main className="max-w-3xl mx-auto px-4 py-6 pb-32 flex flex-col gap-6">
+
+        {/* ── Section 0: Premium ──
+            Shown at the very top. Two states:
+              • Already premium  → a simple "Premium active" status card.
+              • Not premium      → a benefits card with an "Upgrade" button.
+            Phase 1 has no checkout, so Upgrade just shows a "coming soon" note.
+            (Free premium is granted by hand in the database as 'comp'.) */}
+        {isPremium ? (
+          // ── Premium ACTIVE state ──
+          <section className="bg-white border border-indigo-200 rounded-2xl p-5 shadow-sm">
+            <div className="flex items-center gap-2 mb-2">
+              <Crown className="w-4 h-4 text-indigo-600" />
+              <span className="text-sm font-semibold text-stone-700">Premium</span>
+            </div>
+            <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2.5">
+              <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+              <div className="text-sm text-emerald-800">
+                <span className="font-medium">Premium active</span>
+                {/* Name the source when we know it. 'comp' reads nicer as
+                    "complimentary"; paid sources show their provider. */}
+                {premiumSource && (
+                  <span className="text-emerald-700">
+                    {' '}—{' '}
+                    {premiumSource === 'comp'
+                      ? 'complimentary'
+                      : premiumSource === 'lemonsqueezy'
+                        ? 'Lemon Squeezy'
+                        : premiumSource === 'stripe'
+                          ? 'Stripe'
+                          : premiumSource}
+                  </span>
+                )}
+              </div>
+            </div>
+            <p className="text-xs text-stone-400 mt-2">
+              Thanks for supporting Splitab. All premium features are unlocked.
+            </p>
+          </section>
+        ) : (
+          // ── NOT premium state (upsell) ──
+          <section className="bg-white border border-indigo-200 rounded-2xl p-5 shadow-sm">
+            <div className="flex items-center gap-2 mb-1.5">
+              <Sparkles className="w-4 h-4 text-indigo-600" />
+              <span className="text-sm font-semibold text-stone-700">Splitab Premium</span>
+            </div>
+            <p className="text-xs text-stone-500 mb-3">
+              Unlock the power features and support the app.
+            </p>
+
+            {/* Benefit list — the agreed premium features. */}
+            <ul className="flex flex-col gap-2 mb-4">
+              {[
+                'Unlimited receipt & statement scanning',
+                'Recurring expenses',
+                'Advanced insights',
+                'PDF export',
+              ].map(benefit => (
+                <li key={benefit} className="flex items-start gap-2 text-sm text-stone-700">
+                  <Check className="w-4 h-4 text-indigo-600 mt-0.5 shrink-0" />
+                  <span>{benefit}</span>
+                </li>
+              ))}
+            </ul>
+
+            {/* Upgrade — Phase 1 shows a "coming soon" note (no checkout yet). */}
+            <button
+              type="button"
+              onClick={() => setShowUpgradeNote(true)}
+              className="w-full flex items-center justify-center gap-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 text-sm font-medium transition"
+            >
+              <Crown className="w-4 h-4" />
+              Upgrade
+            </button>
+
+            {/* Coming-soon note, revealed after tapping Upgrade. */}
+            {showUpgradeNote && (
+              <div className="mt-3 flex items-start gap-2 rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm text-indigo-700">
+                <Sparkles className="w-4 h-4 mt-0.5 shrink-0" />
+                <span>Coming soon — paid plans launching shortly.</span>
+              </div>
+            )}
+          </section>
+        )}
 
         {/* ── Section 1: Default currency ── */}
         <section className="bg-white border border-stone-200 rounded-2xl p-5 shadow-sm">

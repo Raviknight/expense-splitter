@@ -16,6 +16,20 @@ import Avatar from './ui/Avatar.jsx';
 // for PDFs). Requires a GROQ_API_KEY secret on the deployed function.
 const SCAN_ENABLED = true;
 
+// ── Premium master switch (DORMANT in Phase 1) ───────────────────────────────
+// This is the single on/off switch for premium gating across the whole app.
+// While it is `false`, NOTHING is gated — every feature stays free and works
+// exactly as it does today. The gating code below is scaffolding only.
+//
+// Phase 2 will flip this to `true` once paid checkout (Lemon Squeezy) is wired
+// up, so that non-premium users get an upgrade prompt for premium-only features
+// instead of using them. Until then, leave this `false`.
+//
+// Note: a "free monthly scan allowance" for non-premium users (e.g. 3 free
+// scans/month, then prompt to upgrade) is a Phase-2 refinement. It needs usage
+// counting in the database and is intentionally NOT built here.
+const PREMIUM_ENFORCED = false;
+
 /* ============ Categories & auto-categorization ============ */
 
 const CATEGORIES = [
@@ -504,6 +518,23 @@ export default function App() {
   // Get the signed-in user's id and profile from the auth layer.
   const { user, profile } = useAuth();
 
+  // ── Premium status (Phase 1 plumbing — dormant) ─────────────────────────────
+  // `profile.is_premium` comes from the profiles table (added by db/11). Before
+  // db/11 is run the column is missing, so `profile.is_premium` is undefined —
+  // the `=== true` check treats that as "not premium", which is safe.
+  const isPremium = profile?.is_premium === true;
+
+  // Gate helper. Returns true if the user is ALLOWED to use a premium feature.
+  // While PREMIUM_ENFORCED is false this ALWAYS returns true, so nothing is
+  // blocked today. The `feature` argument isn't used yet — it's there so a
+  // future version can allow some premium features but not others (granularity).
+  const premiumAllowed = (feature) => !PREMIUM_ENFORCED || isPremium;
+
+  // The small "this is a premium feature" prompt. Null = hidden. When set, it
+  // holds a short label of what was attempted (e.g. "Receipt scanning") so the
+  // prompt can name it. This only ever appears once PREMIUM_ENFORCED is true.
+  const [premiumPrompt, setPremiumPrompt] = useState(null);
+
   // Load all data from Supabase. The store returns the same shape the UI
   // already knows how to render, so minimal UI changes are needed.
   const { groups, activeGroupId, loading, error, online, pendingCount, actions } = useExpenseStore(
@@ -895,6 +926,10 @@ export default function App() {
   };
 
   const exportPdf = () => {
+    // Premium gate (dormant — never triggers while PREMIUM_ENFORCED is false).
+    // When enforcement is on, non-premium users get the upgrade prompt instead
+    // of the printable report. CSV export (exportCsv) stays free always.
+    if (!premiumAllowed('pdf')) { setPremiumPrompt('PDF export'); return; }
     // Use the correct net balances + greedy suggestions for the printed summary.
     const net = computeNetBalances(people, expenses);
     const suggestions = suggestSettlements(net);
@@ -1171,7 +1206,14 @@ export default function App() {
       <div className="fixed bottom-6 right-6 z-30 flex flex-col items-end gap-3">
         {SCAN_ENABLED && (
         <button
-          onClick={() => { setImportStartMode('scan'); setShowImport(true); }}
+          onClick={() => {
+            // Premium gate (dormant — never triggers while PREMIUM_ENFORCED is
+            // false). When enforcement is on, non-premium users get the upgrade
+            // prompt instead of opening the scanner.
+            if (!premiumAllowed('scan')) { setPremiumPrompt('Receipt scanning'); return; }
+            setImportStartMode('scan');
+            setShowImport(true);
+          }}
           className="w-12 h-12 rounded-full bg-white border border-stone-300 text-stone-700 shadow-md hover:bg-stone-50 active:scale-95 transition flex items-center justify-center"
           aria-label="Scan receipt or statement"
           title="Scan a receipt or statement photo / PDF"
@@ -1283,6 +1325,54 @@ export default function App() {
           onConfirm={() => deleteGroup(confirmDeleteGroup.id)}
         />
       )}
+
+      {/* Premium upgrade prompt — only ever shown once PREMIUM_ENFORCED is true
+          and a non-premium user taps a premium feature. Points them at
+          Settings → Premium. Minimal modal; no checkout here (Phase 2). */}
+      {premiumPrompt && (
+        <UpgradePrompt feature={premiumPrompt} onClose={() => setPremiumPrompt(null)} />
+      )}
+    </div>
+  );
+}
+
+/* ============ Premium upgrade prompt ============
+ *
+ * A small, dependency-free modal shown when a non-premium user tries to use a
+ * premium-only feature (receipt scanning, PDF export). It only appears once
+ * PREMIUM_ENFORCED is flipped on in Phase 2 — until then this never renders.
+ * It does NOT start checkout; it simply points the user to Settings → Premium.
+ */
+function UpgradePrompt({ feature, onClose }) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-sm rounded-2xl bg-white border border-stone-200 shadow-xl p-5"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
+            Premium
+          </span>
+        </div>
+        <h3 className="text-base font-semibold text-stone-900">
+          {feature} is a Premium feature
+        </h3>
+        <p className="text-sm text-stone-600 mt-1.5">
+          Upgrade to Splitab Premium to unlock {feature.toLowerCase()} and more.
+          You can manage your plan in Settings → Premium.
+        </p>
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-4 w-full rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 text-sm font-medium transition"
+        >
+          Got it
+        </button>
+      </div>
     </div>
   );
 }
