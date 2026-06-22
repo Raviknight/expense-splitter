@@ -1388,6 +1388,30 @@ function HomeScreen({
   groups, myName, online, pendingCount, error, onClearError,
   onOpenGroup, onNewGroup, groupsModal, confirmDelete,
 }) {
+  // First name for the greeting (myName is the owner's display name, or 'Me').
+  const firstName = (myName && myName !== 'Me') ? String(myName).split(' ')[0] : 'there';
+
+  // Your overall position across SHARED groups, kept SEPARATE per currency —
+  // we can't add ₹ to $ into one number, so we show one chip per currency that
+  // isn't settled. Solo groups are personal spending, not money owed, so skip them.
+  const netByCurrency = useMemo(() => {
+    const m = {};
+    groups.forEach(g => {
+      const people = g.people || [];
+      const isSolo = (g.type === 'solo') || people.length === 1;
+      if (isSolo) return;
+      const mine = computeNetBalances(people, g.expenses || []).find(b => b.name === myName);
+      if (!mine) return;
+      const code = g.currency || 'USD';
+      m[code] = (m[code] || 0) + mine.net;
+    });
+    return m;
+  }, [groups, myName]);
+
+  // Currencies with a real (non-rounding) balance, for the summary chips.
+  const balanceChips = Object.entries(netByCurrency).filter(([, v]) => Math.abs(v) >= 0.005);
+  const hasShared = groups.some(g => !((g.type === 'solo') || (g.people || []).length === 1));
+
   return (
     <div className="min-h-screen bg-[#FAFAF7] text-stone-900" style={{ fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif' }}>
 
@@ -1416,10 +1440,17 @@ function HomeScreen({
 
       <header className="sticky top-11 z-20 bg-[#FAFAF7]/95 backdrop-blur border-b border-stone-200">
         <div className="max-w-3xl mx-auto px-4 pt-5 pb-4 flex items-center justify-between gap-3">
-          <h1 className="text-xl font-semibold">Your groups</h1>
+          <div className="min-w-0">
+            <h1 className="text-xl font-semibold truncate">Hi {firstName}</h1>
+            <p className="text-xs text-stone-500 mt-0.5">
+              {groups.length === 0
+                ? 'No groups yet'
+                : `${groups.length} group${groups.length === 1 ? '' : 's'}`}
+            </p>
+          </div>
           <button
             onClick={onNewGroup}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700"
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 shrink-0"
           >
             <Plus className="w-4 h-4" />
             New group
@@ -1427,12 +1458,63 @@ function HomeScreen({
         </div>
       </header>
 
-      <main className="max-w-3xl mx-auto px-4 py-4 pb-24">
-        <div className="grid gap-3 sm:grid-cols-2">
-          {groups.map(g => (
-            <GroupCard key={g.id} group={g} myName={myName} onOpen={() => onOpenGroup(g.id)} />
-          ))}
-        </div>
+      <main className="max-w-3xl mx-auto px-4 py-4 pb-24 space-y-4">
+
+        {/* At-a-glance balance across shared groups (one chip per currency). */}
+        {hasShared && (
+          <div className="bg-white border border-stone-200 rounded-2xl p-4">
+            <div className="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-2">Your balance</div>
+            {balanceChips.length === 0 ? (
+              <div className="text-sm text-stone-600 flex items-center gap-2">
+                <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+                You&rsquo;re all settled up across your groups.
+              </div>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {balanceChips.map(([code, v]) => {
+                  const sym = CURRENCIES[code] || '$';
+                  const owed = v > 0;
+                  return (
+                    <span
+                      key={code}
+                      className={`text-sm font-semibold px-3 py-1.5 rounded-full border ${
+                        owed
+                          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                          : 'bg-rose-50 text-rose-600 border-rose-200'
+                      }`}
+                    >
+                      {owed ? `You're owed +${fmt(v, sym)}` : `You owe -${fmt(Math.abs(v), sym)}`}
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Group cards, or a friendly empty state for brand-new users. */}
+        {groups.length === 0 ? (
+          <div className="text-center py-16">
+            <div className="text-4xl mb-3">👋</div>
+            <h2 className="font-semibold text-lg text-stone-900">Welcome to Splitab</h2>
+            <p className="text-sm text-stone-500 mt-1 max-w-xs mx-auto">
+              Create a group for a trip, your apartment, or anything you split — then add expenses and the people involved.
+            </p>
+            <button
+              onClick={onNewGroup}
+              className="mt-5 inline-flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700"
+            >
+              <Plus className="w-4 h-4" />
+              Create your first group
+            </button>
+          </div>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2">
+            {groups.map(g => (
+              <GroupCard key={g.id} group={g} myName={myName} onOpen={() => onOpenGroup(g.id)} />
+            ))}
+          </div>
+        )}
       </main>
 
       {groupsModal}
@@ -1989,6 +2071,20 @@ function InsightsTab({ expenses, onPick }) {
     return Object.entries(m).sort((a, b) => b[1] - a[1]);
   }, [periodExpenses]);
 
+  // The biggest individual expenses in the chosen period (top 3, high → low).
+  const topExpenses = useMemo(
+    () => [...periodExpenses].sort((a, b) => Number(b.amount || 0) - Number(a.amount || 0)).slice(0, 3),
+    [periodExpenses]
+  );
+
+  // Spend per month across ALL expenses (oldest → newest) for the trend bars.
+  // Independent of the period filter — it's the "zoom out" view.
+  const monthly = useMemo(() => {
+    const m = {};
+    expenses.forEach(e => { const k = String(e.date || '').slice(0, 7); if (k) m[k] = (m[k] || 0) + Number(e.amount || 0); });
+    return Object.entries(m).sort((a, b) => (a[0] < b[0] ? -1 : 1));
+  }, [expenses]);
+
   // The month dropdown. Shown above everything so it stays visible even when the
   // chosen period is empty. Only render the picker if there is at least one month.
   const picker = months.length > 0 && (
@@ -2091,6 +2187,48 @@ function InsightsTab({ expenses, onPick }) {
           );
         })}
       </div>
+
+      {/* Biggest individual expenses in the period. */}
+      {topExpenses.length > 0 && (
+        <div className="bg-white border border-stone-200 rounded-xl p-4 space-y-2.5">
+          <div className="text-[11px] uppercase tracking-wider text-stone-500 font-medium">Biggest expenses</div>
+          {topExpenses.map((e, i) => {
+            const meta = catMeta(e.category);
+            return (
+              <div key={i} className="flex items-center gap-2.5 text-sm">
+                <span className="text-base shrink-0">{meta.emoji}</span>
+                <span className="font-medium text-stone-800 truncate flex-1">{e.description}</span>
+                <span className="font-semibold tabular-nums shrink-0">{fmt(Number(e.amount || 0))}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Spending over time — only meaningful in "All time" with 2+ months. */}
+      {period === 'all' && monthly.length > 1 && (() => {
+        const max = Math.max(...monthly.map(x => x[1]));
+        return (
+          <div className="bg-white border border-stone-200 rounded-xl p-4">
+            <div className="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-3">Spending over time</div>
+            <div className="flex items-end gap-1.5 h-28">
+              {monthly.map(([mk, amt]) => {
+                const h = max > 0 ? Math.max(4, (amt / max) * 100) : 4;
+                return (
+                  <div
+                    key={mk}
+                    className="flex-1 flex flex-col items-center justify-end gap-1 min-w-0 h-full"
+                    title={`${monthLabel(mk)}: ${fmt(amt)}`}
+                  >
+                    <div className="w-full bg-indigo-500/80 rounded-t" style={{ height: `${h}%` }} />
+                    <span className="text-[9px] text-stone-400 truncate w-full text-center">{mk.slice(5)}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

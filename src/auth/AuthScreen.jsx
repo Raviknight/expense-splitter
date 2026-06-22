@@ -365,9 +365,15 @@ function EmailPasswordForm() {
 export default function AuthScreen() {
   return (
     <div
-      className="min-h-screen bg-[#FAFAF7] flex flex-col items-center justify-center px-4 py-12"
+      className="relative overflow-hidden min-h-screen bg-[#FAFAF7] flex flex-col items-center justify-center px-4 py-12"
       style={{ fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif' }}
     >
+      {/* Soft decorative glow behind the hero — mid-tone indigo at low opacity,
+          so it reads as a gentle accent in BOTH light and dark themes (no white band). */}
+      <div aria-hidden="true" className="pointer-events-none absolute -top-20 left-1/2 -translate-x-1/2 w-[460px] h-[460px] rounded-full bg-indigo-400/10 blur-3xl" />
+
+      {/* All content sits above the glow. */}
+      <div className="relative z-10 w-full flex flex-col items-center">
 
       {/* ── Hero / title area ── */}
       <div className="mb-8 text-center">
@@ -427,9 +433,6 @@ export default function AuthScreen() {
         {/* 2. Google */}
         <section>
           <GoogleButton />
-          <p className="text-xs text-stone-400 mt-2">
-            Requires Google OAuth to be enabled in Supabase Auth settings.
-          </p>
         </section>
 
         {/* Divider */}
@@ -449,6 +452,8 @@ export default function AuthScreen() {
       <p className="text-xs text-stone-400 mt-6 text-center max-w-xs">
         Your data is protected by Row-Level Security. Only you and your accepted connections can see your expenses.
       </p>
+
+      </div>
     </div>
   );
 }
