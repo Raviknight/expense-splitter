@@ -180,6 +180,14 @@ on `groups`, `group_members`, `expenses`, `settlements`, and `connections`. Any 
 triggers a full refetch, so a partner's edit appears on every signed-in device within a
 second or two. The channel is cleaned up on sign-out / unmount.
 
+**Resume-from-background handling** (fixes a "stuck loading" bug): a suspended PWA/tab
+resumes with a dead realtime socket and a possibly-stale auth token, which could leave a
+query hanging forever and the spinner stuck (only a full close/reopen recovered). `store.js`
+now (1) runs a **12s loading watchdog** so the spinner can never hang — it falls back to the
+cached snapshot; (2) on `visibilitychange`/`focus`/`online`, nudges the auth token
+(`getSession()`) and refetches; (3) rebuilds the realtime channel on resume (kept in
+`channelRef` so `subscribeRealtime()` can be re-called).
+
 The store also handles the name↔id translation: the UI works with member **names**
 (e.g. "Shailja"), while the database stores `expenses.paid_by` as a `group_members` **id**.
 The store builds per-group maps (`_nameToMemberId` / `_memberIdToName`) to convert both ways.
