@@ -26,3 +26,6 @@ npm-debug.log*
 
 # Stray/personal files that shouldn't be in the repo
 supabase/functions/scan-receipt/Family Tree.csv
+
+# Local provider keys for scripts/test-providers.mjs (never commit)
+.env.providers

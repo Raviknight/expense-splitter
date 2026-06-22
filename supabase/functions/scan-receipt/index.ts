@@ -1,55 +1,56 @@
-// scan-receipt — Supabase Edge Function (Groq primary, Gemini fallback)
+// scan-receipt — Supabase Edge Function (multi-provider fallback)
 // ----------------------------------------------------------------------------
-// Turns a receipt/statement IMAGE or PDF into expense rows, cheaply + reliably:
-//   • IMAGE → a vision model (Groq first; Gemini as fallback if Groq is
-//     rate-limited / down).
-//   • PDF   → we extract the text OURSELVES (unpdf, free), then a cheap TEXT
-//     model (Groq first; Gemini fallback). Text is far cheaper than vision.
-// The model also flags low-confidence rows ("uncertain") and signals an
-// unreadable file ("unreadable"). Returns { ok, expenses, unreadable }.
+// Turns a receipt/statement IMAGE or PDF into expense rows, trying providers in
+// order so a single one being down/rate-limited doesn't break scanning:
+//        OpenRouter  →  Groq  →  Gemini
+// (Only providers whose API key is set are attempted.)
+//   • IMAGE → a vision model.
+//   • PDF   → we extract the text OURSELVES (unpdf, free), then a TEXT model.
+// The model flags low-confidence rows ("uncertain") and an unreadable file
+// ("unreadable"). Returns { ok, expenses, unreadable }.
 //
-// DEPLOY (Supabase dashboard → Edge Functions → scan-receipt):
-//   Secrets:
-//     GROQ_API_KEY      = gsk_…           (primary; required)
-//     GEMINI_API_KEY    = …               (optional fallback; from aistudio.google.com)
-//   Optional model overrides:
-//     GROQ_VISION_MODEL (default meta-llama/llama-4-scout-17b-16e-instruct)
-//     GROQ_TEXT_MODEL   (default llama-3.3-70b-versatile)
-//     GEMINI_MODEL      (default gemini-2.0-flash)
+// IMPORTANT: verify each provider FIRST with `node scripts/test-providers.mjs`
+// (fill scripts-friendly keys in .env.providers) before relying on them here.
+//
+// DEPLOY (Edge Functions → scan-receipt). Secrets (set the ones you use):
+//   OPENROUTER_API_KEY  (primary)   + optional OPENROUTER_VISION_MODEL / OPENROUTER_TEXT_MODEL
+//   GROQ_API_KEY        (fallback)  + optional GROQ_VISION_MODEL / GROQ_TEXT_MODEL
+//   GEMINI_API_KEY      (fallback)  + optional GEMINI_MODEL
 // ----------------------------------------------------------------------------
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-const GROQ_API_KEY      = Deno.env.get("GROQ_API_KEY");
-const GEMINI_API_KEY    = Deno.env.get("GEMINI_API_KEY"); // optional fallback
-const GROQ_VISION_MODEL = Deno.env.get("GROQ_VISION_MODEL") || "meta-llama/llama-4-scout-17b-16e-instruct";
-const GROQ_TEXT_MODEL   = Deno.env.get("GROQ_TEXT_MODEL")   || "llama-3.3-70b-versatile";
-const GEMINI_MODEL      = Deno.env.get("GEMINI_MODEL")      || "gemini-2.0-flash";
 const SUPABASE_URL      = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 
-const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+const OPENROUTER_API_KEY    = Deno.env.get("OPENROUTER_API_KEY");
+const OPENROUTER_VISION     = Deno.env.get("OPENROUTER_VISION_MODEL") || "meta-llama/llama-3.2-11b-vision-instruct:free";
+const OPENROUTER_TEXT       = Deno.env.get("OPENROUTER_TEXT_MODEL")   || "meta-llama/llama-3.3-70b-instruct:free";
+const GROQ_API_KEY          = Deno.env.get("GROQ_API_KEY");
+const GROQ_VISION           = Deno.env.get("GROQ_VISION_MODEL") || "meta-llama/llama-4-scout-17b-16e-instruct";
+const GROQ_TEXT             = Deno.env.get("GROQ_TEXT_MODEL")   || "llama-3.3-70b-versatile";
+const GEMINI_API_KEY        = Deno.env.get("GEMINI_API_KEY");
+const GEMINI_MODEL          = Deno.env.get("GEMINI_MODEL") || "gemini-2.0-flash";
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
-
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json" } });
 }
 
 const PROMPT = `You extract expenses from a receipt or bank/card statement for a bill-splitting app.
-Return ONLY a JSON object of the form {"expenses":[{"date":"YYYY-MM-DD","description":"string","amount":number,"category":"string","uncertain":boolean,"note":"string"}]}.
+Return ONLY a JSON object: {"expenses":[{"date":"YYYY-MM-DD","description":"string","amount":number,"category":"string","uncertain":boolean,"note":"string"}]}.
 Rules:
 - amount is a positive number (no currency symbols).
-- Ignore subtotals, taxes, tips, balances and running totals UNLESS the document only shows a single total (then return that one).
-- Itemized receipt: prefer the line items; otherwise return one expense (merchant name as description, final total as amount).
-- If a transaction's date is missing, use the document date; if none, use "".
-- category: a short guess like Groceries, Restaurants, Fuel, Lodging, Transportation, Shopping, or Other.
-- CONFIDENCE: set "uncertain": true for any row where a value was illegible/blurry/low-confidence, with a short reason in "note". Else false.
-- Return {"expenses":[]} if no purchases, and {"expenses":[],"unreadable":true} if the file is too unclear to read at all.`;
+- Ignore subtotals/taxes/tips/balances/running totals UNLESS the document only shows a single total.
+- Itemized receipt: prefer line items; otherwise one expense (merchant as description, final total as amount).
+- Missing date → use the document date; if none, "".
+- category: short guess (Groceries, Restaurants, Fuel, Lodging, Transportation, Shopping, Other).
+- uncertain: true for any row that was illegible/blurry/low-confidence (put a short reason in note); else false.
+- Return {"expenses":[]} if no purchases, and {"expenses":[],"unreadable":true} if too unclear to read at all.`;
 
 function parseResult(content: string): { rows: any[]; unreadable: boolean } {
   try {
@@ -61,7 +62,6 @@ function parseResult(content: string): { rows: any[]; unreadable: boolean } {
     return { rows: [], unreadable: false };
   }
 }
-
 function normalize(rows: any[]) {
   return rows.map((e) => ({
     date: typeof e?.date === "string" ? e.date : "",
@@ -73,40 +73,39 @@ function normalize(rows: any[]) {
   })).filter((e) => e.amount > 0);
 }
 
-// ─── provider calls ──────────────────────────────────────────────────────────
-async function groqChat(body: Record<string, unknown>): Promise<string> {
-  const resp = await fetch(GROQ_URL, {
+// OpenAI-compatible chat (works for OpenRouter AND Groq).
+async function oai(baseUrl: string, key: string, model: string, messages: unknown[], extra: Record<string,string> = {}): Promise<string> {
+  const resp = await fetch(baseUrl, {
     method: "POST",
-    headers: { Authorization: `Bearer ${GROQ_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json", ...extra },
+    body: JSON.stringify({ model, temperature: 0, messages }),
   });
-  if (!resp.ok) throw new Error(`Groq: ${(await resp.text()).slice(0, 300)}`);
+  if (!resp.ok) throw new Error(`${baseUrl.includes("openrouter") ? "OpenRouter" : "Groq"}: ${(await resp.text()).slice(0, 250)}`);
   return (await resp.json())?.choices?.[0]?.message?.content ?? "{}";
 }
-
-async function geminiGenerate(parts: unknown[]): Promise<string> {
+async function gemini(parts: unknown[]): Promise<string> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
   const resp = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
+    method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ contents: [{ parts }], generationConfig: { responseMimeType: "application/json", temperature: 0 } }),
   });
-  if (!resp.ok) throw new Error(`Gemini: ${(await resp.text()).slice(0, 300)}`);
+  if (!resp.ok) throw new Error(`Gemini: ${(await resp.text()).slice(0, 250)}`);
   return (await resp.json())?.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
 }
 
-// Try Groq first; on ANY failure, fall back to Gemini if its key is set.
-async function withFallback(groqFn: () => Promise<string>, geminiFn: () => Promise<string>): Promise<string> {
-  try {
-    return await groqFn();
-  } catch (e1) {
-    if (!GEMINI_API_KEY) throw e1;
-    try {
-      return await geminiFn();
-    } catch (e2) {
-      throw new Error(`${(e1 as Error).message} || ${(e2 as Error).message}`);
-    }
+const OR_URL = "https://openrouter.ai/api/v1/chat/completions";
+const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+const OR_HEADERS = { "HTTP-Referer": "https://splitab.app", "X-Title": "Splitab" };
+const visionMsg = (b64: string, mt: string) => [{ role: "user", content: [{ type: "text", text: PROMPT }, { type: "image_url", image_url: { url: `data:${mt};base64,${b64}` } }] }];
+const textMsg   = (t: string) => [{ role: "system", content: PROMPT }, { role: "user", content: t }];
+
+// Try each configured provider in order; return the first success.
+async function tryChain(attempts: Array<() => Promise<string>>): Promise<string> {
+  let lastErr: unknown = new Error("No AI provider is configured. Set OPENROUTER_API_KEY, GROQ_API_KEY, or GEMINI_API_KEY.");
+  for (const fn of attempts) {
+    try { return await fn(); } catch (e) { lastErr = e; }
   }
+  throw lastErr;
 }
 
 Deno.serve(async (req) => {
@@ -114,8 +113,6 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return json({ error: "Use POST" }, 405);
 
   try {
-    if (!GROQ_API_KEY && !GEMINI_API_KEY) return json({ error: "Server missing GROQ_API_KEY (and no GEMINI_API_KEY fallback)" }, 500);
-
     const authHeader = req.headers.get("Authorization") ?? "";
     const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { global: { headers: { Authorization: authHeader } } });
     const { data: { user }, error: userErr } = await supabase.auth.getUser();
@@ -128,16 +125,12 @@ Deno.serve(async (req) => {
     let content: string;
 
     if (String(mimeType).startsWith("image/")) {
-      content = await withFallback(
-        () => groqChat({
-          model: GROQ_VISION_MODEL, temperature: 0,
-          messages: [{ role: "user", content: [
-            { type: "text", text: PROMPT },
-            { type: "image_url", image_url: { url: `data:${mimeType};base64,${fileBase64}` } },
-          ] }],
-        }),
-        () => geminiGenerate([{ text: PROMPT }, { inline_data: { mime_type: mimeType, data: fileBase64 } }]),
-      );
+      const m = visionMsg(fileBase64, mimeType);
+      const attempts: Array<() => Promise<string>> = [];
+      if (OPENROUTER_API_KEY) attempts.push(() => oai(OR_URL, OPENROUTER_API_KEY, OPENROUTER_VISION, m, OR_HEADERS));
+      if (GROQ_API_KEY)       attempts.push(() => oai(GROQ_URL, GROQ_API_KEY, GROQ_VISION, m));
+      if (GEMINI_API_KEY)     attempts.push(() => gemini([{ text: PROMPT }, { inline_data: { mime_type: mimeType, data: fileBase64 } }]));
+      content = await tryChain(attempts);
 
     } else if (mimeType === "application/pdf") {
       let text = "";
@@ -153,13 +146,12 @@ Deno.serve(async (req) => {
       if (text.length < 40) return json({ error: "This PDF looks like scanned images (no selectable text). Try a photo instead." }, 422);
 
       const clipped = text.slice(0, 24000);
-      content = await withFallback(
-        () => groqChat({
-          model: GROQ_TEXT_MODEL, temperature: 0, response_format: { type: "json_object" },
-          messages: [{ role: "system", content: PROMPT }, { role: "user", content: clipped }],
-        }),
-        () => geminiGenerate([{ text: `${PROMPT}\n\nDOCUMENT TEXT:\n${clipped}` }]),
-      );
+      const m = textMsg(clipped);
+      const attempts: Array<() => Promise<string>> = [];
+      if (OPENROUTER_API_KEY) attempts.push(() => oai(OR_URL, OPENROUTER_API_KEY, OPENROUTER_TEXT, m, OR_HEADERS));
+      if (GROQ_API_KEY)       attempts.push(() => oai(GROQ_URL, GROQ_API_KEY, GROQ_TEXT, m));
+      if (GEMINI_API_KEY)     attempts.push(() => gemini([{ text: `${PROMPT}\n\nDOCUMENT TEXT:\n${clipped}` }]));
+      content = await tryChain(attempts);
 
     } else {
       return json({ error: "Unsupported file type. Upload an image or a PDF." }, 415);
