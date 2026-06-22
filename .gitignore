@@ -23,3 +23,6 @@ desktop.ini
 npm-debug.log*
 
 # Build intermediates (docs/ is intentionally tracked for GitHub Pages)
+
+# Stray/personal files that shouldn't be in the repo
+supabase/functions/scan-receipt/Family Tree.csv
