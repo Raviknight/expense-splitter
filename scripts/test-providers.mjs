@@ -20,6 +20,7 @@
 //    real error if something's wrong (bad key, decommissioned model, etc.).
 
 import { readFileSync, existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 
 // --- tiny .env.providers loader (no dependency) ---
 const envPath = new URL('../.env.providers', import.meta.url);
@@ -31,8 +32,17 @@ if (existsSync(envPath)) {
 }
 const E = (k, d) => process.env[k] || d;
 
-// 1x1 PNG — enough to confirm a vision endpoint accepts an image request.
-const TINY_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+// A REAL image (not a 1x1 pixel) — some vision APIs (e.g. Groq) reject a 1x1 PNG
+// as "invalid image data", so we render a small receipt-like image with `sharp`
+// (a dev dependency). Falls back to a tiny PNG if sharp isn't installed.
+let TINY_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+try {
+  const sharp = createRequire(import.meta.url)('sharp');
+  const png = await sharp({ create: { width: 200, height: 120, channels: 3, background: { r: 255, g: 255, b: 255 } } })
+    .composite([{ input: Buffer.from('<svg width="200" height="120"><text x="10" y="60" font-size="24">COFFEE 4.50</text></svg>') }])
+    .png().toBuffer();
+  TINY_PNG = png.toString('base64');
+} catch { /* sharp missing — fall back to the 1x1 PNG (vision tests may false-FAIL) */ }
 
 async function oai(url, key, model, messages, extra = {}) {
   const r = await fetch(url, {
@@ -70,8 +80,8 @@ const providers = [
   {
     name: 'OpenRouter',
     on: !!process.env.OPENROUTER_API_KEY,
-    text: () => oai(OR, E('OPENROUTER_API_KEY'), E('OPENROUTER_TEXT_MODEL', 'meta-llama/llama-3.3-70b-instruct:free'), txtMsg, ORH),
-    vision: () => oai(OR, E('OPENROUTER_API_KEY'), E('OPENROUTER_VISION_MODEL', 'meta-llama/llama-3.2-11b-vision-instruct:free'), imgMsg, ORH),
+    text: () => oai(OR, E('OPENROUTER_API_KEY'), E('OPENROUTER_TEXT_MODEL', 'openai/gpt-oss-120b:free'), txtMsg, ORH),
+    vision: () => oai(OR, E('OPENROUTER_API_KEY'), E('OPENROUTER_VISION_MODEL', 'nvidia/nemotron-nano-12b-v2-vl:free'), imgMsg, ORH),
   },
   {
     name: 'Groq',

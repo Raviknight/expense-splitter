@@ -24,8 +24,8 @@ const SUPABASE_URL      = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 
 const OPENROUTER_API_KEY    = Deno.env.get("OPENROUTER_API_KEY");
-const OPENROUTER_VISION     = Deno.env.get("OPENROUTER_VISION_MODEL") || "meta-llama/llama-3.2-11b-vision-instruct:free";
-const OPENROUTER_TEXT       = Deno.env.get("OPENROUTER_TEXT_MODEL")   || "meta-llama/llama-3.3-70b-instruct:free";
+const OPENROUTER_VISION     = Deno.env.get("OPENROUTER_VISION_MODEL") || "nvidia/nemotron-nano-12b-v2-vl:free";
+const OPENROUTER_TEXT       = Deno.env.get("OPENROUTER_TEXT_MODEL")   || "openai/gpt-oss-120b:free";
 const GROQ_API_KEY          = Deno.env.get("GROQ_API_KEY");
 const GROQ_VISION           = Deno.env.get("GROQ_VISION_MODEL") || "meta-llama/llama-4-scout-17b-16e-instruct";
 const GROQ_TEXT             = Deno.env.get("GROQ_TEXT_MODEL")   || "llama-3.3-70b-versatile";
