@@ -1,0 +1,66 @@
+# Supabase pauses Free-plan projects after about 7 days of low database
+# activity. This workflow runs one tiny real query against Postgres each day so
+# the project stays awake.
+#
+# Setup (one time):
+#   1. Run db/12_keepalive.sql in the Supabase SQL Editor.
+#   2. In GitHub: Settings -> Secrets and variables -> Actions -> New repository
+#      secret. Add SUPABASE_URL and SUPABASE_ANON_KEY (the same two values that
+#      are in your local .env).
+#   3. Push this file, then open the Actions tab and use "Run workflow" once to
+#      confirm it goes green before trusting the schedule.
+#
+# Known caveat: GitHub disables scheduled workflows in a repository that has had
+# no commits for 60 days. It emails you first, and one click re-enables it. If
+# this repo goes quiet for long stretches, add an external pinger as a backup.
+
+name: Supabase keep-alive
+
+on:
+  schedule:
+    # 06:17 UTC daily. The odd minute is deliberate: GitHub delays or drops
+    # scheduled runs that land on busy round-hour slots.
+    - cron: '17 6 * * *'
+  # Lets you trigger a run by hand from the Actions tab.
+  workflow_dispatch:
+
+# No repository contents are needed, so hand the job a read-only token.
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Query the keepalive table
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SUPABASE_URL:-}" ] || [ -z "${SUPABASE_ANON_KEY:-}" ]; then
+            echo "Missing SUPABASE_URL / SUPABASE_ANON_KEY repository secrets."
+            exit 1
+          fi
+
+          # --fail is intentionally NOT used, so we can print the response body
+          # on a bad status instead of curl swallowing it.
+          status=$(curl -sS -o response.txt -w '%{http_code}' \
+            "${SUPABASE_URL}/rest/v1/keepalive?select=id&limit=1" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}")
+
+          echo "HTTP ${status}"
+          cat response.txt
+          echo
+
+          # A paused, deleted, or misconfigured project will not return 200.
+          # Fail loudly so the run shows red in the Actions tab rather than
+          # quietly doing nothing for weeks.
+          if [ "${status}" != "200" ]; then
+            echo "Keep-alive ping failed."
+            exit 1
+          fi
+
+          echo "Keep-alive ping OK."

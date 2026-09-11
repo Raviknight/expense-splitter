@@ -1,0 +1,80 @@
+# Weekly AI-provider health check for receipt scanning.
+#
+# Why: the scan-receipt Edge Function depends on third-party models that get
+# renamed, retired and rate-limited without notice. Without this, the first
+# sign of a dead model is a failed scan — possibly weeks after it broke.
+# This runs the existing scripts/test-providers.mjs against the real APIs and
+# fails red, so the repo tells you instead of a user telling you.
+#
+# Setup (one time):
+#   In GitHub: Settings -> Secrets and variables -> Actions, add the keys you
+#   actually use: OPENROUTER_API_KEY, GROQ_API_KEY. Optionally add the model
+#   overrides so CI tests exactly what production runs:
+#     OPENROUTER_VISION_MODEL, OPENROUTER_TEXT_MODEL,
+#     GROQ_VISION_MODEL, GROQ_TEXT_MODEL
+#
+# Note: the script tests ONE model per provider (the first of your list). It is
+# a canary for "my primary model still exists", not a check of every fallback.
+
+name: AI provider health check
+
+on:
+  schedule:
+    # 07:23 UTC every Monday. Weekly is enough — this is drift detection, and
+    # each run spends real (tiny) API credit.
+    - cron: '23 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # sharp is a devDependency; test-providers.mjs uses it to render a real
+      # receipt-like image, because some vision APIs reject a 1x1 PNG as
+      # invalid and would false-FAIL without it.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test providers
+        env:
+          OPENROUTER_API_KEY:      ${{ secrets.OPENROUTER_API_KEY }}
+          GROQ_API_KEY:            ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_VISION_MODEL: ${{ secrets.OPENROUTER_VISION_MODEL }}
+          OPENROUTER_TEXT_MODEL:   ${{ secrets.OPENROUTER_TEXT_MODEL }}
+          GROQ_VISION_MODEL:       ${{ secrets.GROQ_VISION_MODEL }}
+          GROQ_TEXT_MODEL:         ${{ secrets.GROQ_TEXT_MODEL }}
+        run: |
+          set -uo pipefail
+
+          node scripts/test-providers.mjs | tee result.txt
+
+          # The script always exits 0 and reports PASS/FAIL as text, so turn
+          # that into a real CI signal here.
+          #
+          # Match ONLY the per-provider result lines ("TEXT: PASS" / "VISION:
+          # FAIL"). A bare `grep -q PASS` looks right but is always true: the
+          # script's closing help text says "needs at least one PASS to be
+          # useful", so the guard below would never fire and this job would be
+          # permanently green.
+          if grep -Eq '(TEXT|VISION): FAIL' result.txt; then
+            echo "::error::A provider or model is failing — see the output above."
+            exit 1
+          fi
+
+          # No FAIL and no PASS means every provider was skipped for a missing
+          # key. That is a silently useless run, so treat it as a failure too.
+          if ! grep -Eq '(TEXT|VISION): PASS' result.txt; then
+            echo "::error::No provider was tested. Are the API key secrets set?"
+            exit 1
+          fi
+
+          echo "All configured providers are healthy."

@@ -105,9 +105,22 @@ don't return data).
 | `db/08_avatars.sql` | Creates the public `avatars` Storage bucket + upload policies and adds `profiles.avatar_url`. | Once. Profile photo upload errors until run. |
 | `db/09_invites.sql` | Adds the `invites` table + `accept_invite(token)` security-definer function for auto-connect invites. Also backfills missing `profiles`. | Once. Invites don't auto-connect until run. Re-deploy `send-invite` after. |
 | `db/10_expense_participants.sql` | Adds `expenses.participants` (jsonb member-id list) so an expense is split among its frozen participants; backfills existing expenses. | Once. Old expenses change when adding members until run. |
+| `db/11_premium.sql` | Adds `profiles.is_premium`, read by `Settings.jsx` and the (dormant) `PREMIUM_ENFORCED` gate in `App.jsx`. | Once. |
+| `db/12_keepalive.sql` | Adds the one-row `keepalive` table the scheduled ping queries so Supabase doesn't pause the project. | Once, before enabling the keep-alive workflow. |
 
 > `db/02` is personal to the owner. The app itself never seeds anyone's data — new users
 > start empty.
+
+**To check what's actually applied** (without opening the dashboard): ask PostgREST for a
+column and read the status code. A missing column returns 400 and a missing table 404,
+both *before* any row is touched, so this leaks no data:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' \
+  "$SUPABASE_URL/rest/v1/profiles?select=is_premium&limit=1" \
+  -H "apikey: $SUPABASE_ANON_KEY" -H "Authorization: Bearer $SUPABASE_ANON_KEY"
+# 200 = applied, 400 = column missing, 404 = table missing
+```
 
 ### Auth configuration (in the Supabase dashboard)
 
@@ -120,6 +133,21 @@ don't return data).
   delivers to your own account email — emailing other people needs a custom domain.
 - **Google sign-in** needs a one-time Google OAuth credential pasted into Authentication →
   Providers → Google. Magic link and email+password work without it.
+
+  > **Status: not finished.** The live site currently returns
+  > `{"code":400,"error_code":"validation_failed","msg":"Unsupported provider: missing OAuth secret"}`
+  > — the provider is toggled ON but the **client secret** is blank, so the request never
+  > reaches Google. The toggle looks enabled either way, which makes this easy to miss.
+  > To finish: Google Cloud Console → Credentials → Create OAuth client ID (Web
+  > application) → add `https://<project-ref>.supabase.co/auth/v1/callback` as an authorized
+  > redirect URI → paste **both** the client ID and secret into Supabase → Save.
+
+- **Testing sign-in on localhost:** `APP_URL` in `AuthScreen.jsx` is
+  `window.location.origin + window.location.pathname`, so on a dev server it resolves to
+  `http://localhost:5173/`. That is not on the Supabase redirect allow-list, and a
+  `redirectTo` that isn't allow-listed is ignored — you get bounced to the Site URL
+  (`https://splitab.app/`) instead of back to your dev server. Add
+  `http://localhost:5173/` as a Redirect URL if you need to test auth locally.
 
 ---
 
@@ -170,6 +198,35 @@ code), or check the repo's Actions tab for the Pages build.
 - **Why public?** Free GitHub Pages requires a public repo. Public exposes the *source
   code*, not the *data* — expenses are behind login + RLS in Supabase. The anon key in the
   code is public by design.
+
+### Scheduled GitHub Actions (`.github/workflows/`)
+
+Two cron jobs guard things that fail *silently* — problems you'd otherwise discover weeks
+late, via a broken app rather than a red build.
+
+| Workflow | Schedule | What it does |
+|----------|----------|--------------|
+| `keepalive.yml` | daily 06:17 UTC | Runs one tiny query against the `keepalive` table (db/12) so Supabase doesn't pause the Free-plan project. Fails red on any non-200. |
+| `provider-health.yml` | Mondays 07:23 UTC | Runs `scripts/test-providers.mjs` against the real AI APIs and fails on any `FAIL`, so a retired scan model surfaces as a red CI run. |
+
+Both need **repository secrets** (Settings → Secrets and variables → Actions):
+`SUPABASE_URL` + `SUPABASE_ANON_KEY` for the keep-alive; `OPENROUTER_API_KEY` (and
+`GROQ_API_KEY` if used) for the health check. Use **Run workflow** once after adding them —
+a scheduled job that has never run successfully is not proof of anything.
+
+Two traps worth remembering:
+
+- **GitHub disables scheduled workflows in a repo with no commits for 60 days.** It emails
+  first and one click re-enables, but if this repo goes quiet the keep-alive stops and the
+  project pauses anyway. An external pinger (cron-job.org, UptimeRobot) is the backup.
+- **Grep the result lines, not the whole output.** `test-providers.mjs` always prints
+  "needs at least one PASS to be useful", so a bare `grep -q PASS` matches even when every
+  provider was skipped — a permanently-green check. `provider-health.yml` matches
+  `(TEXT|VISION): PASS` for that reason.
+
+> Supabase pauses Free-plan projects after ~7 days of low **database** activity. The ping
+> must be a real PostgREST query; hitting a health endpoint like `/auth/v1/health` would not
+> reliably count.
 
 ---
 
@@ -260,13 +317,39 @@ only path.
   ghost to the new user (email must match the invited address). Needs db/09 + a re-deploy of
   `send-invite` (with the `RESEND_API_KEY` secret).
 
-- **Receipt/statement scanning (Groq)** — `ImportModal` "Scan" tab → `scanReceipt` in `store.js`
-  calls the `scan-receipt` Edge Function (`supabase/functions/scan-receipt/`). IMAGES go to a Groq
-  vision model; PDFs are text-extracted in-function via `unpdf` (free) and sent to a cheap Groq text
-  model (text has roomier free limits than vision — the money-saving design). Returns expenses into
-  the existing import preview. Deploy with a `GROQ_API_KEY` secret (optional `GROQ_VISION_MODEL` /
-  `GROQ_TEXT_MODEL` overrides). Toggled by `SCAN_ENABLED` in `App.jsx`. (Earlier Gemini version
-  hit free-tier vision quota; Groq replaced it.) Notes in `RECEIPT-SCANNING-PLAN.md`.
+- **Receipt/statement scanning (OpenRouter → Groq)** — `ImportModal` "Scan" tab → `scanReceipt` in
+  `store.js` calls the `scan-receipt` Edge Function (`supabase/functions/scan-receipt/`). IMAGES go
+  to a vision model; PDFs are text-extracted in-function via `unpdf` (free, pinned to `@1.8.1`) and
+  sent to a text model. Returns expenses into the existing import preview. Toggled by
+  `SCAN_ENABLED` in `App.jsx`. Notes in `RECEIPT-SCANNING-PLAN.md`.
+
+  **Why it's built to survive model churn.** Scanning kept breaking because each provider was
+  pinned to ONE free-tier model, and free/preview models get renamed, retired and rate-limited
+  without notice. Two layers now absorb that:
+
+  1. Each provider takes a **comma-separated list** of candidate models. OpenRouter accepts the
+     whole list in one request (`{"models": [...]}`) and fails over internally on rate-limiting,
+     downtime, moderation blocks and context errors, billing only the model that actually ran.
+     Groq has no such feature, so the function walks its list itself.
+  2. Providers are still tried in order: **OpenRouter → Groq**.
+
+  So a retired model is no longer an outage, and **swapping models is a secret change, not a code
+  change** — no redeploy of new code needed.
+
+  Defaults are cheap **paid** models on purpose (currently
+  `google/gemini-2.5-flash-lite,openai/gpt-5-nano,qwen/qwen3.7-flash`, vendor-diverse so one
+  vendor's outage doesn't take out every option). At roughly 1.8k input + 300 output tokens per
+  receipt a scan costs about **$0.0003 — ~3,000 scans per dollar**. Paid models are deprecated on a
+  published schedule; free ones just vanish. Groq's free tier stays as a safety net.
+
+  Secrets: `OPENROUTER_API_KEY` (primary), `GROQ_API_KEY` (fallback), plus optional
+  `OPENROUTER_VISION_MODELS` / `OPENROUTER_TEXT_MODELS` / `GROQ_VISION_MODELS` / `GROQ_TEXT_MODELS`
+  (comma-separated, tried in order). The older singular `..._MODEL` names are still honoured.
+
+  > The direct **Gemini API** leg was removed — `gemini-2.0-flash` was retired, and because it sat
+  > last in the chain its error was the only one surfaced, making every failure look like a Gemini
+  > problem even when the real cause was upstream. (`google/gemini-2.5-flash-lite` in the defaults
+  > is Gemini *via OpenRouter* — a different route.)
 
 - **Per-expense participants** — each expense stores `participants` (db/10), the frozen set of
   members it's split among (snapshot at creation). Equal/Full split among the expense's

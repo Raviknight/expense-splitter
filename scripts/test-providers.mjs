@@ -1,23 +1,28 @@
 // scripts/test-providers.mjs
-// Verify each AI provider (OpenRouter → Groq → Gemini) works BEFORE you wire it
-// into the scan-receipt Edge Function.
+// Verify each AI provider (OpenRouter → Groq) works BEFORE you wire it into the
+// scan-receipt Edge Function — and weekly thereafter, via the
+// "AI provider health check" GitHub Actions workflow, which runs this file and
+// fails the build on any FAIL.
 //
 // 1. Create a file called  .env.providers  in the project root (it's gitignored):
 //
 //      OPENROUTER_API_KEY=sk-or-...
-//      OPENROUTER_VISION_MODEL=meta-llama/llama-3.2-11b-vision-instruct:free
-//      OPENROUTER_TEXT_MODEL=meta-llama/llama-3.3-70b-instruct:free
+//      OPENROUTER_VISION_MODEL=google/gemini-2.5-flash-lite
+//      OPENROUTER_TEXT_MODEL=google/gemini-2.5-flash-lite
 //      GROQ_API_KEY=gsk_...
 //      GROQ_VISION_MODEL=meta-llama/llama-4-scout-17b-16e-instruct
 //      GROQ_TEXT_MODEL=llama-3.3-70b-versatile
-//      GEMINI_API_KEY=...
-//      GEMINI_MODEL=gemini-2.0-flash
 //
 //    (Only fill the providers you want to test. Models are optional — defaults below.)
 //
 // 2. Run:  node scripts/test-providers.mjs
 //    It prints PASS/FAIL for each provider's TEXT and VISION endpoints, with the
 //    real error if something's wrong (bad key, decommissioned model, etc.).
+//
+// NOTE: this tests ONE model per provider. The Edge Function sends a LIST of
+// candidates, so this is a canary for "my primary model still exists", not a
+// check of every fallback. Keep these defaults in step with DEFAULT_MODELS in
+// supabase/functions/scan-receipt/index.ts.
 
 import { readFileSync, existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -54,16 +59,6 @@ async function oai(url, key, model, messages, extra = {}) {
   if (!r.ok) throw new Error(`HTTP ${r.status}: ${t.slice(0, 200)}`);
   return t.slice(0, 60);
 }
-async function gem(model, key, parts) {
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ contents: [{ parts }] }),
-  });
-  const t = await r.text();
-  if (!r.ok) throw new Error(`HTTP ${r.status}: ${t.slice(0, 200)}`);
-  return t.slice(0, 60);
-}
-
 const OR = 'https://openrouter.ai/api/v1/chat/completions';
 const GROQ = 'https://api.groq.com/openai/v1/chat/completions';
 const ORH = { 'HTTP-Referer': 'https://splitab.app', 'X-Title': 'Splitab' };
@@ -80,8 +75,8 @@ const providers = [
   {
     name: 'OpenRouter',
     on: !!process.env.OPENROUTER_API_KEY,
-    text: () => oai(OR, E('OPENROUTER_API_KEY'), E('OPENROUTER_TEXT_MODEL', 'openai/gpt-oss-120b:free'), txtMsg, ORH),
-    vision: () => oai(OR, E('OPENROUTER_API_KEY'), E('OPENROUTER_VISION_MODEL', 'nvidia/nemotron-nano-12b-v2-vl:free'), imgMsg, ORH),
+    text: () => oai(OR, E('OPENROUTER_API_KEY'), E('OPENROUTER_TEXT_MODEL', 'google/gemini-2.5-flash-lite'), txtMsg, ORH),
+    vision: () => oai(OR, E('OPENROUTER_API_KEY'), E('OPENROUTER_VISION_MODEL', 'google/gemini-2.5-flash-lite'), imgMsg, ORH),
   },
   {
     name: 'Groq',
@@ -89,15 +84,9 @@ const providers = [
     text: () => oai(GROQ, E('GROQ_API_KEY'), E('GROQ_TEXT_MODEL', 'llama-3.3-70b-versatile'), txtMsg),
     vision: () => oai(GROQ, E('GROQ_API_KEY'), E('GROQ_VISION_MODEL', 'meta-llama/llama-4-scout-17b-16e-instruct'), imgMsg),
   },
-  {
-    name: 'Gemini',
-    on: !!process.env.GEMINI_API_KEY,
-    text: () => gem(E('GEMINI_MODEL', 'gemini-2.0-flash'), E('GEMINI_API_KEY'), [{ text: 'Reply with the single word: OK' }]),
-    vision: () => gem(E('GEMINI_MODEL', 'gemini-2.0-flash'), E('GEMINI_API_KEY'), [{ text: 'What is in this image? 3 words.' }, { inline_data: { mime_type: 'image/png', data: TINY_PNG } }]),
-  },
 ];
 
-console.log('\nTesting AI providers (fallback order: OpenRouter → Groq → Gemini)\n');
+console.log('\nTesting AI providers (fallback order: OpenRouter → Groq)\n');
 for (const p of providers) {
   if (!p.on) { console.log(`• ${p.name.padEnd(11)} — no key set (skipped)`); continue; }
   const text = await run('text', p.text);

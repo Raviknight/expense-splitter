@@ -4048,6 +4048,34 @@ function ImportModal({ people, isSolo, myName, startMode = 'csv', onClose, onImp
 
   const canImport = built.expenses.length > 0 && paidByName && !importing;
 
+  // Why is Import greyed out? A disabled button with no explanation is a dead
+  // end — the user can't tell a missing column from an unreadable file. This
+  // mirrors the "pick at least one person" hint on the expense form's Save.
+  // Returns null whenever the button is usable (or mid-import), so the hint
+  // only appears when something is actually blocking the import.
+  const importHint = (() => {
+    if (importing) return null;
+    // Rows are fine, but there's nobody to attribute them to. `paidByName` is
+    // seeded once from the group's people, so an empty group can never enable
+    // the button — say so rather than leaving an empty dropdown.
+    if (built.expenses.length > 0 && !paidByName) {
+      return 'Add at least one person to this group first — every imported expense needs a payer.';
+    }
+    if (built.expenses.length > 0) return null;
+    if (mode === 'scan') {
+      return scanRows
+        ? 'No expenses could be read from that file. Try a sharper photo or a single page.'
+        : 'Scan a receipt or statement to continue.';
+    }
+    if (rows.length === 0) return 'Choose a CSV file to continue.';
+    // The commonest case by far: the Generic preset ships an empty mapping, so
+    // Amount is unset until the user picks it and nothing can be built.
+    if (!mapping.amount) {
+      return 'Pick your Amount column under "3. Map columns" — nothing can be imported until it is set.';
+    }
+    return 'No rows had a readable amount. Check the Amount column, and the "Amount style" setting if your file uses negatives.';
+  })();
+
   const doImport = async () => {
     if (!canImport) return;
     setImporting(true);
@@ -4299,13 +4327,20 @@ function ImportModal({ people, isSolo, myName, startMode = 'csv', onClose, onImp
         </div>
 
         {!result && (
-          <div className="sticky bottom-0 bg-white border-t border-stone-200 px-4 py-3 flex gap-2">
-            <button onClick={onClose} className="flex-1 py-2.5 rounded-lg border border-stone-300 text-sm font-medium text-stone-700 hover:bg-stone-50">
-              Cancel
-            </button>
-            <button onClick={doImport} disabled={!canImport} className="flex-1 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:bg-stone-300">
-              {importing ? 'Importing…' : `Import${built.expenses.length ? ` ${built.expenses.length}` : ''}`}
-            </button>
+          <div className="sticky bottom-0 bg-white border-t border-stone-200 px-4 py-3">
+            {/* Disabled-button guard: explain WHY Import is greyed out, the same
+             *  way the expense form explains its disabled Save. */}
+            {importHint && (
+              <div className="text-amber-700 text-[11px] mb-2">{importHint}</div>
+            )}
+            <div className="flex gap-2">
+              <button onClick={onClose} className="flex-1 py-2.5 rounded-lg border border-stone-300 text-sm font-medium text-stone-700 hover:bg-stone-50">
+                Cancel
+              </button>
+              <button onClick={doImport} disabled={!canImport} className="flex-1 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:bg-stone-300">
+                {importing ? 'Importing…' : `Import${built.expenses.length ? ` ${built.expenses.length}` : ''}`}
+              </button>
+            </div>
           </div>
         )}
       </div>
