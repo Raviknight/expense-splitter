@@ -201,15 +201,47 @@ export function useExpenseStore(userId, profile) {
 
       const groupIds = rawGroups.map(g => g.id);
 
-      // 2. Load all members for all groups in one query.
-      // We include `created_at` so the Activity timeline can show "X joined".
-      // It's an existing column on every row — no schema change needed.
-      const { data: rawMembers, error: mErr } = await supabase
-        .from('group_members')
-        .select('id, group_id, user_id, ghost_name, created_at')
-        .in('group_id', groupIds);
+      // 2. Members, expenses and settlements IN PARALLEL.
+      //
+      // These three only need `groupIds`, so nothing forces them to wait for
+      // each other. They used to be awaited one at a time, which made the
+      // dashboard cost five round trips in series before it could render —
+      // every one of them paying full network latency. Running them together
+      // turns five sequential trips into three stages (groups → these three →
+      // profiles), which is the single cheapest speed-up available here.
+      //
+      // Promise.all rejects on the first failure, matching the previous
+      // behaviour where any query error aborted the whole fetch.
+      const [membersRes, expensesRes, settlementsRes] = await Promise.all([
+        // `created_at` lets the Activity timeline show "X joined". Existing
+        // column — no schema change needed.
+        supabase
+          .from('group_members')
+          .select('id, group_id, user_id, ghost_name, created_at')
+          .in('group_id', groupIds),
+
+        // select('*') on purpose: `split_detail` arrives with db/07, so reads
+        // keep working before that script is run.
+        supabase
+          .from('expenses')
+          .select('*')
+          .in('group_id', groupIds)
+          .order('date', { ascending: false }),
+
+        supabase
+          .from('settlements')
+          .select('id, group_id, from_member, to_member, amount, date, note, created_at')
+          .in('group_id', groupIds)
+          .order('date', { ascending: false }),
+      ]);
+
+      const { data: rawMembers, error: mErr }      = membersRes;
+      const { data: rawExpenses, error: eErr }     = expensesRes;
+      const { data: rawSettlements, error: sErr }  = settlementsRes;
 
       if (mErr) throw mErr;
+      if (eErr) throw eErr;
+      if (sErr) throw sErr;
 
       // 3. Collect real user_ids (excluding the current user whose profile we
       //    already have) so we can fetch their display names from profiles.
@@ -261,29 +293,7 @@ export function useExpenseStore(userId, profile) {
         });
       }
 
-      // 4. Load all expenses for all groups in one query.
-      //    We select '*' (every column) on purpose: the `split_detail` column
-      //    is added by db/07_custom_split.sql. Selecting '*' means reads keep
-      //    working even BEFORE that script is run — the column is simply absent
-      //    and a custom split's per-person amounts won't be present until then.
-      const { data: rawExpenses, error: eErr } = await supabase
-        .from('expenses')
-        .select('*')
-        .in('group_id', groupIds)
-        .order('date', { ascending: false });
-
-      if (eErr) throw eErr;
-
-      // 5. Load all settlements for all groups in one query.
-      const { data: rawSettlements, error: sErr } = await supabase
-        .from('settlements')
-        .select('id, group_id, from_member, to_member, amount, date, note, created_at')
-        .in('group_id', groupIds)
-        .order('date', { ascending: false });
-
-      if (sErr) throw sErr;
-
-      // 6. Assemble the UI shape for each group.
+      // 4. Assemble the UI shape for each group.
       //
       //    Per group we build two maps:
       //      nameToMemberId : display-name string → group_members.id (for writes)

@@ -54,12 +54,10 @@ const FEATURES = [
   },
 ];
 
-// Rendered twice — beside the form on wide screens, below it on phones — so
-// the caller controls placement and visibility via `className`. Defined once so
-// the two never drift apart.
+// The three selling points. `className` lets the caller control placement.
 function FeatureList({ className = '' }) {
   return (
-    <ul className={`flex-col gap-2.5 text-left max-w-[260px] mx-auto lg:mx-0 ${className}`}>
+    <ul className={`flex-col gap-2.5 text-left max-w-[260px] mx-auto ${className}`}>
       {FEATURES.map(({ icon: Icon, text }) => (
         <li key={text} className="flex items-center gap-2.5">
           {/* Small indigo pill icon container */}
@@ -480,35 +478,35 @@ export default function AuthScreen() {
 
       {/* All content sits above the glow.
           LAYOUT: the three selling points used to sit stacked ABOVE the form,
-          pushing the actual sign-in below the fold on a phone. They now sit in a
-          left column on wide screens and BELOW the form on phones, so the first
-          thing you land on is the thing you came to do. */}
-      <div className="relative z-10 w-full max-w-4xl flex flex-col lg:flex-row lg:items-center lg:justify-center lg:gap-14">
+          pushing the sign-in below the fold on a phone. They are now BELOW the
+          form at every width.
+          A two-column version (hero beside the card on wide screens) was tried
+          and reverted: it squeezed the tagline into a narrow ragged column with
+          an oversized mark floating next to it. One centred column reads far
+          better, and the form is still the first thing you land on. */}
+      <div className="relative z-10 w-full flex flex-col items-center">
 
       {/* ── Hero / title area ── */}
-      <div className="mb-8 lg:mb-0 text-center lg:text-left lg:flex-1 lg:max-w-sm">
+      <div className="mb-7 text-center">
         {/* App mark — dark square with the indigo "S" monogram (matches the app icon) */}
-        <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-stone-900 mb-4 shadow-md">
-          <svg width="40" height="40" viewBox="0 0 100 100" aria-hidden="true">
+        <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-stone-900 mb-3 shadow-md">
+          <svg width="34" height="34" viewBox="0 0 100 100" aria-hidden="true">
             <path d="M72 34 C56 24 34 26 32 42 C30.5 54 48 56 55 59 C66 63 70 72 64 78 C56 88 36 86 27 76"
               fill="none" stroke="#818cf8" strokeWidth="11" strokeLinecap="round" strokeLinejoin="round" />
           </svg>
         </div>
 
         {/* App name */}
-        <h1 className="text-3xl lg:text-4xl font-bold text-stone-900 tracking-tight">Splitab</h1>
+        <h1 className="text-2xl font-bold text-stone-900 tracking-tight">Splitab</h1>
 
-        {/* Tagline — value proposition in one line (any shared expense, not just trips) */}
-        <p className="text-sm lg:text-base text-stone-500 mt-2 max-w-xs mx-auto lg:mx-0 leading-relaxed">
+        {/* Tagline — kept to a comfortable measure so it doesn't wrap raggedly. */}
+        <p className="text-sm text-stone-500 mt-1.5 max-w-[22rem] mx-auto leading-relaxed">
           Split expenses with anyone — trips, rent, dinners, anything.
         </p>
-
-        {/* Wide screens: features live here, beside the form. */}
-        <FeatureList className="hidden lg:flex mt-8" />
       </div>
 
       {/* ── Card ── */}
-      <div className="w-full max-w-sm mx-auto lg:mx-0 bg-white rounded-2xl border border-stone-200 shadow-sm p-6 flex flex-col gap-6">
+      <div className="w-full max-w-sm bg-white rounded-2xl border border-stone-200 shadow-sm p-6 flex flex-col gap-6">
 
         {/* 1. Magic link (primary) */}
         <section>
@@ -547,9 +545,9 @@ export default function AuthScreen() {
           <EmailPasswordForm />
         </section>
 
-        {/* Phones: features sit BELOW the form, so the form is what you land on.
-            Hidden on wide screens, where they appear in the left column instead. */}
-        <FeatureList className="flex lg:hidden pt-1" />
+        {/* Features sit BELOW the form at every width, so the form is what you
+            land on. */}
+        <FeatureList className="flex pt-1" />
       </div>
 
       {/* Footer privacy line */}
