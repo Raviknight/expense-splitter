@@ -52,6 +52,14 @@ jobs:
         env:
           SUPABASE_URL:  ${{ secrets.SUPABASE_URL }}
           DIGEST_SECRET: ${{ secrets.DIGEST_SECRET }}
+          # Supabase's gateway requires an Authorization header on every Edge
+          # Function call, BEFORE the request reaches our code. Without it the
+          # call dies at the front door with
+          #   401 {"code":"UNAUTHORIZED_NO_AUTH_HEADER"}
+          # which looks like our own auth check failing but is not.
+          # The anon key only gets past the gateway; DIGEST_SECRET below is what
+          # actually authorises the digest. Two separate layers.
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
           # On a schedule there are no inputs, so derive the kind from WHICH
           # cron fired: the 1st-of-month entry is the monthly one.
           EVENT_NAME:    ${{ github.event_name }}
@@ -61,8 +69,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -z "${SUPABASE_URL:-}" ] || [ -z "${DIGEST_SECRET:-}" ]; then
-            echo "::error::Missing SUPABASE_URL or DIGEST_SECRET repository secret."
+          if [ -z "${SUPABASE_URL:-}" ] || [ -z "${DIGEST_SECRET:-}" ] || [ -z "${SUPABASE_ANON_KEY:-}" ]; then
+            echo "::error::Missing SUPABASE_URL, SUPABASE_ANON_KEY or DIGEST_SECRET repository secret."
             exit 1
           fi
 
@@ -80,6 +88,7 @@ jobs:
           status=$(curl -sS -o response.json -w '%{http_code}' -X POST \
             "${SUPABASE_URL}/functions/v1/send-digest" \
             -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
             -H "x-digest-secret: ${DIGEST_SECRET}" \
             -d "{\"kind\":\"${KIND}\",\"dryRun\":${DRY}}")
 
