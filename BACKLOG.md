@@ -27,7 +27,7 @@ If it is not in this file, it is not agreed work. If it is done, it leaves this 
 
 | # | Item | State |
 |---|------|-------|
-| 11 | **Email notifications** — welcome (self sign-up *and* invite), daily summary, monthly statement. | Next. Provider confirmed: **Resend** (`api.resend.com`, from `Splitab <hello@splitab.app>`); Cloudflare is only DNS. An unused `supabase/functions/send-welcome/` already exists — read it first. Daily/monthly digests need a scheduler (pg_cron or a GitHub Actions cron) plus an opt-out, since unsolicited recurring mail is a spam-complaint risk. |
+| 11 | **Email notifications** — welcome (self sign-up *and* invite), daily summary, monthly statement. | **Part done.** ✅ Preferences shipped: `db/14` (`notify_daily` default FALSE, `notify_monthly` default TRUE) + working toggles in Settings. ✅ Welcome needs **no code** — `send-welcome` already exists and fires from a DB webhook on `profiles` INSERT, which covers self sign-up *and* invite. ⬜ Remaining: the two digest Edge Functions and the scheduler. **Scheduler decided: GitHub Actions cron** — same proven pattern as the keep-alive, logs the owner can actually read, no new Postgres extensions. Daily must skip users with no new activity since their last digest. |
 
 ## Agreed — next up
 

@@ -42,6 +42,42 @@ const CURRENCIES = [
   { code: 'JPY', symbol: '¥',   label: '¥ JPY'  },
 ];
 
+// A real (working) on/off switch for one email preference.
+// role="switch" + aria-checked so it is announced correctly by screen readers;
+// h-11 keeps the hit area at the 44px phone minimum even though the track is
+// visually smaller.
+function EmailToggle({ id, label, hint, checked, busy, onChange }) {
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <label htmlFor={id} className="min-w-0 cursor-pointer">
+        <span className="block text-sm font-medium text-stone-700">{label}</span>
+        <span className="block text-xs text-stone-400 mt-0.5 leading-relaxed">{hint}</span>
+      </label>
+      <button
+        id={id}
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        disabled={busy}
+        onClick={() => onChange(!checked)}
+        className={`shrink-0 inline-flex items-center h-11 px-0 disabled:opacity-60`}
+      >
+        <span
+          className={`inline-flex items-center h-6 w-11 rounded-full p-0.5 transition-colors ${
+            checked ? 'bg-indigo-600' : 'bg-stone-300'
+          }`}
+        >
+          <span
+            className={`h-5 w-5 rounded-full bg-white shadow transition-transform ${
+              checked ? 'translate-x-5' : 'translate-x-0'
+            }`}
+          />
+        </span>
+      </button>
+    </div>
+  );
+}
+
 export default function Settings({ onClose }) {
   // Pull what we need from the auth context.
   const { user, profile, refreshProfile, signOut } = useAuth();
@@ -62,6 +98,16 @@ export default function Settings({ onClose }) {
   const [currencySaving, setCurrencySaving] = useState(false);
   const [currencySaved, setCurrencySaved]   = useState(false);
   const [currencyError, setCurrencyError]   = useState(null);
+
+  // ── Email notification state (db/14) ──────────────────────────────────────
+  // Defaults mirror the column defaults so the UI matches the server before the
+  // profile loads: daily OFF (high frequency — opt-in only), monthly ON.
+  // MUST be declared above the `if (!user) return null` guard below: hooks after
+  // a conditional return only run on some renders, which React rejects.
+  const [notifyDaily, setNotifyDaily]     = useState(profile?.notify_daily === true);
+  const [notifyMonthly, setNotifyMonthly] = useState(profile?.notify_monthly !== false);
+  const [notifSaving, setNotifSaving]     = useState(null);   // which key is saving
+  const [notifError, setNotifError]       = useState(null);
 
   // ── Password change state ─────────────────────────────────────────────────
   const [newPassword, setNewPassword]     = useState('');
@@ -112,8 +158,43 @@ export default function Settings({ onClose }) {
     if (profile?.preferred_currency) setCurrency(profile.preferred_currency);
   }, [profile?.preferred_currency]);
 
+  // Adopt saved notification prefs once the profile loads. Checked with
+  // typeof rather than truthiness: `false` is a meaningful saved value, and a
+  // plain `if (profile?.notify_daily)` would ignore someone who turned it off.
+  useEffect(() => {
+    if (typeof profile?.notify_daily === 'boolean') setNotifyDaily(profile.notify_daily);
+    if (typeof profile?.notify_monthly === 'boolean') setNotifyMonthly(profile.notify_monthly);
+  }, [profile?.notify_daily, profile?.notify_monthly]);
+
   // Guard: if somehow no user, render nothing.
   if (!user) return null;
+
+  // ── Save one email-notification preference ────────────────────────────────
+  // Optimistic: the switch flips immediately, then reverts if the write fails.
+  // A toggle that lags behind the tap feels broken, and these are cheap to undo.
+  async function saveNotifPref(column, value, setLocal) {
+    setNotifError(null);
+    setLocal(value);
+    setNotifSaving(column);
+    try {
+      const { error: err } = await supabase
+        .from('profiles')
+        .update({ [column]: value })
+        .eq('id', user.id);
+      if (err) throw err;
+      await refreshProfile();
+    } catch (e) {
+      setLocal(!value);   // put the switch back — the server did not accept it
+      const msg = (e?.message || '').toLowerCase();
+      setNotifError(
+        msg.includes('column') || msg.includes('schema cache')
+          ? 'Email preferences need a one-time database update — run db/14.'
+          : (e?.message || 'Could not save. Please try again.')
+      );
+    } finally {
+      setNotifSaving(null);
+    }
+  }
 
   // ── Save preferred currency ───────────────────────────────────────────────
   // The preferred_currency column is added by db/04_add_currency.sql.
@@ -577,30 +658,56 @@ export default function Settings({ onClose }) {
             <span className="text-sm font-semibold text-stone-700">Notifications</span>
           </div>
 
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-medium text-stone-700">Push notifications</span>
-                <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-stone-100 text-stone-500 border border-stone-200">
-                  Coming soon
-                </span>
-              </div>
-              <p className="text-xs text-stone-400 mt-0.5">
-                Get a heads-up when someone adds an expense or settles up. This
-                isn't available yet — we're still building it.
-              </p>
-            </div>
+          <div className="space-y-4">
+            <EmailToggle
+              id="notify_daily"
+              label="Daily summary"
+              hint="A short recap of what changed in your groups. Sent only on days something actually happened — quiet days get nothing."
+              checked={notifyDaily}
+              busy={notifSaving === 'notify_daily'}
+              onChange={(v) => saveNotifPref('notify_daily', v, setNotifyDaily)}
+            />
 
-            {/* A disabled, non-functional switch (visual placeholder only). */}
-            <span
-              role="switch"
-              aria-checked="false"
-              aria-disabled="true"
-              title="Coming soon"
-              className="shrink-0 inline-flex items-center h-6 w-11 rounded-full bg-stone-200 opacity-60 cursor-not-allowed p-0.5"
-            >
-              <span className="h-5 w-5 rounded-full bg-white shadow" />
-            </span>
+            <div className="border-t border-stone-100" />
+
+            <EmailToggle
+              id="notify_monthly"
+              label="Monthly statement"
+              hint="A once-a-month statement of your spending and balances."
+              checked={notifyMonthly}
+              busy={notifSaving === 'notify_monthly'}
+              onChange={(v) => saveNotifPref('notify_monthly', v, setNotifyMonthly)}
+            />
+
+            {notifError && (
+              <p className="text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">
+                {notifError}
+              </p>
+            )}
+
+            {/* Push (as opposed to email) is still not built. */}
+            <div className="flex items-center justify-between gap-3 pt-1 border-t border-stone-100">
+              <div className="min-w-0 pt-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium text-stone-500">Push notifications</span>
+                  <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-stone-100 text-stone-500 border border-stone-200">
+                    Coming soon
+                  </span>
+                </div>
+                <p className="text-xs text-stone-400 mt-0.5">
+                  Instant alerts on your phone. Not available yet.
+                </p>
+              </div>
+              <span
+                role="switch"
+                aria-checked="false"
+                aria-disabled="true"
+                title="Coming soon"
+                className="shrink-0 inline-flex items-center h-6 w-11 rounded-full bg-stone-200 opacity-60 cursor-not-allowed p-0.5 mt-3"
+              >
+                <span className="h-5 w-5 rounded-full bg-white shadow" />
+              </span>
+            </div>
           </div>
         </section>
 
