@@ -67,12 +67,48 @@ export function AuthProvider({ children }) {
   }
 
   useEffect(() => {
+    // Guard against setting state after unmount.
+    let cancelled = false;
+
+    // WATCHDOG — why this exists:
+    //   AuthGate renders nothing but a spinner while `loading` is true, so if
+    //   anything below stalls, the app is stuck until the user force-quits it.
+    //   That is exactly what happens on iOS: a backgrounded home-screen PWA has
+    //   its web view purged, so reopening is a FRESH page load on a network
+    //   stack that is still waking up. getSession() or the profiles query can
+    //   then hang indefinitely and the spinner never clears.
+    //
+    //   store.js has its own 12s watchdog, but it cannot help here — <App/> is
+    //   never rendered while AuthGate is still showing the spinner.
+    //
+    //   So: whatever happens, clear `loading` after 8s. Worst case the user
+    //   lands on the sign-in screen and taps once; that beats a dead app.
+    const watchdog = setTimeout(() => {
+      if (!cancelled) setLoading(false);
+    }, 8000);
+
     // 1. Check for an existing session immediately on mount.
-    supabase.auth.getSession().then(({ data: { session: s } }) => {
-      setSession(s);
-      setUser(s?.user ?? null);
-      loadProfile(s?.user ?? null).finally(() => setLoading(false));
-    });
+    supabase.auth.getSession()
+      .then(({ data: { session: s } }) => {
+        if (cancelled) return;
+        setSession(s);
+        setUser(s?.user ?? null);
+        // Deliberately NOT awaited before clearing `loading`. The profile is
+        // optional — AuthGate already falls back to the email for the display
+        // name — so a slow profiles query must never hold the whole app behind
+        // the spinner. It fills in a moment later when it arrives.
+        loadProfile(s?.user ?? null);
+      })
+      .catch((e) => {
+        // Previously there was no .catch() here: a REJECTED getSession() became
+        // an unhandled rejection and `loading` stayed true forever.
+        console.warn('[AuthProvider] getSession failed:', e?.message ?? e);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        clearTimeout(watchdog);
+        setLoading(false);
+      });
 
     // 2. Subscribe to future sign-in / sign-out events.
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
@@ -91,15 +127,22 @@ export function AuthProvider({ children }) {
 
         setSession(s);
         setUser(s?.user ?? null);
-        await loadProfile(s?.user ?? null);
-        // Once we get any auth event, we're definitely no longer in the
-        // initial loading state.
+        // Clear `loading` BEFORE the profile fetch, not after. This used to be
+        // `await loadProfile(...)` followed by setLoading(false) — so a stalled
+        // profiles query left the spinner up permanently. The profile is
+        // optional to render the app, so it must never gate the spinner.
         setLoading(false);
+        clearTimeout(watchdog);
+        await loadProfile(s?.user ?? null);
       }
     );
 
-    // 3. Clean up the subscription when this component unmounts.
-    return () => subscription.unsubscribe();
+    // 3. Clean up on unmount: stop the watchdog and the subscription.
+    return () => {
+      cancelled = true;
+      clearTimeout(watchdog);
+      subscription.unsubscribe();
+    };
   }, []);
 
   // signOut: called by the sign-out button in the UI.

@@ -245,6 +245,32 @@ cached snapshot; (2) on `visibilitychange`/`focus`/`online`, nudges the auth tok
 (`getSession()`) and refetches; (3) rebuilds the realtime channel on resume (kept in
 `channelRef` so `subscribeRealtime()` can be re-called).
 
+> ⚠️ **There are TWO spinners, and they need separate guards.** The `store.js` watchdog above
+> only protects the spinner *inside* `<App/>`. `AuthGate` renders its own spinner while
+> `AuthProvider.loading` is true, and while that is up `<App/>` is never mounted — so
+> `store.js` cannot help. The original fix covered only `store.js`, and the iOS
+> "reopen from the home screen and it just spins" bug persisted because of it.
+>
+> `AuthProvider` now has its own **8s watchdog**, plus two related fixes:
+> - `getSession()` has a `.catch()`. Without one, a *rejected* promise became an unhandled
+>   rejection and `loading` stayed true forever.
+> - `loadProfile()` no longer gates `loading` on either path. It used to run as
+>   `await loadProfile(...)` *before* `setLoading(false)`, so a stalled `profiles` query
+>   hung the whole app. The profile is optional — `AuthGate` falls back to the email — so it
+>   must never block the gate.
+>
+> Why iOS specifically: a backgrounded home-screen PWA has its web view purged, so reopening
+> is a **fresh page load** on a network stack that is still waking up — ideal conditions for
+> `getSession()` or the profile query to stall. Force-quitting worked because it gave a clean
+> network context.
+>
+> **How to test this** (it cannot be reproduced by normal use): temporarily stub both auth
+> entry points in `supabaseClient.js` so nothing ever settles —
+> `supabase.auth.getSession = () => new Promise(() => {})` and
+> `supabase.auth.onAuthStateChange = () => ({ data: { subscription: { unsubscribe() {} } } })`.
+> The app must show "Loading…" and then reach the sign-in screen within ~8s. If it hangs
+> forever, the watchdog has regressed. Revert the stub afterwards.
+
 The store also handles the name↔id translation: the UI works with member **names**
 (e.g. "Shailja"), while the database stores `expenses.paid_by` as a `group_members` **id**.
 The store builds per-group maps (`_nameToMemberId` / `_memberIdToName`) to convert both ways.
