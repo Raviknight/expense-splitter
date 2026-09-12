@@ -52,29 +52,94 @@ const CATEGORIES = [
 
 const catMeta = (name) => CATEGORIES.find(c => c.name === name) || CATEGORIES[CATEGORIES.length - 1];
 
+// Merchant keywords per category. Each list is US entries first, then India.
+//
+// Adding a keyword: prefer the most SPECIFIC string that still matches how the
+// merchant appears on a statement. Short generic words cause false positives —
+// e.g. plain 'ola' would match "gorgonzola", which is why it is written ' ola '
+// with surrounding spaces (autoCategorize pads the name, so this anchors it to
+// a whole word). Likewise 'taj hotel' not 'taj' (Taj Mahal is an attraction),
+// and 'apollo pharmacy' not 'apollo' (there are Apollo hospitals and tyres too).
+//
+// Indian statements often wrap the merchant in UPI/POS noise, e.g.
+// "UPI/SWIGGY/8412...". Matching is a substring test, so the merchant name is
+// still found inside that — no extra parsing needed.
 const RULES = [
-  { cat: 'Lodging',        kws: ['airbnb', 'booking', 'hotel', ' inn ', 'inn ', ' inn', 'motel', 'resort', 'lodge', 'marriott', 'hilton', 'hyatt', 'sheraton'] },
-  { cat: 'Car Rental',     kws: ['budget car', 'budget rental', 'hertz', 'avis', 'enterprise rent', 'car rental', 'sixt', 'alamo', 'national rent'] },
-  { cat: 'Auto Service',   kws: ['toyota', 'honda dealer', 'service center', 'oil change', 'jiffy lube', 'mavis', 'midas'] },
-  { cat: 'Tolls',          kws: ['ezpass', 'e-zpass', 'turnpike', 'toll'] },
+  { cat: 'Lodging',        kws: [
+    // 'booking.com' NOT bare 'booking': on Indian statements "booking" is a
+    // generic word (bus/train/movie booking), and it was swallowing "REDBUS
+    // BOOKING" into Lodging.
+    'airbnb', 'booking.com', 'booking com', 'hotel', ' inn ', 'inn ', ' inn', 'motel', 'resort', 'lodge', 'marriott', 'hilton', 'hyatt', 'sheraton',
+    'oyo', 'treebo', 'fabhotel', 'lemon tree', 'oberoi', 'itc hotel', 'taj hotel', 'makemytrip', 'make my trip', 'goibibo', 'cleartrip', 'easemytrip', 'yatra.com',
+  ] },
+  { cat: 'Car Rental',     kws: [
+    'budget car', 'budget rental', 'hertz', 'avis', 'enterprise rent', 'car rental', 'sixt', 'alamo', 'national rent',
+    'zoomcar', 'zoom car', 'revv ', 'myles ', 'drivezy',
+  ] },
+  { cat: 'Auto Service',   kws: [
+    'toyota', 'honda dealer', 'service center', 'oil change', 'jiffy lube', 'mavis', 'midas',
+    'maruti', 'hyundai service', 'bosch service', 'tvs service', 'service centre',
+  ] },
+  { cat: 'Tolls',          kws: ['ezpass', 'e-zpass', 'turnpike', 'toll', 'fastag', 'fas tag', 'nhai'] },
   { cat: 'Parking',        kws: ['nycdot', 'park*meter', 'parking', 'paybyphone', ' park '] },
-  { cat: 'Fuel',           kws: ['exxon', 'sunoco', 'shell oil', 'shell gas', 'chevron', 'bp #', 'bp gas', 'gulf', 'speedway', 'wawa gas', 'valero', 'citgo'] },
-  { cat: 'Attractions',    kws: ['amnh', 'museum', 'observatory', 'state park', 'maid of the mist', 'whiteface', 'natl park', 'national park', 'letchworth', 'watkins glen', 'aquarium', 'zoo', 'liberty isl'] },
-  { cat: 'Restaurants',    kws: ['subway', 'dunkin', 'starbucks', 'mcdonald', 'chipotle', 'taco bell', 'kitchen', 'tandoori', 'restaurant', 'cafe', 'diner', 'pizza', 'bbq', 'aksharpith', 'panera', 'burger', 'noodle', 'curry', 'biryani'] },
-  { cat: 'Groceries',      kws: ['wm supercenter', 'walmart supercenter', 'hannaford', 'seabra', 'food bazaar', 'wegmans', 'shoprite', 'kroger', 'whole foods', 'aldi', 'patel brothers', 'h mart', 'trader joe'] },
-  { cat: 'Convenience',    kws: ['7-eleven', '7 eleven', 'refuel ', 'cumberland farm', 'sheetz'] },
-  { cat: 'Pharmacy',       kws: ['walgreens', 'rite aid', 'cvs pharmacy', 'pharmacy'] },
-  { cat: 'Transportation', kws: ['uber', 'lyft', 'taxi', 'amtrak', 'njt', 'nj transit', 'path', 'mta'] },
-  { cat: 'Government',     kws: ['munic', 'dmv', 'court', 'irs', 'usps'] },
-  { cat: 'Shopping',       kws: ['walmart', 'wal-mart', 'target', 'costco', 'best buy', 'home depot', 'lowes'] },
+  { cat: 'Fuel',           kws: [
+    'exxon', 'sunoco', 'shell oil', 'shell gas', 'chevron', 'bp #', 'bp gas', 'gulf', 'speedway', 'wawa gas', 'valero', 'citgo',
+    'indian oil', 'indianoil', 'iocl', 'bharat petroleum', 'bpcl', 'hpcl', 'hindustan petroleum', 'nayara', 'reliance petrol', 'jio-bp', 'petrol pump', 'petrol',
+  ] },
+  { cat: 'Attractions',    kws: [
+    'amnh', 'museum', 'observatory', 'state park', 'maid of the mist', 'whiteface', 'natl park', 'national park', 'letchworth', 'watkins glen', 'aquarium', 'zoo', 'liberty isl',
+    'bookmyshow', 'book my show', 'pvr ', 'inox ', 'cinepolis', 'taj mahal', 'qutub', 'red fort', 'wonderla', 'essel world',
+  ] },
+  { cat: 'Restaurants',    kws: [
+    'subway', 'dunkin', 'starbucks', 'mcdonald', 'chipotle', 'taco bell', 'kitchen', 'tandoori', 'restaurant', 'cafe', 'diner', 'pizza', 'bbq', 'aksharpith', 'panera', 'burger', 'noodle', 'curry', 'biryani',
+    'swiggy', 'zomato', 'haldiram', 'saravana', 'barbeque nation', 'bikanervala', 'wow momo', 'chaayos', 'cafe coffee day', ' ccd ', 'third wave', 'behrouz', 'faasos', 'box8', 'dhaba', 'udupi', 'sagar ratna', 'chai point', 'thali', 'dominos', "domino's", 'kfc',
+  ] },
+  { cat: 'Groceries',      kws: [
+    'wm supercenter', 'walmart supercenter', 'hannaford', 'seabra', 'food bazaar', 'wegmans', 'shoprite', 'kroger', 'whole foods', 'aldi', 'patel brothers', 'h mart', 'trader joe',
+    'dmart', 'd-mart', 'd mart', 'reliance fresh', 'reliance smart', 'big bazaar', 'spencers', "spencer's", 'star bazaar', 'natures basket', "nature's basket",
+    'blinkit', 'zepto', 'bigbasket', 'big basket', 'jiomart', 'jio mart', 'instamart', 'more supermarket', 'more megastore', 'licious', 'country delight',
+  ] },
+  { cat: 'Convenience',    kws: ['7-eleven', '7 eleven', 'refuel ', 'cumberland farm', 'sheetz', 'kirana', 'general store'] },
+  { cat: 'Pharmacy',       kws: [
+    'walgreens', 'rite aid', 'cvs pharmacy', 'pharmacy',
+    'apollo pharmacy', 'medplus', 'netmeds', 'pharmeasy', '1mg', 'wellness forever', 'guardian pharmacy',
+  ] },
+  { cat: 'Transportation', kws: [
+    'uber', 'lyft', 'taxi', 'amtrak', 'njt', 'nj transit', 'path', 'mta',
+    ' ola ', 'olacabs', 'ola cabs', 'rapido', 'namma yatri', 'irctc', 'indian railway', 'redbus', 'red bus', 'blusmart', 'blu smart', 'meru cab',
+    'dmrc', 'bmtc', 'ksrtc', 'msrtc', 'metro rail', 'auto rickshaw', 'goindigo', 'spicejet', 'vistara', 'air india', 'akasa air',
+  ] },
+  { cat: 'Government',     kws: ['munic', 'dmv', 'court', 'irs', 'usps', 'passport seva', 'income tax', 'challan', 'gstin'] },
+  { cat: 'Shopping',       kws: [
+    'walmart', 'wal-mart', 'target', 'costco', 'best buy', 'home depot', 'lowes',
+    'flipkart', 'amazon', 'myntra', 'ajio', 'meesho', 'nykaa', 'croma', 'reliance digital', 'vijay sales', 'pantaloons', 'westside', 'shoppers stop', 'tata cliq', 'decathlon', 'ikea', 'snapdeal', 'firstcry',
+  ] },
 ];
 
+// Pick the category whose keyword match is the LONGEST.
+//
+// This used to return the first rule that matched anywhere in RULES, which made
+// the result depend on array order and broke as soon as one merchant name
+// contained another's keyword:
+//   • "Swiggy Instamart" hit 'swiggy' (Restaurants) before 'instamart'
+//     (Groceries), because Restaurants is listed first.
+//   • "Letchworth State Park" hit ' park ' (Parking) before 'state park'
+//     (Attractions), for the same reason.
+// Preferring the longest match makes the most specific keyword win regardless
+// of where its rule sits, so new entries can be added without re-ordering.
 function autoCategorize(name) {
-  const lower = ' ' + name.toLowerCase() + ' ';
+  const lower = ' ' + String(name || '').toLowerCase() + ' ';
+  let best = 'Other';
+  let bestLen = 0;
   for (const r of RULES) {
-    if (r.kws.some(k => lower.includes(k))) return r.cat;
+    for (const k of r.kws) {
+      if (k.length > bestLen && lower.includes(k)) {
+        best = r.cat;
+        bestLen = k.length;
+      }
+    }
   }
-  return 'Other';
+  return best;
 }
 
 const SPLIT_MODES = [

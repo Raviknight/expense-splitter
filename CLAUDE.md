@@ -385,6 +385,12 @@ only path.
 
 ## 8. Roadmap / deferred decisions (recorded so we don't lose them)
 
+> 📋 **Open work lives in [BACKLOG.md](BACKLOG.md), not here.** This section records
+> *decisions and their reasoning* — the "why we chose this" that would otherwise be
+> re-litigated. Anything still to be built belongs in `BACKLOG.md`, which is updated in the
+> same commit as the work. Keeping the two apart is deliberate: mixing "what we decided"
+> with "what's left" is how both drift.
+
 - **Information architecture (NEXT / in progress)** — avatar (top-right) → Profile (personal info:
   name, photo, email); gear → Settings/Account (default currency, notifications, password, dark
   mode, sign out); edit/delete/export a group from INSIDE the group (the group-name chevron menu),
@@ -412,3 +418,19 @@ only path.
 - Keep components small and commented in plain language.
 - Never commit `.env` or use the `service_role` key in client code.
 - Always `npm run build` before a deploy commit (see the gotcha in section 4).
+
+### Keeping the docs honest
+
+These rules exist because this project has already been bitten by each one.
+
+- **Update [BACKLOG.md](BACKLOG.md) in the SAME commit as the work.** Not after. A tracker
+  updated "later" is how `HANDOFF.md` ended up listing finished work as pending for months.
+- **"Done" requires evidence, not a build.** A passing test, a green CI run, or a live
+  check. `CLAUDE.md` §5 once flatly claimed the stuck-loading bug was fixed when only
+  `store.js` had been covered — sending the next person to the wrong file entirely.
+- **When you find a doc that is wrong, fix it in that commit.** A stale doc is worse than
+  no doc, because it is trusted.
+- **New ideas go to the BACKLOG Parking lot, not straight into the work.** Deciding to
+  start something should be deliberate.
+- **Record the reasoning for a rejected option**, not just the chosen one — otherwise it
+  gets proposed again next quarter.

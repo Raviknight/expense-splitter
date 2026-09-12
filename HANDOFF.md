@@ -1,4 +1,18 @@
-# Expense Splitter — session handoff
+# Expense Splitter — session handoff (HISTORICAL ARCHIVE — DO NOT TRUST)
+
+> ⚠️ **This file is a snapshot of the ORIGINAL build sessions and is years out of date.**
+> It is kept only as a record of how the project was first assembled.
+>
+> **For current open work, read [BACKLOG.md](BACKLOG.md).**
+> **For how the project works today, read [CLAUDE.md](CLAUDE.md).**
+>
+> Known-wrong statements below, as examples of why this must not be followed:
+> - The repo path `D:\Ravi\GitHub\Expense` is no longer where this lives.
+> - *"OPEN QUESTION: has `db/01_schema.sql` been run yet?"* — yes, long ago. Every
+>   migration through `db/11` is applied; only `db/12` may be outstanding.
+> - "Remaining work" lists writing `CLAUDE.md` and building the CSV import engine. Both
+>   shipped. SMTP is done too (Resend, `hello@splitab.app`).
+> - Node/npm versions here describe a different machine.
 
 This file records what's already done so a fresh Claude Code session (started inside
 `D:\Ravi\GitHub\Expense`) can resume without repeating setup.
