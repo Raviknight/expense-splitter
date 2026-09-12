@@ -7,6 +7,7 @@
 
 import esbuild from 'esbuild';
 import { readFileSync, writeFileSync, existsSync, cpSync, mkdirSync, rmSync, readdirSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 
 const isDev = process.argv.includes('--dev');
 
@@ -36,6 +37,29 @@ for (const f of existsSync('docs') ? readdirSync('docs') : []) {
 }
 
 if (existsSync('public')) cpSync('public', 'docs', { recursive: true });
+
+// --- Tailwind CSS ---------------------------------------------------------
+// Replaces the Play CDN (cdn.tailwindcss.com), which shipped ~400KB of JS and
+// compiled the CSS in the browser on every page load while blocking render.
+// Now compiled once, here, into a static docs/styles.css.
+//
+// Run SYNCHRONOUSLY and let a failure abort the build: a missing stylesheet
+// produces a completely unstyled app, which is worse than no build at all.
+// Minified in production; readable in dev for easier debugging.
+{
+  // Invoke the CLI's JS entry with THIS node binary rather than the .bin
+  // shim. The shim path needs shell quoting that differs per platform — on
+  // Windows it failed with "'node_modules' is not recognized". Running the
+  // script directly sidesteps shells entirely and behaves the same everywhere.
+  const cli  = 'node_modules/tailwindcss/lib/cli.js';
+  const args = [cli, '-i', 'src/styles.css', '-o', 'docs/styles.css'];
+  if (!isDev) args.push('--minify');
+  const res = spawnSync(process.execPath, args, { stdio: 'inherit' });
+  if (res.status !== 0) {
+    console.error('\nTailwind build failed — aborting so we never ship an unstyled app.');
+    process.exit(1);
+  }
+}
 
 const options = {
   entryPoints: ['src/main.jsx'],

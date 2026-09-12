@@ -1,0 +1,75 @@
+/* Tailwind entry point. Built to docs/styles.css by build.mjs.
+ *
+ * Everything below the directives was moved VERBATIM out of the inline <style>
+ * block in public/index.html when the Tailwind Play CDN was removed. The order
+ * matters: these rules come AFTER @tailwind utilities so they still win, which
+ * is the same position they held relative to the CDN's generated styles.
+ */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body { background-color: #FAFAF7; }
+
+/* iOS Safari auto-zooms when you focus a text field smaller than 16px, and that
+   zoom sticks in home-screen (standalone) mode — making the app look slightly
+   enlarged. Forcing 16px form text on small screens stops the zoom without
+   disabling pinch-to-zoom elsewhere. */
+@media (max-width: 640px) {
+  input, select, textarea { font-size: 16px !important; }
+}
+
+/* ── Dark mode overrides ──────────────────────────────────────────────────
+   The whole app is styled with Tailwind utility classes on a light stone/white
+   palette. Rather than edit every component, we remap those specific utilities
+   to a dark stone palette whenever <html> has the `.dark` class (added by the
+   no-flash script in index.html and the appearance toggle). These rules come
+   AFTER the utilities and use !important so they win.
+
+   We intentionally do NOT touch the indigo accent (bg-indigo-600) or the
+   emerald / rose / amber semantic chips — those small coloured chips read fine
+   on the dark cards. */
+
+/* Page background */
+.dark body, .dark html { background-color: #1c1917 !important; }
+.dark .bg-\[\#FAFAF7\] { background-color: #1c1917 !important; }
+/* Translucent sticky headers use the /95 opacity variant — cover it too,
+   otherwise the bar stays light while its text turns light (invisible). */
+.dark .bg-\[\#FAFAF7\]\/95 { background-color: rgba(28,25,23,0.92) !important; }
+.dark .bg-white\/95 { background-color: rgba(41,37,36,0.92) !important; }
+
+/* Cards / inputs / raised surfaces */
+.dark .bg-white      { background-color: #292524 !important; }
+.dark .bg-stone-50   { background-color: #292524 !important; }
+.dark .bg-stone-100  { background-color: #3f3b38 !important; }
+
+/* Text shades */
+.dark .text-stone-900 { color: #f5f5f4 !important; }
+.dark .text-stone-800 { color: #e7e5e4 !important; }
+.dark .text-stone-700 { color: #d6d3d1 !important; }
+.dark .text-stone-600 { color: #b8b3ae !important; }
+.dark .text-stone-500 { color: #a8a29e !important; }
+.dark .text-stone-400 { color: #8a847e !important; }
+
+/* Borders */
+.dark .border-stone-100,
+.dark .border-stone-200 { border-color: #44403c !important; }
+.dark .border-stone-300 { border-color: #57534e !important; }
+
+/* Divider utility (the "> :not([hidden]) ~ :not([hidden])" child borders) */
+.dark .divide-stone-100 > :not([hidden]) ~ :not([hidden]) { border-color: #44403c !important; }
+
+/* Form controls — keep them legible on the dark surface */
+.dark input,
+.dark select,
+.dark textarea {
+  background-color: #292524 !important;
+  color: #f5f5f4 !important;
+  border-color: #44403c !important;
+}
+.dark input::placeholder { color: #8a847e !important; }
+
+/* Hover helpers */
+.dark .hover\:bg-stone-50:hover,
+.dark .hover\:bg-stone-100:hover { background-color: #3f3b38 !important; }
