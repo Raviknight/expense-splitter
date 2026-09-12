@@ -131,6 +131,25 @@ curl -s -o /dev/null -w '%{http_code}\n' \
   use, configure **custom SMTP** (Authentication → Emails → SMTP Settings). Resend is the
   chosen provider. Note: without a verified domain, Resend (`onboarding@resend.dev`) only
   delivers to your own account email — emailing other people needs a custom domain.
+
+- ⚠️ **The magic-link email template MUST include `{{ .Token }}`.** Authentication →
+  Emails → **Magic Link** template. Without it the sign-in screen's 6-digit code box
+  exists but the email carries no code to type, which is worse than not offering it.
+
+  **Why the code exists at all:** corporate and university mail security (Outlook Safe
+  Links, Barracuda, Proofpoint) *pre-fetches* every link in an incoming email to scan it.
+  A Supabase magic link is single-use, so the scanner consumes the token and the real
+  click then fails with "invalid or has expired". This is a known Supabase issue
+  ([supabase/auth#1214](https://github.com/supabase/auth/issues/1214)), not a
+  misconfiguration, and it makes magic links unusable on many work addresses. A scanner
+  cannot consume a code that has to be typed, so the code path works where the link does
+  not. `AuthScreen.jsx` shows both: the link is the happy path, the code is the fallback.
+
+  Suggested template addition:
+
+  ```html
+  <p>Or enter this code: <strong style="font-size:20px">{{ .Token }}</strong></p>
+  ```
 - **Google sign-in** needs a one-time Google OAuth credential pasted into Authentication →
   Providers → Google. Magic link and email+password work without it.
 

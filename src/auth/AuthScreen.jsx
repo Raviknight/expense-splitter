@@ -54,12 +54,51 @@ const FEATURES = [
   },
 ];
 
+// Rendered twice — beside the form on wide screens, below it on phones — so
+// the caller controls placement and visibility via `className`. Defined once so
+// the two never drift apart.
+function FeatureList({ className = '' }) {
+  return (
+    <ul className={`flex-col gap-2.5 text-left max-w-[260px] mx-auto lg:mx-0 ${className}`}>
+      {FEATURES.map(({ icon: Icon, text }) => (
+        <li key={text} className="flex items-center gap-2.5">
+          {/* Small indigo pill icon container */}
+          <span className="flex items-center justify-center w-6 h-6 rounded-md bg-indigo-50 shrink-0">
+            <Icon className="w-3.5 h-3.5 text-indigo-600" />
+          </span>
+          <span className="text-xs text-stone-600">{text}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 // ---- Magic-link section (primary) ----
+//
+// WHY THERE IS ALSO A CODE BOX:
+//   Corporate and university mail security (Outlook Safe Links, Barracuda,
+//   Proofpoint, and similar) PRE-FETCHES every link in an incoming email to
+//   scan it. A Supabase magic link is single-use, so the scanner consumes the
+//   token and the real click then fails with "invalid or has expired". This is
+//   a well-known Supabase issue (supabase/auth#1214), not a misconfiguration,
+//   and it makes magic links unusable on many work addresses.
+//
+//   The same email also carries a 6-digit code. A scanner cannot consume a code
+//   that has to be typed, so the code path works where the link does not. The
+//   link stays the happy path for personal inboxes; the code is the fallback.
+//
+//   NOTE: the code only appears in the email once the Supabase email template
+//   includes {{ .Token }} — see the setup note in CLAUDE.md.
 function MagicLinkForm() {
   const [email, setEmail] = useState('');
   const [sent, setSent]   = useState(false);
   const [busy, setBusy]   = useState(false);
   const [error, setError] = useState('');
+
+  // Code-entry state, used only after the email has been sent.
+  const [code, setCode]         = useState('');
+  const [verifying, setVerify]  = useState(false);
+  const [codeError, setCodeErr] = useState('');
 
   async function handleSend(e) {
     e.preventDefault();
@@ -78,17 +117,72 @@ function MagicLinkForm() {
     setSent(true);
   }
 
-  // "Check your email" confirmation state
+  async function handleVerify(e) {
+    e.preventDefault();
+    setCodeErr('');
+    const token = code.replace(/\D/g, '');   // tolerate spaces/dashes when pasting
+    if (token.length < 6) { setCodeErr('Enter the 6-digit code from the email.'); return; }
+    setVerify(true);
+    const { error: err } = await supabase.auth.verifyOtp({
+      email: email.trim(),
+      token,
+      type: 'email',
+    });
+    setVerify(false);
+    // On success, onAuthStateChange fires and AuthGate swaps to the app —
+    // nothing more to do here.
+    if (err) setCodeErr(err.message);
+  }
+
+  // "Check your email" state — link first, code as the fallback that survives
+  // link scanners.
   if (sent) {
     return (
-      <div className="flex flex-col items-center gap-3 py-4 text-center">
+      <div className="flex flex-col items-center gap-3 py-2 text-center">
         <CheckCircle className="w-10 h-10 text-emerald-500" />
         <p className="font-semibold text-stone-800">Check your email</p>
         <p className="text-sm text-stone-500 max-w-xs">
           We sent a sign-in link to <strong>{email}</strong>. Click it to continue — no password needed.
         </p>
+
+        <div className="w-full flex items-center gap-3 pt-1">
+          <div className="flex-1 border-t border-stone-100" />
+          <span className="text-xs text-stone-400">or enter the code</span>
+          <div className="flex-1 border-t border-stone-100" />
+        </div>
+
+        <form onSubmit={handleVerify} className="w-full flex flex-col gap-2">
+          <div className="flex gap-2">
+            <input
+              // inputMode/pattern bring up the numeric keypad on a phone.
+              // text-base (16px) stops iOS zooming the page on focus.
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              autoComplete="one-time-code"
+              maxLength={6}
+              placeholder="123456"
+              value={code}
+              onChange={e => setCode(e.target.value)}
+              className="flex-1 rounded-xl border border-stone-200 bg-white px-4 py-3 text-base tracking-[0.3em] text-center text-stone-900 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+            <button
+              type="submit"
+              disabled={verifying}
+              className="rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-3 text-sm font-medium disabled:opacity-50 transition"
+            >
+              {verifying ? 'Checking…' : 'Sign in'}
+            </button>
+          </div>
+          <ErrorMsg msg={codeError} />
+          <p className="text-xs text-stone-400 text-left">
+            Work email? Company security scanners often open the link before you
+            do, which uses it up. The code always works.
+          </p>
+        </form>
+
         <button
-          onClick={() => { setSent(false); setEmail(''); }}
+          onClick={() => { setSent(false); setEmail(''); setCode(''); setCodeErr(''); }}
           className="text-xs text-indigo-600 underline underline-offset-2 mt-1 hover:text-indigo-800 transition"
         >
           Use a different email
@@ -372,11 +466,15 @@ export default function AuthScreen() {
           so it reads as a gentle accent in BOTH light and dark themes (no white band). */}
       <div aria-hidden="true" className="pointer-events-none absolute -top-20 left-1/2 -translate-x-1/2 w-[460px] h-[460px] rounded-full bg-indigo-400/10 blur-3xl" />
 
-      {/* All content sits above the glow. */}
-      <div className="relative z-10 w-full flex flex-col items-center">
+      {/* All content sits above the glow.
+          LAYOUT: the three selling points used to sit stacked ABOVE the form,
+          pushing the actual sign-in below the fold on a phone. They now sit in a
+          left column on wide screens and BELOW the form on phones, so the first
+          thing you land on is the thing you came to do. */}
+      <div className="relative z-10 w-full max-w-4xl flex flex-col lg:flex-row lg:items-center lg:justify-center lg:gap-14">
 
       {/* ── Hero / title area ── */}
-      <div className="mb-8 text-center">
+      <div className="mb-8 lg:mb-0 text-center lg:text-left lg:flex-1 lg:max-w-sm">
         {/* App mark — dark square with the indigo "S" monogram (matches the app icon) */}
         <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-stone-900 mb-4 shadow-md">
           <svg width="40" height="40" viewBox="0 0 100 100" aria-hidden="true">
@@ -386,29 +484,19 @@ export default function AuthScreen() {
         </div>
 
         {/* App name */}
-        <h1 className="text-3xl font-bold text-stone-900 tracking-tight">Splitab</h1>
+        <h1 className="text-3xl lg:text-4xl font-bold text-stone-900 tracking-tight">Splitab</h1>
 
         {/* Tagline — value proposition in one line (any shared expense, not just trips) */}
-        <p className="text-sm text-stone-500 mt-2 max-w-xs mx-auto leading-relaxed">
+        <p className="text-sm lg:text-base text-stone-500 mt-2 max-w-xs mx-auto lg:mx-0 leading-relaxed">
           Split expenses with anyone — trips, rent, dinners, anything.
         </p>
 
-        {/* Three feature highlights — compact icon + text rows */}
-        <ul className="mt-5 flex flex-col gap-2 text-left max-w-[260px] mx-auto">
-          {FEATURES.map(({ icon: Icon, text }) => (
-            <li key={text} className="flex items-center gap-2.5">
-              {/* Small indigo pill icon container */}
-              <span className="flex items-center justify-center w-6 h-6 rounded-md bg-indigo-50 shrink-0">
-                <Icon className="w-3.5 h-3.5 text-indigo-600" />
-              </span>
-              <span className="text-xs text-stone-600">{text}</span>
-            </li>
-          ))}
-        </ul>
+        {/* Wide screens: features live here, beside the form. */}
+        <FeatureList className="hidden lg:flex mt-8" />
       </div>
 
       {/* ── Card ── */}
-      <div className="w-full max-w-sm bg-white rounded-2xl border border-stone-200 shadow-sm p-6 flex flex-col gap-6">
+      <div className="w-full max-w-sm mx-auto lg:mx-0 bg-white rounded-2xl border border-stone-200 shadow-sm p-6 flex flex-col gap-6">
 
         {/* 1. Magic link (primary) */}
         <section>
@@ -446,10 +534,14 @@ export default function AuthScreen() {
         <section>
           <EmailPasswordForm />
         </section>
+
+        {/* Phones: features sit BELOW the form, so the form is what you land on.
+            Hidden on wide screens, where they appear in the left column instead. */}
+        <FeatureList className="flex lg:hidden pt-1" />
       </div>
 
       {/* Footer privacy line */}
-      <p className="text-xs text-stone-400 mt-6 text-center max-w-xs">
+      <p className="text-xs text-stone-400 mt-6 text-center max-w-xs mx-auto">
         Your data is protected by Row-Level Security. Only you and your accepted connections can see your expenses.
       </p>
 

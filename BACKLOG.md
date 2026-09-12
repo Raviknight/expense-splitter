@@ -27,7 +27,7 @@ If it is not in this file, it is not agreed work. If it is done, it leaves this 
 
 | # | Item | State |
 |---|------|-------|
-| 12 | 🔴 **Magic link fails on corporate email** | Next. Diagnosed (see below) — fix is a 6-digit OTP code path in `AuthScreen.jsx`, which pairs with #10. |
+| 11 | **Email notifications** — welcome (self sign-up *and* invite), daily summary, monthly statement. | Next. Provider confirmed: **Resend** (`api.resend.com`, from `Splitab <hello@splitab.app>`); Cloudflare is only DNS. An unused `supabase/functions/send-welcome/` already exists — read it first. Daily/monthly digests need a scheduler (pg_cron or a GitHub Actions cron) plus an opt-out, since unsolicited recurring mail is a spam-complaint risk. |
 
 ## Agreed — next up
 
@@ -77,6 +77,15 @@ If it is not in this file, it is not agreed work. If it is done, it leaves this 
 
 ## Done (recent — trim as it grows)
 
+- **Magic link on corporate email** (#12) + **sign-in page revamp** (#10). The email now
+  also carries a 6-digit code, entered on the "check your email" screen — a link scanner
+  can consume a single-use link, but not a code you type. ⚠️ **Requires `{{ .Token }}` in
+  the Supabase Magic Link email template** or the box has no code to accept. Layout: the
+  three selling points moved from above the form to a left column on wide screens and
+  below the form on phones. Verified at 375px and 1280px: exactly one feature list visible
+  at each width, form above the features on mobile and reachable without scrolling, no
+  horizontal overflow; code box has numeric keypad + `one-time-code` autocomplete, and a
+  wrong code surfaces an error.
 - **Dashboard refresh** (#2) — pinned groups, sort by recent activity / amount due /
   alphabetical, and a card restyle (balance is now the dominant element, softer shadows,
   hover lift, pin affordance). Needs **db/13** for pins to sync; falls back to per-device
