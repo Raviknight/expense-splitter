@@ -742,6 +742,34 @@ export function useExpenseStore(userId, profile) {
       setActiveGroupId(groupId);
     },
 
+    // ── Save the user's pinned groups (dashboard ordering) ───────────────────
+    // Writes a jsonb array of group ids to profiles.pinned_groups (db/13).
+    //
+    // Lives on `profiles` because that table already has a policy letting a user
+    // update their own row, so no new RLS policy was needed.
+    //
+    // Returns { error } rather than throwing. The caller treats a failure as
+    // "persist locally instead", so pinning still works before db/13 is run —
+    // the same graceful-degradation pattern used for preferred_currency. A
+    // missing column surfaces as PostgREST error 42703.
+    async savePinnedGroups(ids) {
+      if (!userId) return { error: 'Not signed in.' };
+      // try/catch as well as the { error } check: a missing column comes back
+      // as a normal PostgREST error object, but a dropped connection THROWS.
+      // Both must surface the same way or the caller's local fallback is
+      // skipped and the user silently loses their pin.
+      try {
+        const { error } = await supabase
+          .from('profiles')
+          .update({ pinned_groups: ids })
+          .eq('id', userId);
+        if (error) return { error: error.message, code: error.code };
+        return {};
+      } catch (e) {
+        return { error: String(e?.message ?? e) };
+      }
+    },
+
     // ── Add or edit an expense ───────────────────────────────────────────────
     // OFFLINE-CAPABLE. Generates a client-side UUID for new expenses so the id
     // is stable whether it syncs now or later.

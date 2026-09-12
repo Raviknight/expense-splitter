@@ -3,7 +3,7 @@ import {
   Plus, Pencil, Trash2, X, ArrowDownUp, Receipt, Users, PieChart, Search,
   ChevronDown, ChevronRight, Check, ArrowLeft, Handshake, User,
   AlertCircle, RefreshCw, UserPlus, Ghost, Upload, FileSpreadsheet,
-  BarChart3, Download, Printer, ScanLine, Loader2, Activity,
+  BarChart3, Download, Printer, ScanLine, Loader2, Activity, Pin, PinOff,
 } from 'lucide-react';
 import { useAuth } from './auth/AuthProvider.jsx';
 import { useConnections } from './auth/useConnections.js';
@@ -273,6 +273,50 @@ function setLastSeen(groupId, ts) {
     localStorage.setItem(LAST_SEEN_PREFIX + groupId, String(ts));
   } catch (e) {
     /* storage unavailable (private mode) — the badge just won't clear; harmless */
+  }
+}
+
+// Most recent activity in a group, as a millisecond timestamp (0 if nothing).
+// Powers the dashboard's default "Recent activity" sort. Uses the same
+// createdAt fields as the "N new" badge — no new data required.
+function lastActivityAt(group) {
+  let latest = 0;
+  const consider = (iso) => {
+    if (!iso) return;
+    const t = new Date(iso).getTime();
+    if (!isNaN(t) && t > latest) latest = t;
+  };
+  (group.expenses || []).forEach(e => consider(e.createdAt));
+  (group._memberJoins || []).forEach(m => consider(m.createdAt));
+  return latest;
+}
+
+// Dashboard sort preference. Per-DEVICE on purpose (localStorage, like
+// lastseen): how you like a list ordered is a habit of the device you're on,
+// whereas pins are a statement about the groups themselves and so live on the
+// profile and sync. Same try/catch guard as the other storage helpers — a
+// private-mode browser that blocks storage must never break the app.
+const SORT_PREF_KEY = 'slitab.homesort';
+const SORT_OPTIONS = [
+  { id: 'activity', label: 'Recent activity' },
+  { id: 'due',      label: 'Amount due' },
+  { id: 'name',     label: 'Alphabetical' },
+];
+
+function getSortPref() {
+  try {
+    const v = localStorage.getItem(SORT_PREF_KEY);
+    return SORT_OPTIONS.some(o => o.id === v) ? v : 'activity';
+  } catch (e) {
+    return 'activity';
+  }
+}
+
+function setSortPref(v) {
+  try {
+    localStorage.setItem(SORT_PREF_KEY, v);
+  } catch (e) {
+    /* storage unavailable — the sort just won't be remembered; harmless */
   }
 }
 
@@ -606,6 +650,71 @@ export default function App() {
     user?.id,
     profile,
   );
+
+  /* ----- Pinned groups (home dashboard ordering) -----
+   *
+   * MUST STAY ABOVE the `if (loading)` / `if (error)` early returns further
+   * down. Hooks declared after a conditional return only run on some renders,
+   * which trips React's "rendered more hooks than during the previous render".
+   *
+   * Source of truth is profiles.pinned_groups (db/13) so pins follow the user
+   * between phone and laptop. If that column doesn't exist yet the write fails
+   * and we fall back to per-device localStorage, so the feature still works
+   * before the migration is run — the same graceful degradation the app uses
+   * for preferred_currency.
+   */
+  const PINS_KEY = user?.id ? `slitab.pins.${user.id}` : null;
+
+  const readLocalPins = () => {
+    try {
+      const raw = PINS_KEY ? localStorage.getItem(PINS_KEY) : null;
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr : [];
+    } catch (e) {
+      return [];
+    }
+  };
+
+  const [pinnedIds, setPinnedIds] = useState(() => {
+    const fromProfile = profile?.pinned_groups;
+    if (Array.isArray(fromProfile)) return fromProfile;
+    return readLocalPins();
+  });
+
+  // Adopt the profile's list once it loads (or changes on another device).
+  // Only when it's a real array — an absent column arrives as undefined, and
+  // overwriting good local pins with [] would silently lose them.
+  useEffect(() => {
+    if (Array.isArray(profile?.pinned_groups)) setPinnedIds(profile.pinned_groups);
+  }, [profile?.pinned_groups]);
+
+  const togglePin = async (groupId) => {
+    const next = pinnedIds.includes(groupId)
+      ? pinnedIds.filter(id => id !== groupId)
+      : [...pinnedIds, groupId];
+    setPinnedIds(next);   // optimistic — pinning must feel instant
+
+    // Wrapped so ANY failure path reaches the local fallback. Without this an
+    // unexpected throw skips it entirely and the pin is lost on reload.
+    let saved = false;
+    try {
+      const res = await actions.savePinnedGroups(next);
+      saved = !res?.error;
+    } catch (e) {
+      saved = false;
+    }
+
+    if (!saved) {
+      // Most likely db/13 hasn't been run (PostgREST 42703 = undefined column).
+      // Keep the pin working locally rather than surfacing an error for
+      // something this minor.
+      try {
+        if (PINS_KEY) localStorage.setItem(PINS_KEY, JSON.stringify(next));
+      } catch (e) {
+        /* storage unavailable — pins just won't survive a reload */
+      }
+    }
+  };
 
   // Currency is now PER GROUP. Inside a group's detail view every amount uses
   // that ACTIVE group's currency. We set the module-level `currencySymbol`
@@ -1063,6 +1172,8 @@ export default function App() {
         onClearError={actions.clearError}
         onOpenGroup={switchGroup}
         onNewGroup={() => openGroups('form')}
+        pinnedIds={pinnedIds}
+        onTogglePin={togglePin}
         groupsModal={showGroups && (
           <GroupsModal
             groups={groups}
@@ -1479,6 +1590,7 @@ function UpgradePrompt({ feature, onClose }) {
 function HomeScreen({
   groups, myName, online, pendingCount, error, onClearError,
   onOpenGroup, onNewGroup, groupsModal, confirmDelete,
+  pinnedIds = [], onTogglePin,
 }) {
   // First name for the greeting (myName is the owner's display name, or 'Me').
   const firstName = (myName && myName !== 'Me') ? String(myName).split(' ')[0] : 'there';
@@ -1503,6 +1615,56 @@ function HomeScreen({
   // Currencies with a real (non-rounding) balance, for the summary chips.
   const balanceChips = Object.entries(netByCurrency).filter(([, v]) => Math.abs(v) >= 0.005);
   const hasShared = groups.some(g => !((g.type === 'solo') || (g.people || []).length === 1));
+
+  // ── Sort ──────────────────────────────────────────────────────────────────
+  // Per-device preference, so it lives in localStorage rather than the profile —
+  // unlike pins, which people expect to follow them between phone and laptop.
+  const [sortBy, setSortBy] = useState(() => getSortPref());
+  const changeSort = (v) => { setSortBy(v); setSortPref(v); };
+
+  const sorted = useMemo(() => {
+    const list = [...groups];
+    if (sortBy === 'name') {
+      // localeCompare so accented names order sensibly rather than by code point.
+      list.sort((a, b) => (a.name || '').localeCompare(b.name || '', undefined, { sensitivity: 'base' }));
+    } else if (sortBy === 'due') {
+      // Largest outstanding amount first — "what needs my attention", in either
+      // direction (owed to me or by me).
+      //
+      // IMPORTANT: amounts are NOT comparable across currencies. Sorting the
+      // raw numbers puts ₹9,200 (about $110) above $1,090, which is nonsense —
+      // the same unit-mixing mistake the balance chips already avoid by showing
+      // one chip per currency. Converting would need live FX rates, which this
+      // app deliberately doesn't carry.
+      //
+      // So: group by currency first, then sort by amount WITHIN each currency.
+      // Currency order is deterministic — most groups first, then code — so the
+      // list doesn't reshuffle unpredictably. For the common single-currency
+      // user this behaves exactly like a plain "biggest first".
+      const owe = (g) => {
+        const mine = computeNetBalances(g.people || [], g.expenses || []).find(b => b.name === myName);
+        return mine ? Math.abs(mine.net) : 0;
+      };
+      const counts = {};
+      list.forEach(g => { const c = g.currency || 'USD'; counts[c] = (counts[c] || 0) + 1; });
+      const currencyRank = Object.keys(counts)
+        .sort((a, b) => (counts[b] - counts[a]) || a.localeCompare(b))
+        .reduce((m, c, i) => { m[c] = i; return m; }, {});
+      list.sort((a, b) => {
+        const ra = currencyRank[a.currency || 'USD'];
+        const rb = currencyRank[b.currency || 'USD'];
+        if (ra !== rb) return ra - rb;
+        return owe(b) - owe(a);
+      });
+    } else {
+      // 'activity' (default): most recently touched first.
+      list.sort((a, b) => lastActivityAt(b) - lastActivityAt(a));
+    }
+    // Pinned groups float to the top, keeping the chosen order among themselves.
+    return [...list.filter(g => pinnedIds.includes(g.id)), ...list.filter(g => !pinnedIds.includes(g.id))];
+  }, [groups, sortBy, myName, pinnedIds]);
+
+  const pinnedCount = sorted.filter(g => pinnedIds.includes(g.id)).length;
 
   return (
     <div className="min-h-screen bg-[#FAFAF7] text-stone-900" style={{ fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif' }}>
@@ -1601,11 +1763,41 @@ function HomeScreen({
             </button>
           </div>
         ) : (
-          <div className="grid gap-3 sm:grid-cols-2">
-            {groups.map(g => (
-              <GroupCard key={g.id} group={g} myName={myName} onOpen={() => onOpenGroup(g.id)} />
-            ))}
-          </div>
+          <>
+            {/* Sort control. Only worth the space once there are enough groups
+                for ordering to matter. */}
+            {groups.length > 1 && (
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-[11px] uppercase tracking-wider text-stone-500 font-medium">
+                  {pinnedCount > 0 ? `${pinnedCount} pinned` : 'Your groups'}
+                </div>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <ArrowDownUp className="w-3.5 h-3.5 text-stone-400" />
+                  <select
+                    value={sortBy}
+                    onChange={(e) => changeSort(e.target.value)}
+                    aria-label="Sort groups"
+                    className="text-xs font-medium text-stone-600 bg-transparent border border-stone-300 rounded-lg px-2 py-1.5 focus:outline-none focus:border-indigo-500"
+                  >
+                    {SORT_OPTIONS.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+                  </select>
+                </div>
+              </div>
+            )}
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              {sorted.map(g => (
+                <GroupCard
+                  key={g.id}
+                  group={g}
+                  myName={myName}
+                  pinned={pinnedIds.includes(g.id)}
+                  onTogglePin={onTogglePin ? () => onTogglePin(g.id) : undefined}
+                  onOpen={() => onOpenGroup(g.id)}
+                />
+              ))}
+            </div>
+          </>
         )}
       </main>
 
@@ -1615,8 +1807,15 @@ function HomeScreen({
   );
 }
 
-/* ============ Group card (one tile on the home dashboard) ============ */
-function GroupCard({ group, myName, onOpen }) {
+/* ============ Group card (one tile on the home dashboard) ============
+ *
+ * NOTE ON MARKUP: this card used to be a single <button>. It can't be any more —
+ * the pin control is itself a button, and nesting a button inside a button is
+ * invalid HTML with undefined click behaviour. So the card is a div with
+ * role="button" plus explicit Enter/Space handling to keep it keyboard-usable,
+ * and the pin stops propagation so pinning never also opens the group.
+ */
+function GroupCard({ group, myName, onOpen, pinned = false, onTogglePin }) {
   const people = group.people || [];
   const isSolo = (group.type === 'solo') || people.length === 1;
 
@@ -1649,13 +1848,29 @@ function GroupCard({ group, myName, onOpen }) {
   const newLabel = newCount > 9 ? '9+' : String(newCount);
 
   return (
-    <button
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onOpen}
-      className="text-left bg-white border border-stone-200 rounded-2xl p-4 shadow-sm hover:border-stone-300 hover:shadow active:scale-[0.99] transition flex flex-col gap-3"
+      onKeyDown={(e) => {
+        // Restores the keyboard behaviour a real <button> gave us for free.
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); }
+      }}
+      className={`group relative text-left bg-white rounded-2xl p-4 cursor-pointer flex flex-col gap-3
+        border transition-all duration-150
+        hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.99]
+        focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2
+        ${pinned
+          ? 'border-indigo-200 shadow-[0_1px_2px_rgba(49,46,129,0.06),0_8px_24px_-12px_rgba(49,46,129,0.25)]'
+          : 'border-stone-200/80 shadow-[0_1px_2px_rgba(28,25,23,0.04)] hover:shadow-[0_2px_4px_rgba(28,25,23,0.04),0_12px_28px_-16px_rgba(28,25,23,0.35)] hover:border-stone-300'
+        }`}
     >
-      {/* Title + solo tag + "N new" activity badge */}
+      {/* Title + solo tag + "N new" activity badge + pin */}
       <div className="flex items-start justify-between gap-2">
-        <div className="font-semibold text-stone-900 truncate">{group.name}</div>
+        <div className="min-w-0 flex items-center gap-1.5">
+          {pinned && <Pin className="w-3.5 h-3.5 text-indigo-500 shrink-0 fill-indigo-500" />}
+          <span className="font-semibold text-[15px] text-stone-900 truncate tracking-tight">{group.name}</span>
+        </div>
         <div className="flex items-center gap-1.5 shrink-0">
           {newCount > 0 && (
             <span className="text-[10px] font-semibold text-white bg-indigo-600 rounded-full px-2 py-0.5">
@@ -1666,6 +1881,21 @@ function GroupCard({ group, myName, onOpen }) {
             <span className="text-[10px] uppercase tracking-wider text-stone-500 bg-stone-100 border border-stone-200 rounded-full px-2 py-0.5">
               solo
             </span>
+          )}
+          {onTogglePin && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onTogglePin(); }}
+              aria-label={pinned ? `Unpin ${group.name}` : `Pin ${group.name}`}
+              aria-pressed={pinned}
+              title={pinned ? 'Unpin' : 'Pin to top'}
+              /* Always visible on touch (no hover there); fades in on pointer devices. */
+              className={`-m-1 p-1 rounded-lg transition hover:bg-stone-100 ${
+                pinned ? 'text-indigo-600' : 'text-stone-400 sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100'
+              }`}
+            >
+              {pinned ? <PinOff className="w-3.5 h-3.5" /> : <Pin className="w-3.5 h-3.5" />}
+            </button>
           )}
         </div>
       </div>
@@ -1690,21 +1920,35 @@ function GroupCard({ group, myName, onOpen }) {
         )}
       </div>
 
-      {/* The signed-in user's balance in this group */}
+      {/* The signed-in user's balance — the reason you opened the app, so it
+          gets the most visual weight on the card. The label sits above the
+          figure so the number itself can be scanned down a column of cards. */}
       {isSolo ? (
-        <div className="text-sm text-stone-500">Personal spending</div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-stone-400 font-medium">Personal</div>
+          <div className="text-sm text-stone-500 mt-0.5">Spending only</div>
+        </div>
       ) : settled ? (
-        <div className="text-sm text-stone-500 font-medium">Settled up</div>
-      ) : owed ? (
-        <div className="text-sm font-semibold text-emerald-700">
-          You are owed +{fmt(myNet, sym)}
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-stone-400 font-medium">Balance</div>
+          <div className="text-sm font-medium text-stone-500 mt-0.5 flex items-center gap-1.5">
+            <Check className="w-3.5 h-3.5 text-emerald-600" />
+            Settled up
+          </div>
         </div>
       ) : (
-        <div className="text-sm font-semibold text-rose-600">
-          You owe -{fmt(Math.abs(myNet), sym)}
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-stone-400 font-medium">
+            {owed ? 'You are owed' : 'You owe'}
+          </div>
+          <div className={`text-lg font-semibold tabular-nums mt-0.5 tracking-tight ${
+            owed ? 'text-emerald-700' : 'text-rose-600'
+          }`}>
+            {owed ? '+' : '-'}{fmt(Math.abs(myNet), sym)}
+          </div>
         </div>
       )}
-    </button>
+    </div>
   );
 }
 

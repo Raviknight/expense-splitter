@@ -27,9 +27,15 @@ If it is not in this file, it is not agreed work. If it is done, it leaves this 
 
 | # | Item | State |
 |---|------|-------|
-| 2 | **Dashboard refresh** — *"visually flat, styling looks old"*; data density is fine as-is. Add **pinned groups** and **sort by activity / amount due / alphabetical**. | Not started. Pin persistence decided: **`profiles.pinned_groups` jsonb** (db/13) — syncs across devices and reuses the existing self-update RLS policy on `profiles`, so no new policy is needed. Degrade gracefully when the column is absent, matching how the app handles `preferred_currency`. |
+| 12 | 🔴 **Magic link fails on corporate email** | Next. Diagnosed (see below) — fix is a 6-digit OTP code path in `AuthScreen.jsx`, which pairs with #10. |
 
 ## Agreed — next up
+
+| # | Item | Notes |
+|---|------|-------|
+| 12 | 🔴 **Magic link fails on corporate email** — reported for a work address. | **Diagnosed, not a config error.** Corporate mail security (Outlook Safe Links, Barracuda, Proofpoint, university/hospital filters) *pre-fetches* every link to scan it. Supabase magic links are single-use, so the scanner consumes the token and the real click then sees "invalid or has expired". Widely reported: [supabase/auth#1214](https://github.com/supabase/auth/issues/1214), [discussion #41618](https://github.com/orgs/supabase/discussions/41618). **Preferred fix: a 6-digit OTP code** instead of a link — the email carries `{{ .Token }}` and the app calls `verifyOtp({ email, token, type: 'email' })`. A scanner cannot consume a code the user must type. Alternative: put the URL in a page *fragment* (`#confirm={{ .ConfirmationURL }}`), since fragments are never sent to a server — but that needs a landing page and more moving parts. **Workaround today: Google sign-in or email+password.** Pairs naturally with #10 since both touch `AuthScreen.jsx`. |
+| 10 | **Sign-in / sign-up page revamp** — the three selling points are stacked at the top, pushing the actual sign-in form down the page. Move them to the side on wide screens and to the bottom on phones, so the form is what you land on. | `src/auth/AuthScreen.jsx`. **Layout only — no auth logic changes.** It is the first screen a new user sees, so it is also the natural place to carry the same visual refresh as #2. |
+| 11 | **Email notifications** — welcome email on sign-up, plus the other planned notifications. | ⚠️ **Read the existing unused `supabase/functions/send-welcome/` before writing anything.** Sending infrastructure already exists (Resend, verified domain, `hello@splitab.app`). Blocked on decisions: which notifications, what triggers them, and whether users can opt out. Settings already shows a notifications placeholder. |
 | 3 | **Server-side scan limits** — Postgres counter, checked and incremented **inside the `scan-receipt` Edge Function**, RLS preventing users from updating their own counter. | ⚠️ Prerequisite for any paid tier. A limit in `App.jsx` is cosmetic: the anon key is public, so the function can be called directly. Decision made: **cap by request count, not a 24h window** — cost is per-scan, so a time window can't bound spend. **Count per FILE, not per PDF page**: the function clips PDF text at 24,000 chars, so a 50-page PDF costs the same as a 3-page one. |
 | 4 | **Multi-image upload** — attach several images per scan, 1 credit each, capped per batch. | Depends on #3 for the credit accounting. Images (vision) are the expensive path; PDFs (text) are cheap. |
 | 5 | **Merchant learning from corrections** — record when a user re-categorises an expense, reuse it for that user, and aggregate toward the shared rules. | Auto-adapts to any country with no hand-written keyword lists. Note: **scanned** receipts already get a category from the AI, so `RULES` only affects CSV import and manual entry. |
@@ -71,6 +77,13 @@ If it is not in this file, it is not agreed work. If it is done, it leaves this 
 
 ## Done (recent — trim as it grows)
 
+- **Dashboard refresh** (#2) — pinned groups, sort by recent activity / amount due /
+  alphabetical, and a card restyle (balance is now the dominant element, softer shadows,
+  hover lift, pin affordance). Needs **db/13** for pins to sync; falls back to per-device
+  localStorage until then. Verified in a dev build against seeded sample groups: all three
+  sort orders correct, per-group currency correct (₹ vs $), balances independently checked
+  (2400/3 = −$800, 18400/2 = +₹9,200), pin floats to top, survives reload, and unpin
+  reverses. Two bugs found and fixed during that check — see below.
 - **Header consolidation** (#1). Three top-bar controls (avatar → Profile, people icon →
   Connections, gear → Settings) became one avatar menu on the right, with the signed-in
   email shown in the menu header and a one-line hint under each item. Verified in a dev
