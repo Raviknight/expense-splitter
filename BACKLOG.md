@@ -86,6 +86,19 @@ If it is not in this file, it is not agreed work. If it is done, it leaves this 
 
 ## Done (recent — trim as it grows)
 
+- **Invite / connection lifecycle** (#20 + #16). State machine written FIRST, in
+  `docs-internal/invite-state-machine.md`, then built to it. **One input, one button** —
+  the app looks the address up and routes it: existing account → in-app connection request
+  with no email; no account → emailed invite. That removes the two-features-both-called-
+  invite trap where picking wrong failed silently. **Withdraw** added for both kinds
+  (`db/17` adds the DELETE policy `invites` never had; connections already permitted it,
+  the UI just never exposed it). **Declined is no longer terminal** — a dead row used to
+  occupy the only slot allowed by `unique (requester, addressee)` forever; a retry now
+  clears it after a 24h cool-off, so a decline can't become a way to pester someone.
+  **Sent email invites now appear** in the outgoing list; previously they existed nowhere
+  in the app at all.
+  ⬜ Still needs `db/17` run, and end-to-end testing with a second real account.
+
 - **Dashboard layout** (#18) — greeting moved into the app bar top-left, wordmark centred,
   "New group" became a circular floating button bottom-right matching the Add-expense button
   inside a group. The bar uses three columns rather than `justify-between` so the wordmark

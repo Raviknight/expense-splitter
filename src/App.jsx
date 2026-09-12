@@ -1450,7 +1450,15 @@ export default function App() {
 
       {/* Floating action buttons: Import CSV (secondary) + Add expense (primary).
           Both only appear here in the normal state where a group exists. */}
-      <div className="fixed bottom-6 right-6 z-30 flex flex-col items-end gap-3">
+      {/* Same content-column alignment as the new-group button on the home
+          screen — see the comment there. Pinning to the viewport edge strands
+          these in the corner of a wide monitor, away from the content. */}
+      <div className="fixed inset-x-0 bottom-6 z-30 pointer-events-none">
+      {/* Each button re-enables pointer events individually rather than using a
+          `[&>*]:` variant — that arbitrary selector contains a ">", which ends
+          the JSX tag early and leaves the div unterminated. The compiler then
+          reports a confusing error hundreds of lines later. */}
+      <div className="max-w-3xl mx-auto px-4 flex flex-col items-end gap-3">
         {SCAN_ENABLED && (
         <button
           onClick={() => {
@@ -1461,7 +1469,7 @@ export default function App() {
             setImportStartMode('scan');
             setShowImport(true);
           }}
-          className="w-12 h-12 rounded-full bg-white border border-stone-300 text-stone-700 shadow-md hover:bg-stone-50 active:scale-95 transition flex items-center justify-center"
+          className="pointer-events-auto w-12 h-12 rounded-full bg-white border border-stone-300 text-stone-700 shadow-md hover:bg-stone-50 active:scale-95 transition flex items-center justify-center"
           aria-label="Scan receipt or statement"
           title="Scan a receipt or statement photo / PDF"
         >
@@ -1470,7 +1478,7 @@ export default function App() {
         )}
         <button
           onClick={() => { setImportStartMode('csv'); setShowImport(true); }}
-          className="w-12 h-12 rounded-full bg-white border border-stone-300 text-stone-700 shadow-md hover:bg-stone-50 active:scale-95 transition flex items-center justify-center"
+          className="pointer-events-auto w-12 h-12 rounded-full bg-white border border-stone-300 text-stone-700 shadow-md hover:bg-stone-50 active:scale-95 transition flex items-center justify-center"
           aria-label="Import CSV"
           title="Import expenses from a CSV file"
         >
@@ -1478,11 +1486,12 @@ export default function App() {
         </button>
         <button
           onClick={() => setEditing('new')}
-          className="w-14 h-14 rounded-full bg-indigo-600 text-white shadow-lg hover:bg-indigo-700 active:scale-95 transition flex items-center justify-center"
+          className="pointer-events-auto w-14 h-14 rounded-full bg-indigo-600 text-white shadow-lg hover:bg-indigo-700 active:scale-95 transition flex items-center justify-center"
           aria-label="Add expense"
         >
           <Plus className="w-6 h-6" />
         </button>
+      </div>
       </div>
 
       {editing && (
@@ -1736,19 +1745,12 @@ function HomeScreen({
         </div>
       )}
 
-      {/* The greeting moved into the app bar above, and "New group" became the
-          floating button at the bottom of this screen — so this header is now
-          just the group count. Kept as its own sticky strip so the list still
-          has a heading to scroll under. */}
-      <header className="sticky top-11 z-20 bg-[#FAFAF7]/95 backdrop-blur border-b border-stone-200">
-        <div className="max-w-3xl mx-auto px-4 pt-4 pb-3">
-          <h1 className="text-lg font-semibold">
-            {groups.length === 0
-              ? 'No groups yet'
-              : `${groups.length} group${groups.length === 1 ? '' : 's'}`}
-          </h1>
-        </div>
-      </header>
+      {/* No second sticky header here any more. Once the greeting moved into the
+          app bar and "New group" became the floating button, this strip held
+          nothing but the group count — a whole band of chrome for one number,
+          which is expensive on a phone. The count now sits next to the
+          "Your groups" label below, where it reads as a caption rather than a
+          heading. */}
 
       <main className="max-w-3xl mx-auto px-4 py-4 pb-24 space-y-4">
 
@@ -1807,7 +1809,11 @@ function HomeScreen({
             {groups.length > 1 && (
               <div className="flex items-center justify-between gap-3">
                 <div className="text-[11px] uppercase tracking-wider text-stone-500 font-medium">
-                  {pinnedCount > 0 ? `${pinnedCount} pinned` : 'Your groups'}
+                  Your groups
+                  <span className="ml-1.5 normal-case tracking-normal text-stone-400">
+                    · {groups.length}
+                    {pinnedCount > 0 && `, ${pinnedCount} pinned`}
+                  </span>
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
                   <ArrowDownUp className="w-3.5 h-3.5 text-stone-400" />
@@ -1840,17 +1846,27 @@ function HomeScreen({
       </main>
 
       {/* Floating "new group" button. Matches the Add-expense button inside a
-          group (same size, position and colour) so the primary action lives in
-          the same place on both screens — which is also why it replaced the
-          header button rather than sitting alongside it. */}
-      <button
-        onClick={onNewGroup}
-        className="fixed bottom-6 right-6 z-30 w-14 h-14 rounded-full bg-indigo-600 text-white shadow-lg hover:bg-indigo-700 active:scale-95 transition flex items-center justify-center"
-        aria-label="New group"
-        title="New group"
-      >
-        <Plus className="w-6 h-6" />
-      </button>
+          group (same size and colour) so the primary action lives in the same
+          place on both screens — which is also why it replaced the header
+          button rather than sitting alongside it.
+          ALIGNED TO THE CONTENT COLUMN, not the viewport: `right-6` pinned it to
+          the far edge of a wide monitor, miles from the cards and the avatar it
+          belongs with. The wrapper reuses the same max-w-3xl column as the page,
+          so the button tracks the content on desktop and still sits bottom-right
+          on a phone, where the column fills the screen. pointer-events-none on
+          the wrapper keeps the full-width strip from swallowing clicks. */}
+      <div className="fixed inset-x-0 bottom-6 z-30 pointer-events-none">
+        <div className="max-w-3xl mx-auto px-4 flex justify-end">
+          <button
+            onClick={onNewGroup}
+            className="pointer-events-auto w-14 h-14 rounded-full bg-indigo-600 text-white shadow-lg hover:bg-indigo-700 active:scale-95 transition flex items-center justify-center"
+            aria-label="New group"
+            title="New group"
+          >
+            <Plus className="w-6 h-6" />
+          </button>
+        </div>
+      </div>
 
       {groupsModal}
       {confirmDelete}

@@ -14,7 +14,7 @@
 // Table: connections  — columns: id, requester, addressee, status, created_at
 // Table: profiles     — columns: id, display_name, email
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { UserPlus, Check, X, Clock, Users, Mail, ChevronDown, ChevronUp } from 'lucide-react';
 import { supabase } from '../supabaseClient.js';
 import { useAuth } from './AuthProvider.jsx';
@@ -55,8 +55,47 @@ function StatusPill({ status }) {
   );
 }
 
+// How long after a decline before the same person may be asked again.
+// A decline is not permanent — people change their minds, and addresses get
+// mistyped — but it must not become a way to pester someone. Enforced in the
+// app for now; if that is ever abused it belongs in a database policy, which is
+// the only place it cannot be bypassed.
+const DECLINE_COOLOFF_HOURS = 24;
+
 // ---- Send request form ----
-function SendRequestForm({ onSent, currentUserId }) {
+// ONE input and ONE button. The app decides whether that address becomes an
+// in-app connection request or an emailed invite — see
+// docs-internal/invite-state-machine.md. Previously these were two separate
+// features both called "invite", and choosing the wrong one failed silently.
+function SendRequestForm({ onSent, currentUserId, inviterName }) {
+  // Calls send-invite directly rather than going through the expense store.
+  // A connection invite has no group and no ghost member — it is purely
+  // "person invites person" — so routing it through the group-scoped
+  // inviteGhostByEmail action would mean inventing arguments it does not have.
+  // send-invite already treats groupId / ghostMemberId as optional.
+  async function sendEmailInvite(toEmail) {
+    try {
+      const { error } = await supabase.functions.invoke('send-invite', {
+        body: { email: toEmail, inviterName: inviterName || 'A friend' },
+      });
+      if (error) {
+        // The real reason lives in the function's JSON body, not in the generic
+        // "non-2xx status code" message supabase-js reports.
+        let detail = error.message || String(error);
+        try {
+          if (error.context && typeof error.context.json === 'function') {
+            const body = await error.context.json();
+            if (body?.error) detail = body.error;
+          }
+        } catch (_) { /* not JSON — keep the original */ }
+        return { ok: false, message: detail };
+      }
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, message: "Couldn't send the invite — the invite email function may not be set up yet." };
+    }
+  }
+
   const [email, setEmail]   = useState('');
   const [busy, setBusy]     = useState(false);
   const [message, setMessage] = useState(null); // { text, type: 'success'|'error'|'warn' }
@@ -105,14 +144,21 @@ function SendRequestForm({ onSent, currentUserId }) {
       return;
     }
 
+    // ── ROUTING ────────────────────────────────────────────────────────────
+    // No account for this address → send an EMAIL INVITE instead of failing.
+    // This used to dead-end with "ask them to sign up first", which is exactly
+    // backwards: inviting someone who isn't here yet is the whole point, and the
+    // email invite lived on a different screen entirely, so nobody found it.
     if (!profiles || profiles.length === 0) {
-      // The lookup function checks every account, so an empty result genuinely
-      // means nobody has signed up with that email yet.
-      setMessage({
-        text: `No account found for "${trimmed}". Ask them to sign up first, then try again.`,
-        type: 'warn',
-      });
+      const res = await sendEmailInvite(trimmed);
       setBusy(false);
+      if (res?.ok) {
+        setMessage({ text: `No account yet — we emailed an invite to ${trimmed}.`, type: 'success' });
+        setEmail('');
+        onSent();
+      } else {
+        setMessage({ text: res?.message || 'Could not send the invite.', type: 'error' });
+      }
       return;
     }
 
@@ -124,9 +170,9 @@ function SendRequestForm({ onSent, currentUserId }) {
       return;
     }
 
-    // Step 2: Insert the connection row.
-    // Columns match 01_schema.sql: requester, addressee, status
-    const { error: insertErr } = await supabase
+    // They DO have an account → in-app request, no email. Mailing existing users
+    // is noise, and needless mail is what damages a sending domain's reputation.
+    const insertRow = async () => supabase
       .from('connections')         // table: connections
       .insert({
         requester: currentUserId,  // column: requester (uuid)
@@ -134,15 +180,74 @@ function SendRequestForm({ onSent, currentUserId }) {
         status: 'pending',         // column: status
       });
 
+    let { error: insertErr } = await insertRow();
+
+    // 23505 = the unique(requester, addressee) constraint. A row already exists
+    // between these two — which previously ended here with "already exists",
+    // permanently. That is the reported bug: once declined, you could never ask
+    // again, because the dead row kept occupying the only slot.
+    if (insertErr && insertErr.code === '23505') {
+      const { data: existing } = await supabase
+        .from('connections')
+        .select('id, status, requester, created_at')
+        .or(`and(requester.eq.${currentUserId},addressee.eq.${addressee.id}),` +
+            `and(requester.eq.${addressee.id},addressee.eq.${currentUserId})`)
+        .limit(1);
+
+      const row = existing && existing[0];
+
+      if (!row) {
+        // The row is invisible to us under RLS — nothing useful to say.
+        setBusy(false);
+        setMessage({ text: 'A request between you two already exists.', type: 'warn' });
+        return;
+      }
+
+      if (row.status === 'accepted') {
+        setBusy(false);
+        setMessage({ text: "You're already connected.", type: 'warn' });
+        return;
+      }
+
+      if (row.status === 'pending') {
+        setBusy(false);
+        setMessage({
+          text: row.requester === currentUserId
+            ? 'You already have a request pending with them.'
+            : 'They have already sent YOU a request — accept it below.',
+          type: 'warn',
+        });
+        return;
+      }
+
+      // status === 'declined'. A decline is not permanent, but it must not
+      // become a way to pester someone, so a retry waits out a cool-off.
+      const declinedAgo = Date.now() - new Date(row.created_at).getTime();
+      if (declinedAgo < DECLINE_COOLOFF_HOURS * 3600 * 1000) {
+        const hoursLeft = Math.ceil((DECLINE_COOLOFF_HOURS * 3600 * 1000 - declinedAgo) / 3600000);
+        setBusy(false);
+        setMessage({
+          text: `That request was declined. You can try again in about ${hoursLeft} hour${hoursLeft === 1 ? '' : 's'}.`,
+          type: 'warn',
+        });
+        return;
+      }
+
+      // Cool-off passed: clear the dead row and ask afresh. Deleting is allowed
+      // by the existing "cancel own request" policy (requester OR addressee).
+      const { error: delErr } = await supabase.from('connections').delete().eq('id', row.id);
+      if (delErr) {
+        setBusy(false);
+        setMessage({ text: 'Could not send a new request. Please try again.', type: 'error' });
+        return;
+      }
+      ({ error: insertErr } = await insertRow());
+    }
+
     setBusy(false);
 
     if (insertErr) {
-      // Unique constraint fires if a request already exists between these two.
-      if (insertErr.code === '23505') {
-        setMessage({ text: 'A connection request between you two already exists.', type: 'warn' });
-      } else {
-        setMessage({ text: insertErr.message, type: 'error' });
-      }
+      setMessage({ text: insertErr.message, type: 'error' });
       return;
     }
 
@@ -235,11 +340,48 @@ function IncomingList({ incoming, onAction }) {
 }
 
 // ---- Outgoing requests ----
-function OutgoingList({ outgoing, currentUserId }) {
+// Also lists SENT EMAIL INVITES. Previously an emailed invite appeared nowhere
+// in the app — no record it happened, no way to chase it, no way to cancel it.
+// Both kinds now sit in one list with a Withdraw action.
+function OutgoingList({ outgoing, currentUserId, sentInvites = [], onChanged }) {
   const [expanded, setExpanded] = useState(false);
+  const [busyId, setBusyId] = useState(null);
   // Show only non-accepted by default to keep it tidy; let user expand to see all.
   const pending  = outgoing.filter(c => c.status === 'pending');
   const others   = outgoing.filter(c => c.status !== 'pending');
+
+  // Withdrawing DELETES the row so it disappears from the other person's list
+  // too — a withdrawn request should leave no trace for them to act on.
+  // Permitted by the existing "cancel own request" policy.
+  async function withdrawRequest(id) {
+    setBusyId(id);
+    const { error } = await supabase.from('connections').delete().eq('id', id);
+    setBusyId(null);
+    if (error) console.error('[Connections] withdraw error:', error.message);
+    else onChanged?.();
+  }
+
+  // Deleting the invite row kills the emailed link immediately, because
+  // accept_invite() looks the token up and will no longer find it. Needs db/17.
+  async function withdrawInvite(id) {
+    setBusyId(id);
+    const { error } = await supabase.from('invites').delete().eq('id', id);
+    setBusyId(null);
+    if (error) console.error('[Connections] withdraw invite error:', error.message);
+    else onChanged?.();
+  }
+
+  function WithdrawButton({ id, onClick }) {
+    return (
+      <button
+        onClick={onClick}
+        disabled={busyId === id}
+        className="text-xs text-stone-500 hover:text-rose-600 underline underline-offset-2 disabled:opacity-50 shrink-0"
+      >
+        {busyId === id ? 'Withdrawing…' : 'Withdraw'}
+      </button>
+    );
+  }
 
   function PersonRow({ c }) {
     const other = c.requester === currentUserId ? c.addressee_profile : c.requester_profile;
@@ -251,17 +393,48 @@ function OutgoingList({ outgoing, currentUserId }) {
           </p>
           <p className="text-xs text-stone-400 truncate">{other?.email}</p>
         </div>
-        <StatusPill status={c.status} />
+        <div className="flex items-center gap-2.5 shrink-0">
+          <StatusPill status={c.status} />
+          {/* Only a PENDING request can be withdrawn. Undoing an accepted
+              connection affects shared groups, so that is a separate action. */}
+          {c.status === 'pending' && c.requester === currentUserId && (
+            <WithdrawButton id={c.id} onClick={() => withdrawRequest(c.id)} />
+          )}
+        </div>
       </li>
     );
   }
 
-  if (outgoing.length === 0) return <EmptyState text="No outgoing requests." />;
+  function InviteRow({ inv }) {
+    return (
+      <li className="flex items-center justify-between gap-3 bg-white border border-stone-200 rounded-xl px-4 py-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-stone-800 truncate">{inv.email}</p>
+          <p className="text-xs text-stone-400 truncate">
+            Emailed invite · no account yet
+          </p>
+        </div>
+        <div className="flex items-center gap-2.5 shrink-0">
+          <StatusPill status={inv.status} />
+          {inv.status === 'pending' && (
+            <WithdrawButton id={inv.id} onClick={() => withdrawInvite(inv.id)} />
+          )}
+        </div>
+      </li>
+    );
+  }
+
+  const pendingInvites = sentInvites.filter(i => i.status === 'pending');
+
+  if (outgoing.length === 0 && sentInvites.length === 0) {
+    return <EmptyState text="No outgoing requests." />;
+  }
 
   return (
     <div className="flex flex-col gap-2">
       <ul className="flex flex-col gap-2">
         {pending.map(c => <PersonRow key={c.id} c={c} />)}
+        {pendingInvites.map(inv => <InviteRow key={inv.id} inv={inv} />)}
       </ul>
 
       {others.length > 0 && (
@@ -317,8 +490,31 @@ function AcceptedList({ accepted, currentUserId }) {
 
 // ---- Main screen ----
 export default function Connections({ onClose }) {
-  const { user } = useAuth();
+  const { user, profile } = useAuth();
   const { incoming, outgoing, accepted, loading, error, refetch } = useConnections();
+
+  // Invites this user has emailed. Kept here rather than in useConnections
+  // because it is a different table with its own lifecycle — but it is shown in
+  // the same list, since from the user's point of view both are "I asked
+  // someone to connect and I'm waiting".
+  const [sentInvites, setSentInvites] = useState([]);
+
+  const loadInvites = useCallback(async () => {
+    if (!user?.id) return;
+    const { data, error: invErr } = await supabase
+      .from('invites')
+      .select('id, email, status, created_at')
+      .eq('inviter', user.id)
+      .order('created_at', { ascending: false });
+    // A missing table (db/09 not run) must not break the whole screen — the
+    // connections half still works without it.
+    if (invErr) { setSentInvites([]); return; }
+    setSentInvites(data || []);
+  }, [user?.id]);
+
+  useEffect(() => { loadInvites(); }, [loadInvites]);
+
+  const refreshAll = useCallback(() => { refetch(); loadInvites(); }, [refetch, loadInvites]);
 
   if (!user) return null;
 
@@ -362,7 +558,7 @@ export default function Connections({ onClose }) {
             <p className="text-xs text-stone-500 mb-3">
               Enter your friend's email address. They must already have an account.
             </p>
-            <SendRequestForm onSent={refetch} currentUserId={user.id} />
+            <SendRequestForm onSent={refreshAll} currentUserId={user.id} inviterName={profile?.display_name} />
           </section>
         )}
 
@@ -378,7 +574,7 @@ export default function Connections({ onClose }) {
         {!loading && outgoing.length > 0 && (
           <section className="bg-white border border-stone-200 rounded-2xl p-5 shadow-sm">
             <SectionHeader icon={Clock} title="Sent requests" count={outgoing.length} />
-            <OutgoingList outgoing={outgoing} currentUserId={user.id} />
+            <OutgoingList outgoing={outgoing} currentUserId={user.id} sentInvites={sentInvites} onChanged={refreshAll} />
           </section>
         )}
 
