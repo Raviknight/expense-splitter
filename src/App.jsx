@@ -177,6 +177,19 @@ let currencySymbol = '$';
 const fmt = (n, sym = currencySymbol) =>
   sym + Number(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 
+// A balance smaller than one cent counts as SETTLED.
+//
+// Why not a tighter value: shares rarely land on whole cents. Splitting 100
+// three ways gives 33.3333… each, and settle-up suggestions must be rounded to
+// real money (33.33), so paying them in full still leaves 0.0067 behind. The
+// old half-cent threshold treated that leftover as a live debt, and the home
+// screen showed "you are owed $0.01" permanently — for an amount no payment can
+// ever clear, because money does not move in fractions of a cent.
+//
+// One cent is the smallest transferable unit, so anything below it is not a
+// debt anyone can act on. Treating it as settled is correct, not a fudge.
+const SETTLED_EPSILON = 0.01;
+
 // Guess a sensible DEFAULT currency for a NEW group from the device region.
 // We read the country (e.g. 'US', 'GB', 'DE') from the browser locale and map
 // it to one of OUR supported currencies. Returns null if the region is unknown
@@ -408,39 +421,70 @@ function computeNetBalances(people, entries) {
 }
 
 // Greedy "minimal transactions" settle-up. Repeatedly match the biggest debtor
-// with the biggest creditor and settle the smaller of the two amounts. This
-// yields at most N−1 payments. Returns [{ from, to, amount }] with amount
-// rounded to 2 decimals; tiny floating-point residue (< 1 cent) is ignored.
+// with the biggest creditor and settle the smaller of the two amounts, yielding
+// at most N−1 payments. Returns [{ from, to, amount }].
+//
+// WHY THIS WORKS IN INTEGER CENTS:
+//   Shares rarely divide evenly — 100 split three ways is 33.3333… each. The
+//   old version matched in floating point and rounded each payment on the way
+//   out, so the payments did not add up to what was actually owed. Paying every
+//   suggestion in full still left a residue, and the home screen then showed a
+//   permanent "you are owed $0.01" that no payment could ever clear.
+//
+//   The error grew with group size, because every payment could be off by up to
+//   half a cent and they all landed on the same creditor. Measured before this
+//   change: 7 people left 0.026 outstanding, 15 people left 0.047 — both far
+//   above a cent, so no sensible threshold could hide them.
+//
+//   Working in whole cents removes the problem at the source. Rounding each
+//   balance to cents can leave the totals a cent or two apart, so that drift is
+//   handed to the largest balances first; after that, debits and credits match
+//   exactly and the greedy match is exact too.
 function suggestSettlements(netBalances) {
-  // Work on copies so we don't mutate the caller's data. Round to cents up
-  // front so floating-point dust doesn't create phantom 0.001 payments.
-  const debtors   = netBalances
-    .filter(b => b.net < -0.005)
-    .map(b => ({ name: b.name, amount: -b.net }))   // amount they owe (positive)
-    .sort((a, b) => b.amount - a.amount);
-  const creditors = netBalances
-    .filter(b => b.net > 0.005)
-    .map(b => ({ name: b.name, amount: b.net }))    // amount they are owed
-    .sort((a, b) => b.amount - a.amount);
+  // Signed cents per person, plus how far rounding moved each one. True balances
+  // sum to zero, but the ROUNDED ones need not: 100 across 7 people rounds each
+  // -14.2857 to -14.29, overshooting by 0.43c six times over.
+  const entries = netBalances.map(b => {
+    const exact = b.net * 100;
+    const cents = Math.round(exact);
+    return { name: b.name, cents, frac: exact - cents };   // frac ∈ (-0.5, 0.5]
+  });
+
+  // Force the rounded balances back to a zero sum by nudging INDIVIDUALS by one
+  // cent — never by inflating one whole side, which just moves the discrepancy
+  // onto the creditor (an earlier attempt did that and left 0.026 outstanding
+  // for 7 people). Pick whoever rounding treated most unfairly in the direction
+  // we need, so each person stays within a cent of their true balance.
+  let drift = entries.reduce((t, e) => t + e.cents, 0);
+  if (drift !== 0) {
+    const step  = drift > 0 ? -1 : 1;
+    const order = [...entries].sort((a, b) => (step > 0 ? b.frac - a.frac : a.frac - b.frac));
+    for (let i = 0; i < Math.abs(drift); i++) order[i % order.length].cents += step;
+  }
+
+  const debtors = entries
+    .filter(e => e.cents < 0)
+    .map(e => ({ name: e.name, cents: -e.cents }))   // positive = owes
+    .sort((a, b) => b.cents - a.cents);
+  const creditors = entries
+    .filter(e => e.cents > 0)
+    .map(e => ({ name: e.name, cents: e.cents }))    // positive = is owed
+    .sort((a, b) => b.cents - a.cents);
 
   const payments = [];
   let di = 0, ci = 0;
   while (di < debtors.length && ci < creditors.length) {
     const d = debtors[di];
     const c = creditors[ci];
-    const pay = Math.min(d.amount, c.amount);
-    if (pay > 0.005) {
-      payments.push({
-        from: d.name,
-        to: c.name,
-        amount: Math.round(pay * 100) / 100,   // round to cents
-      });
+    const pay = Math.min(d.cents, c.cents);
+    if (pay > 0) {
+      payments.push({ from: d.name, to: c.name, amount: pay / 100 });
     }
-    d.amount -= pay;
-    c.amount -= pay;
-    // Advance whichever side is now settled (within a cent).
-    if (d.amount < 0.005) di++;
-    if (c.amount < 0.005) ci++;
+    d.cents -= pay;
+    c.cents -= pay;
+    // Exact integers now, so "nothing left" really means zero.
+    if (d.cents === 0) di++;
+    if (c.cents === 0) ci++;
   }
   return payments;
 }
@@ -549,7 +593,7 @@ function printGroupReport(group, realExpenses, netBalances, suggestions, total) 
 
   // Per-person net summary.
   const balanceRows = netBalances.map(b => {
-    const label = b.net > 0.005 ? 'is owed' : b.net < -0.005 ? 'owes' : 'even';
+    const label = b.net > SETTLED_EPSILON ? 'is owed' : b.net < -SETTLED_EPSILON ? 'owes' : 'even';
     return `<tr>
       <td>${esc(b.name)}</td>
       <td class="num">${esc(fmt(Math.abs(b.net)))}</td>
@@ -1613,7 +1657,7 @@ function HomeScreen({
   }, [groups, myName]);
 
   // Currencies with a real (non-rounding) balance, for the summary chips.
-  const balanceChips = Object.entries(netByCurrency).filter(([, v]) => Math.abs(v) >= 0.005);
+  const balanceChips = Object.entries(netByCurrency).filter(([, v]) => Math.abs(v) >= SETTLED_EPSILON);
   const hasShared = groups.some(g => !((g.type === 'solo') || (g.people || []).length === 1));
 
   // ── Sort ──────────────────────────────────────────────────────────────────
@@ -1836,7 +1880,7 @@ function GroupCard({ group, myName, onOpen, pinned = false, onTogglePin }) {
   const myNet = mine ? mine.net : 0;
 
   // Within a cent = settled up (matches the settle-up rounding elsewhere).
-  const settled = Math.abs(myNet) < 0.005;
+  const settled = Math.abs(myNet) < SETTLED_EPSILON;
   const owed = myNet > 0;   // positive net → you are OWED money
 
   // This card must print in THIS group's own currency — several cards are on
@@ -2157,7 +2201,7 @@ function BalanceStrip({ balances }) {
             <div className="font-semibold tabular-nums">{fmt(b.spent)}</div>
           </div>
         </div>
-        {settleAmt > 0.005 ? (
+        {settleAmt > SETTLED_EPSILON ? (
           <div className="text-right">
             <div className="text-[10px] uppercase tracking-wider text-stone-500">Settle</div>
             <div className="font-semibold text-emerald-700 tabular-nums">
@@ -2174,7 +2218,7 @@ function BalanceStrip({ balances }) {
   // Multi-member (3+): scrollable row of tiles.
   // Find the person who owes the most (most negative net).
   const biggestDebtor = [...balances].sort((a, b) => a.net - b.net)[0];
-  const allSettled = balances.every(b => Math.abs(b.net) < 0.005);
+  const allSettled = balances.every(b => Math.abs(b.net) < SETTLED_EPSILON);
   return (
     <div className="mt-3 rounded-xl border border-stone-200 bg-white px-3 py-2.5 text-sm">
       <div className="flex items-center gap-3 overflow-x-auto pb-1">
@@ -2628,8 +2672,8 @@ function SummaryTab({ expenses, settlements, balances, sharedPool, total, people
                   against the group total. */}
               <div className="text-xs text-stone-500 mt-0.5">
                 Spent {fmt(b.spent)} · Owes {fmt(b.share)}
-                {b.repaid   > 0.005 && <> · Repaid {fmt(b.repaid)}</>}
-                {b.received > 0.005 && <> · Received {fmt(b.received)}</>}
+                {b.repaid   > SETTLED_EPSILON && <> · Repaid {fmt(b.repaid)}</>}
+                {b.received > SETTLED_EPSILON && <> · Received {fmt(b.received)}</>}
               </div>
             </div>
             <div className={`text-right tabular-nums font-semibold ${b.net > 0 ? 'text-emerald-700' : b.net < 0 ? 'text-red-700' : 'text-stone-500'}`}>
