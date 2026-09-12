@@ -940,14 +940,25 @@ export function useExpenseStore(userId, profile) {
           // reason is in the function's JSON error body on error.context (a
           // Response). Read it so the owner sees e.g. a missing GEMINI_API_KEY or
           // a Gemini error, instead of the unhelpful generic message.
+          let quotaHit = null;
           try {
             if (error.context && typeof error.context.json === 'function') {
               const body = await error.context.json();
               if (body?.error) {
                 raw = body.error + (body.detail ? ` — ${String(body.detail).slice(0, 300)}` : '');
               }
+              // Running out of free scans is NOT a failure — it's an expected
+              // state with a different remedy. Flagged so the UI can offer an
+              // upgrade instead of "something went wrong, try again", which
+              // would invite the user to retry something that cannot succeed.
+              if (body?.code === 'scan_quota_exceeded') {
+                quotaHit = { used: body.used, limit: body.limit };
+              }
             }
           } catch (_) { /* body wasn't JSON — keep the original message */ }
+          if (quotaHit) {
+            return { ok: false, quotaExceeded: true, ...quotaHit, message: raw };
+          }
           if (looksUndeployed(raw)) {
             return { ok: false, message: NOT_DEPLOYED_MSG };
           }
@@ -961,7 +972,13 @@ export function useExpenseStore(userId, profile) {
           return { ok: false, message: detail || 'Scanning failed — please try again.' };
         }
 
-        return { ok: true, expenses: Array.isArray(data.expenses) ? data.expenses : [] };
+        // `quota` is absent until db/16 is run and the function redeployed, so
+        // every consumer must treat it as optional.
+        return {
+          ok: true,
+          expenses: Array.isArray(data.expenses) ? data.expenses : [],
+          quota: data.quota,
+        };
       } catch (err) {
         // A thrown error usually means the request never reached a deployed
         // function (offline, blocked, or the function does not exist).

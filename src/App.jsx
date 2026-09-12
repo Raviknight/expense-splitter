@@ -4268,6 +4268,9 @@ function ImportModal({ people, isSolo, myName, startMode = 'csv', onClose, onImp
   const [scanError, setScanError] = useState('');      // inline error message
   const [scanRows, setScanRows] = useState(null);       // null = nothing scanned yet
   const [scanFileName, setScanFileName] = useState(''); // name of the picked file
+  // { used, limit, enforced, exceeded } — only present once db/16 is applied and
+  // the scan function redeployed, so every read of this must tolerate null.
+  const [scanQuota, setScanQuota] = useState(null);
 
   // ── Scan: turn the picked image/PDF into base64 + read it via AI ───────────
   const handleScanFile = async (e) => {
@@ -4292,7 +4295,14 @@ function ImportModal({ people, isSolo, myName, startMode = 'csv', onClose, onImp
       const mimeType = file.type || 'application/octet-stream';
 
       const res = await onScan(base64, mimeType);
-      if (!res?.ok) {
+      if (res?.quotaExceeded) {
+        // Out of free scans is an expected state, not a failure. Telling the
+        // user to "try again" here would invite retrying something that cannot
+        // succeed until next month.
+        setScanQuota({ used: res.used, limit: res.limit, exceeded: true });
+        setScanError('');
+        setScanRows(null);
+      } else if (!res?.ok) {
         setScanError(res?.message || 'Scanning failed — please try again.');
         setScanRows(null);
       } else if (res.unreadable && (res.expenses || []).length === 0) {
@@ -4321,6 +4331,8 @@ function ImportModal({ people, isSolo, myName, startMode = 'csv', onClose, onImp
           return row;
         }).filter(r => r.amount > 0);
         setScanRows(mapped);
+        // Present only once db/16 is applied and the function redeployed.
+        if (res.quota) setScanQuota({ ...res.quota, exceeded: false });
       }
     } catch (err) {
       setScanError('Could not read that file. Try a clearer photo or a single page.');
@@ -4536,6 +4548,30 @@ function ImportModal({ people, isSolo, myName, startMode = 'csv', onClose, onImp
                   </div>
                 )}
                 {scanError && <div className="text-sm text-rose-600 mt-2">{scanError}</div>}
+
+                {/* Out of scans — an upgrade prompt, not an error. Deliberately
+                    amber rather than red: nothing broke, and there is no point
+                    inviting a retry that cannot succeed until next month. */}
+                {scanQuota?.exceeded && (
+                  <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5">
+                    <div className="text-sm font-medium text-amber-900">
+                      You've used all {scanQuota.limit} free scans this month
+                    </div>
+                    <div className="text-xs text-amber-800 mt-0.5">
+                      Your quota resets on the 1st. You can still add expenses by
+                      hand or import a CSV in the meantime.
+                    </div>
+                  </div>
+                )}
+
+                {/* Remaining count after a successful scan. Hidden while the
+                    limit is only counting (not enforcing) — a number that does
+                    nothing yet would just confuse. */}
+                {scanQuota && !scanQuota.exceeded && scanQuota.enforced && (
+                  <div className="text-[11px] text-stone-500 mt-1.5">
+                    {Math.max(0, scanQuota.limit - scanQuota.used)} of {scanQuota.limit} free scans left this month
+                  </div>
+                )}
                 {!scanning && !scanError && Array.isArray(scanRows) && scanRows.length === 0 && (
                   <div className="text-sm text-stone-500 mt-2">No expenses found — try a clearer photo or a single page.</div>
                 )}

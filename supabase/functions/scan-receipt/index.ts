@@ -43,6 +43,19 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const SUPABASE_URL      = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 
+// ── Scan quota ───────────────────────────────────────────────────────────────
+// Enforced HERE, in the function, and nowhere else. A limit in App.jsx would be
+// decorative: the anon key is public (it ships in the browser bundle), so anyone
+// can call this endpoint directly and skip the UI entirely.
+//
+// SCAN_LIMIT_ENABLED lets counting run before enforcing starts. Usage accrues
+// from day one, so real numbers are available to pick a sensible free tier,
+// while nobody is blocked yet. Flip to "true" when ready — same dormant-gate
+// pattern as PREMIUM_ENFORCED in App.jsx.
+const SERVICE_ROLE_KEY     = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+const SCAN_LIMIT_ENABLED   = Deno.env.get("SCAN_LIMIT_ENABLED") === "true";
+const FREE_SCANS_PER_MONTH = Number(Deno.env.get("FREE_SCANS_PER_MONTH") || "20");
+
 // Parse a comma-separated model list, dropping blanks/stray spaces.
 const list = (v: string | undefined, fallback: string): string[] =>
   (v || fallback).split(",").map((s) => s.trim()).filter(Boolean);
@@ -195,6 +208,40 @@ async function tryChain(attempts: Attempt[]): Promise<string> {
   );
 }
 
+// Read the caller's quota, rolling the period forward if the month changed.
+// Uses the SERVICE ROLE client because scan_usage grants no write access to
+// users — that is the whole point of the table (see db/16).
+// Returns null when quota can't be evaluated, which callers treat as "allow".
+async function getQuota(admin: any, userId: string) {
+  const monthStart = new Date();
+  monthStart.setUTCDate(1);
+  monthStart.setUTCHours(0, 0, 0, 0);
+  const period = monthStart.toISOString().slice(0, 10);   // YYYY-MM-01
+
+  const { data, error } = await admin
+    .from("scan_usage")
+    .select("used, period_start")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) return null;
+
+  // No row yet, or the stored period is an earlier month → this month is fresh.
+  // Rolling forward here means quotas reset without needing a scheduled job.
+  if (!data || String(data.period_start) < period) return { used: 0, period };
+  return { used: Number(data.used) || 0, period };
+}
+
+// Record one unit of usage. One unit per FILE — never per PDF page (a 50-page
+// PDF costs the same as a 3-page one, since the text is clipped at 24k chars).
+async function recordUsage(admin: any, userId: string, quota: { used: number; period: string }) {
+  await admin.from("scan_usage").upsert({
+    user_id:      userId,
+    period_start: quota.period,
+    used:         quota.used + 1,
+    updated_at:   new Date().toISOString(),
+  }, { onConflict: "user_id" });
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return json({ error: "Use POST" }, 405);
@@ -204,6 +251,34 @@ Deno.serve(async (req) => {
     const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, { global: { headers: { Authorization: authHeader } } });
     const { data: { user }, error: userErr } = await supabase.auth.getUser();
     if (userErr || !user) return json({ error: "You must be signed in." }, 401);
+
+    // ── Quota check (before doing any paid work) ─────────────────────────────
+    // Deliberately BEFORE the AI call: checking afterwards would still cost a
+    // request to the provider, so an over-quota user could burn real money.
+    const admin = SERVICE_ROLE_KEY ? createClient(SUPABASE_URL, SERVICE_ROLE_KEY) : null;
+    let quota: { used: number; period: string } | null = null;
+
+    if (admin) {
+      // Premium is read with the ADMIN client: a user can update their own
+      // profiles row, but is_premium is not writable through the API by them
+      // (no policy grants it), so this value is trustworthy here.
+      const { data: prof } = await admin
+        .from("profiles").select("is_premium").eq("id", user.id).maybeSingle();
+      const isPremium = prof?.is_premium === true;
+
+      quota = await getQuota(admin, user.id);
+
+      if (SCAN_LIMIT_ENABLED && !isPremium && quota && quota.used >= FREE_SCANS_PER_MONTH) {
+        // 402 Payment Required — distinguishable from a generic failure so the
+        // app can show an upgrade prompt rather than "something went wrong".
+        return json({
+          error: `You've used all ${FREE_SCANS_PER_MONTH} free scans this month.`,
+          code: "scan_quota_exceeded",
+          used: quota.used,
+          limit: FREE_SCANS_PER_MONTH,
+        }, 402);
+      }
+    }
 
     const { fileBase64, mimeType } = await req.json().catch(() => ({}));
     if (!fileBase64 || !mimeType) return json({ error: "Send { fileBase64, mimeType }." }, 400);
@@ -246,7 +321,25 @@ Deno.serve(async (req) => {
     }
 
     const { rows, unreadable } = parseResult(content);
-    return json({ ok: true, expenses: normalize(rows), unreadable });
+
+    // Count usage only after a SUCCESSFUL scan. A provider outage or an
+    // unreadable file must not cost the user a credit — they got nothing for it.
+    // Failures throw before reaching here, so this is the only success path.
+    if (admin && quota) {
+      // Never let a bookkeeping failure lose the user's scan result.
+      try { await recordUsage(admin, user.id, quota); } catch (_) { /* ignore */ }
+    }
+
+    return json({
+      ok: true,
+      expenses: normalize(rows),
+      unreadable,
+      // Lets the app show "3 of 20 left" without another round trip. Omitted
+      // when quota can't be evaluated (e.g. before db/16 is run).
+      quota: quota
+        ? { used: quota.used + 1, limit: FREE_SCANS_PER_MONTH, enforced: SCAN_LIMIT_ENABLED }
+        : undefined,
+    });
   } catch (e) {
     return json({ error: String((e as Error)?.message ?? e) }, 500);
   }
