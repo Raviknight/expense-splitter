@@ -1,0 +1,102 @@
+# Daily summary and monthly statement emails.
+#
+# Calls the send-digest Edge Function, which decides who actually gets mail:
+# only users who opted in (db/14), and only when they have new activity — a
+# quiet day sends nothing.
+#
+# Setup (one time):
+#   1. Run db/14_email_prefs.sql and db/15_digest_tracking.sql in the SQL Editor.
+#   2. Deploy the send-digest Edge Function with these secrets:
+#        RESEND_API_KEY, SUPABASE_SERVICE_ROLE_KEY, DIGEST_SECRET
+#   3. Add these REPOSITORY secrets (Settings -> Secrets and variables -> Actions):
+#        SUPABASE_URL    (already added for the keep-alive)
+#        DIGEST_SECRET   (the SAME value as the Edge Function secret)
+#   4. TEST WITH A DRY RUN FIRST: Actions -> this workflow -> Run workflow ->
+#      kind = daily, dry_run = true. It reports what WOULD be sent and mails
+#      nobody. Only switch dry_run off once that output looks right.
+#
+# Note: DIGEST_SECRET is what stops anyone who finds the function URL from
+# triggering mass email. It is not optional.
+
+name: Email digests
+
+on:
+  schedule:
+    # Daily summary — 07:12 UTC. Odd minute because GitHub delays or drops
+    # scheduled runs clustered on the hour.
+    - cron: '12 7 * * *'
+    # Monthly statement — 07:40 UTC on the 1st, covering the PREVIOUS calendar
+    # month. The function itself enforces that the window ends at the start of
+    # the current month, so a late run can't leak this month's data in.
+    - cron: '40 7 1 * *'
+  workflow_dispatch:
+    inputs:
+      kind:
+        description: 'Which digest to send'
+        type: choice
+        options: [daily, monthly]
+        default: daily
+      dry_run:
+        description: 'Report what would be sent WITHOUT emailing anyone'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send digest
+        env:
+          SUPABASE_URL:  ${{ secrets.SUPABASE_URL }}
+          DIGEST_SECRET: ${{ secrets.DIGEST_SECRET }}
+          # On a schedule there are no inputs, so derive the kind from WHICH
+          # cron fired: the 1st-of-month entry is the monthly one.
+          EVENT_NAME:    ${{ github.event_name }}
+          CRON:          ${{ github.event.schedule }}
+          INPUT_KIND:    ${{ github.event.inputs.kind }}
+          INPUT_DRY:     ${{ github.event.inputs.dry_run }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SUPABASE_URL:-}" ] || [ -z "${DIGEST_SECRET:-}" ]; then
+            echo "::error::Missing SUPABASE_URL or DIGEST_SECRET repository secret."
+            exit 1
+          fi
+
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            KIND="${INPUT_KIND:-daily}"
+            DRY="${INPUT_DRY:-true}"
+          elif [ "${CRON}" = "40 7 1 * *" ]; then
+            KIND="monthly"; DRY="false"
+          else
+            KIND="daily";   DRY="false"
+          fi
+
+          echo "kind=${KIND} dryRun=${DRY}"
+
+          status=$(curl -sS -o response.json -w '%{http_code}' -X POST \
+            "${SUPABASE_URL}/functions/v1/send-digest" \
+            -H "Content-Type: application/json" \
+            -H "x-digest-secret: ${DIGEST_SECRET}" \
+            -d "{\"kind\":\"${KIND}\",\"dryRun\":${DRY}}")
+
+          echo "HTTP ${status}"
+          cat response.json
+          echo
+
+          if [ "${status}" != "200" ]; then
+            echo "::error::Digest call failed."
+            exit 1
+          fi
+
+          # The function returns 200 with per-recipient details. Surface a
+          # failed send as a red run rather than letting it hide in the body.
+          if grep -q '"error"' response.json; then
+            echo "::error::At least one recipient failed - see the output above."
+            exit 1
+          fi
+
+          echo "Digest run complete."

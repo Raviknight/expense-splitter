@@ -27,7 +27,7 @@ If it is not in this file, it is not agreed work. If it is done, it leaves this 
 
 | # | Item | State |
 |---|------|-------|
-| 11 | **Email notifications** — welcome (self sign-up *and* invite), daily summary, monthly statement. | **Part done.** ✅ Preferences shipped: `db/14` (`notify_daily` default FALSE, `notify_monthly` default TRUE) + working toggles in Settings. ✅ Welcome needs **no code** — `send-welcome` already exists and fires from a DB webhook on `profiles` INSERT, which covers self sign-up *and* invite. ⬜ Remaining: the two digest Edge Functions and the scheduler. **Scheduler decided: GitHub Actions cron** — same proven pattern as the keep-alive, logs the owner can actually read, no new Postgres extensions. Daily must skip users with no new activity since their last digest. |
+| 11 | **Email notifications** | **Code complete, awaiting deploy + a dry run.** ✅ `db/14` prefs + Settings toggles. ✅ `db/15` digest tracking. ✅ `send-digest` Edge Function (daily + monthly, shared-secret protected, `dryRun` mode). ✅ `digests.yml` workflow. ✅ `send-welcome` already existed and the owner has now deployed it. ⬜ Owner steps: run `db/15`, deploy `send-digest` with its three secrets, add `DIGEST_SECRET` as a repo secret, create the `profiles` INSERT webhook (now under **Integrations → Webhooks**, moved from Database), then **run the workflow with `dry_run = true` before ever sending for real**. |
 
 ## Agreed — next up
 
