@@ -1593,7 +1593,7 @@ function HomeScreen({
   pinnedIds = [], onTogglePin,
 }) {
   // First name for the greeting (myName is the owner's display name, or 'Me').
-  const firstName = (myName && myName !== 'Me') ? String(myName).split(' ')[0] : 'there';
+  // (The greeting that used this moved into the app bar in AuthGate.)
 
   // Your overall position across SHARED groups, kept SEPARATE per currency —
   // we can't add ₹ to $ into one number, so we show one chip per currency that
@@ -1692,23 +1692,17 @@ function HomeScreen({
         </div>
       )}
 
+      {/* The greeting moved into the app bar above, and "New group" became the
+          floating button at the bottom of this screen — so this header is now
+          just the group count. Kept as its own sticky strip so the list still
+          has a heading to scroll under. */}
       <header className="sticky top-11 z-20 bg-[#FAFAF7]/95 backdrop-blur border-b border-stone-200">
-        <div className="max-w-3xl mx-auto px-4 pt-5 pb-4 flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <h1 className="text-xl font-semibold truncate">Hi {firstName}</h1>
-            <p className="text-xs text-stone-500 mt-0.5">
-              {groups.length === 0
-                ? 'No groups yet'
-                : `${groups.length} group${groups.length === 1 ? '' : 's'}`}
-            </p>
-          </div>
-          <button
-            onClick={onNewGroup}
-            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 shrink-0"
-          >
-            <Plus className="w-4 h-4" />
-            New group
-          </button>
+        <div className="max-w-3xl mx-auto px-4 pt-4 pb-3">
+          <h1 className="text-lg font-semibold">
+            {groups.length === 0
+              ? 'No groups yet'
+              : `${groups.length} group${groups.length === 1 ? '' : 's'}`}
+          </h1>
         </div>
       </header>
 
@@ -1800,6 +1794,19 @@ function HomeScreen({
           </>
         )}
       </main>
+
+      {/* Floating "new group" button. Matches the Add-expense button inside a
+          group (same size, position and colour) so the primary action lives in
+          the same place on both screens — which is also why it replaced the
+          header button rather than sitting alongside it. */}
+      <button
+        onClick={onNewGroup}
+        className="fixed bottom-6 right-6 z-30 w-14 h-14 rounded-full bg-indigo-600 text-white shadow-lg hover:bg-indigo-700 active:scale-95 transition flex items-center justify-center"
+        aria-label="New group"
+        title="New group"
+      >
+        <Plus className="w-6 h-6" />
+      </button>
 
       {groupsModal}
       {confirmDelete}

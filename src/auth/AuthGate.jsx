@@ -120,6 +120,12 @@ export default function AuthGate({ children }) {
   // Derive a friendly display name from the profile or fall back to the email.
   const displayName = profile?.display_name || user?.email || 'You';
 
+  // First name only for the greeting — a full name or an email address would
+  // push the centred wordmark around on a narrow screen.
+  const firstName = profile?.display_name
+    ? String(profile.display_name).split(' ')[0]
+    : 'there';
+
   // If the Connections screen is open, render it as a full-page overlay.
   if (showConnections) {
     return <Connections onClose={() => setShowConnections(false)} />;
@@ -142,13 +148,26 @@ export default function AuthGate({ children }) {
           while scrolling. Fixed height (h-11) so the page headers below can
           offset by exactly that much (they use `sticky top-11`). */}
       <div className="sticky top-0 z-30 bg-stone-900 text-white h-11">
-        <div className="max-w-3xl mx-auto px-4 h-full flex items-center justify-between gap-3">
-          {/* Left: wordmark. The avatar used to live here, but with everything
-              consolidated into one menu the account control belongs on the
-              right, which is where CLAUDE.md §8 wanted it. */}
-          <span className="text-sm font-semibold tracking-tight text-stone-100 select-none">Splitab</span>
+        {/* Three columns so the wordmark sits TRUE centre regardless of how long
+            the greeting or the avatar block is. A flex row with justify-between
+            would drift off-centre as those change width; equal-basis outer
+            columns keep the middle fixed. */}
+        <div className="max-w-3xl mx-auto px-4 h-full flex items-center gap-3">
+          {/* Left: greeting. Moved up from the dashboard header so the page
+              below starts with content instead of chrome. */}
+          <div className="flex-1 min-w-0">
+            <span className="text-sm text-stone-300 truncate block">
+              Hi {firstName}
+            </span>
+          </div>
+
+          {/* Centre: wordmark. */}
+          <span className="text-sm font-semibold tracking-tight text-stone-100 select-none shrink-0">
+            Splitab
+          </span>
 
           {/* Right: one control for everything about "me". */}
+          <div className="flex-1 flex justify-end min-w-0">
           <div className="relative shrink-0" ref={menuRef}>
             <button
               onClick={() => setMenuOpen(o => !o)}
@@ -160,7 +179,8 @@ export default function AuthGate({ children }) {
             >
               {/* profile.avatar_url is undefined until db/08 is run → initials. */}
               <Avatar name={displayName} url={profile?.avatar_url} size={22} />
-              <span className="text-xs text-stone-300 truncate hidden sm:block max-w-[10rem]">{displayName}</span>
+              {/* The name is no longer repeated here — the greeting on the left
+                  already says who you are, and two copies crowded the bar. */}
               <ChevronDown className={`w-3.5 h-3.5 text-stone-400 transition-transform ${menuOpen ? 'rotate-180' : ''}`} />
             </button>
 
@@ -194,6 +214,7 @@ export default function AuthGate({ children }) {
                 </div>
               </div>
             )}
+          </div>
           </div>
         </div>
       </div>
