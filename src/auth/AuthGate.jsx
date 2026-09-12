@@ -11,8 +11,8 @@
 // The Connections, Profile, and Settings screens are each rendered as a
 // full-page overlay so we don't need any routing library.
 
-import { useState } from 'react';
-import { Users, Settings as SettingsIcon } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Users, Settings as SettingsIcon, User as UserIcon, LogOut, ChevronDown } from 'lucide-react';
 import { useAuth } from './AuthProvider.jsx';
 import AuthScreen from './AuthScreen.jsx';
 import Connections from './Connections.jsx';
@@ -21,14 +21,68 @@ import Settings from './Settings.jsx';
 import ResetPassword from './ResetPassword.jsx';
 import Avatar from '../ui/Avatar.jsx';
 
+// One row of the account menu. `hint` is the second line that says what the
+// item actually does — the old three-icon bar gave no clue which icon led where.
+//
+// min-h-[44px] is the minimum comfortable tap target on a phone. Rows with a
+// hint clear it from their two lines of text, but "Sign out" has no hint and
+// measured 38px without it. Written as an arbitrary value, not `min-h-11` —
+// that scale step isn't in the Tailwind version the Play CDN serves, so it
+// silently did nothing.
+function MenuItem({ icon: Icon, label, hint, onClick, danger }) {
+  return (
+    <button
+      role="menuitem"
+      onClick={onClick}
+      className={`w-full flex items-start gap-3 px-3.5 py-2.5 min-h-[44px] text-left transition hover:bg-stone-50 ${
+        danger ? 'text-red-700' : 'text-stone-800'
+      }`}
+    >
+      <Icon className={`w-4 h-4 mt-0.5 shrink-0 ${danger ? 'text-red-600' : 'text-stone-500'}`} />
+      <span className="min-w-0">
+        <span className="block text-sm font-medium leading-tight">{label}</span>
+        {hint && <span className="block text-[11px] text-stone-500 mt-0.5 leading-tight">{hint}</span>}
+      </span>
+    </button>
+  );
+}
+
 export default function AuthGate({ children }) {
-  const { session, profile, user, loading, recoveryMode } = useAuth();
+  const { session, profile, user, loading, recoveryMode, signOut } = useAuth();
   const [showConnections, setShowConnections] = useState(false);
-  // Profile overlay — opened by tapping the avatar. Same pattern as Connections.
+  // Profile overlay — opened from the account menu.
   const [showProfile, setShowProfile] = useState(false);
-  // Settings overlay — opened by the gear icon. Holds currency, appearance,
-  // password, notifications (placeholder), and sign out.
+  // Settings overlay — currency, appearance, password, notifications, sign out.
   const [showSettings, setShowSettings] = useState(false);
+
+  // ── Account menu ──────────────────────────────────────────────────────────
+  // There used to be THREE separate top-bar controls (avatar → Profile, people
+  // icon → Connections, gear → Settings). Three entry points for "things about
+  // me" is a lot of chrome on a phone, and which icon led where wasn't obvious.
+  // They're now one avatar button that opens a menu.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef(null);
+
+  // Close on outside click / Escape. Without this a tap elsewhere leaves the
+  // menu hanging open over the app, which on a phone looks like a stuck UI.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onPointerDown = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false);
+    };
+    const onKeyDown = (e) => { if (e.key === 'Escape') setMenuOpen(false); };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('touchstart', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('touchstart', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [menuOpen]);
+
+  // Every menu item closes the menu first, so the overlay opens onto a clean screen.
+  const pick = (fn) => () => { setMenuOpen(false); fn(); };
 
   // ---- 1. Initial load ----
   if (loading) {
@@ -89,42 +143,57 @@ export default function AuthGate({ children }) {
           offset by exactly that much (they use `sticky top-11`). */}
       <div className="sticky top-0 z-30 bg-stone-900 text-white h-11">
         <div className="max-w-3xl mx-auto px-4 h-full flex items-center justify-between gap-3">
-          {/* Left: tap the avatar to open your Profile (photo, name, email).
-              The name label next to it is part of the same button on wider
-              screens. profile.avatar_url is undefined until db/08 is run →
-              the Avatar shows initials in that case. */}
-          <button
-            onClick={() => setShowProfile(true)}
-            className="flex items-center gap-1.5 min-w-0 rounded-lg px-1 py-0.5 hover:bg-stone-700 transition"
-            title="Your profile"
-            aria-label="Open your profile"
-          >
-            <Avatar name={displayName} url={profile?.avatar_url} size={20} />
-            <span className="text-xs text-stone-300 truncate hidden sm:block">{displayName}</span>
-          </button>
+          {/* Left: wordmark. The avatar used to live here, but with everything
+              consolidated into one menu the account control belongs on the
+              right, which is where CLAUDE.md §8 wanted it. */}
+          <span className="text-sm font-semibold tracking-tight text-stone-100 select-none">Splitab</span>
 
-          {/* Right: action buttons */}
-          <div className="flex items-center gap-1 shrink-0">
+          {/* Right: one control for everything about "me". */}
+          <div className="relative shrink-0" ref={menuRef}>
             <button
-              onClick={() => setShowConnections(true)}
-              className="flex items-center gap-1.5 text-xs text-stone-300 hover:text-white px-2.5 py-1.5 rounded-lg hover:bg-stone-700 transition"
-              title="Manage connections"
+              onClick={() => setMenuOpen(o => !o)}
+              className="flex items-center gap-1.5 rounded-lg px-1.5 py-1 hover:bg-stone-700 transition"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              aria-label="Account menu"
+              title="Account"
             >
-              <Users className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Connections</span>
+              {/* profile.avatar_url is undefined until db/08 is run → initials. */}
+              <Avatar name={displayName} url={profile?.avatar_url} size={22} />
+              <span className="text-xs text-stone-300 truncate hidden sm:block max-w-[10rem]">{displayName}</span>
+              <ChevronDown className={`w-3.5 h-3.5 text-stone-400 transition-transform ${menuOpen ? 'rotate-180' : ''}`} />
             </button>
 
-            {/* Gear icon — opens the Settings overlay (currency, appearance,
-                password, notifications, sign out). */}
-            <button
-              onClick={() => setShowSettings(true)}
-              className="flex items-center gap-1.5 text-xs text-stone-300 hover:text-white px-2.5 py-1.5 rounded-lg hover:bg-stone-700 transition"
-              title="Settings"
-              aria-label="Open settings"
-            >
-              <SettingsIcon className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Settings</span>
-            </button>
+            {menuOpen && (
+              <div
+                role="menu"
+                className="absolute right-0 mt-1.5 w-60 rounded-xl bg-white text-stone-800 shadow-lg ring-1 ring-black/10 overflow-hidden z-40"
+              >
+                {/* Who you're signed in as — the email was previously only
+                    discoverable by opening Profile. */}
+                <div className="px-3.5 py-3 border-b border-stone-100">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Avatar name={displayName} url={profile?.avatar_url} size={32} />
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium truncate">{profile?.display_name || 'You'}</div>
+                      <div className="text-xs text-stone-500 truncate">{user?.email}</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="py-1">
+                  <MenuItem icon={UserIcon}      label="Profile"     hint="Name, photo, email" onClick={pick(() => setShowProfile(true))} />
+                  <MenuItem icon={Users}         label="Connections" hint="Friends and requests" onClick={pick(() => setShowConnections(true))} />
+                  <MenuItem icon={SettingsIcon}  label="Settings"    hint="Currency, password, appearance" onClick={pick(() => setShowSettings(true))} />
+                </div>
+
+                {/* Sign out is also inside Settings; surfacing it here saves a
+                    two-step dig for the one action people look for by name. */}
+                <div className="py-1 border-t border-stone-100">
+                  <MenuItem icon={LogOut} label="Sign out" danger onClick={pick(() => signOut())} />
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>

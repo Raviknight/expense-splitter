@@ -27,13 +27,9 @@ If it is not in this file, it is not agreed work. If it is done, it leaves this 
 
 | # | Item | State |
 |---|------|-------|
-| 1 | **Header consolidation** — merge avatar + people icon + gear into one avatar menu (Profile / Connections / Settings / Sign out). Matches the IA direction in `CLAUDE.md` §8. | Not started |
+| 2 | **Dashboard refresh** — *"visually flat, styling looks old"*; data density is fine as-is. Add **pinned groups** and **sort by activity / amount due / alphabetical**. | Not started. Pin persistence decided: **`profiles.pinned_groups` jsonb** (db/13) — syncs across devices and reuses the existing self-update RLS policy on `profiles`, so no new policy is needed. Degrade gracefully when the column is absent, matching how the app handles `preferred_currency`. |
 
 ## Agreed — next up
-
-| # | Item | Notes |
-|---|------|-------|
-| 2 | **Dashboard refresh** — user feedback: *"visually flat, styling looks old"*, data density is fine. Add **pinned groups** and **sort by activity / amount due / alphabetical**. | Pin persistence undecided: `localStorage` (no migration, per-device) vs a DB column (syncs across devices). Pick before building. |
 | 3 | **Server-side scan limits** — Postgres counter, checked and incremented **inside the `scan-receipt` Edge Function**, RLS preventing users from updating their own counter. | ⚠️ Prerequisite for any paid tier. A limit in `App.jsx` is cosmetic: the anon key is public, so the function can be called directly. Decision made: **cap by request count, not a 24h window** — cost is per-scan, so a time window can't bound spend. **Count per FILE, not per PDF page**: the function clips PDF text at 24,000 chars, so a 50-page PDF costs the same as a 3-page one. |
 | 4 | **Multi-image upload** — attach several images per scan, 1 credit each, capped per batch. | Depends on #3 for the credit accounting. Images (vision) are the expensive path; PDFs (text) are cheap. |
 | 5 | **Merchant learning from corrections** — record when a user re-categorises an expense, reuse it for that user, and aggregate toward the shared rules. | Auto-adapts to any country with no hand-written keyword lists. Note: **scanned** receipts already get a category from the AI, so `RULES` only affects CSV import and manual entry. |
@@ -74,6 +70,13 @@ If it is not in this file, it is not agreed work. If it is done, it leaves this 
   the only provider: model-level fallback works, a full OpenRouter outage does not.
 
 ## Done (recent — trim as it grows)
+
+- **Header consolidation** (#1). Three top-bar controls (avatar → Profile, people icon →
+  Connections, gear → Settings) became one avatar menu on the right, with the signed-in
+  email shown in the menu header and a one-line hint under each item. Verified in a dev
+  build with a stubbed session: menu opens, closes on outside-click and on Escape, fits a
+  375px viewport, and every row is ≥44px. The 44px fix needed `min-h-[44px]` — `min-h-11`
+  silently does nothing in the Tailwind version the Play CDN serves.
 
 - Receipt scanning rebuilt to survive model churn (model lists, aggregated provider errors,
   Gemini leg removed, `unpdf` pinned). Verified: a real scan worked, and CI shows
