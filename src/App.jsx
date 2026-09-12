@@ -794,15 +794,31 @@ export default function App() {
   /* ----- Derived ----- */
   const total = realExpenses.reduce((s, e) => s + Number(e.amount || 0), 0);
 
+  // Four SEPARATE buckets, because "paid" was previously overloaded and made the
+  // header lie: a settlement was added to the payer's `paid`, so a person who
+  // spent very little but repaid a big balance appeared to have paid far more
+  // than they spent — and the per-person figures then summed to MORE than the
+  // group total (which counts real expenses only).
+  //
+  //   spent    — expense amounts this person fronted        (sums to `total`)
+  //   share    — this person's share of those expenses
+  //   repaid   — settlements this person PAID OUT           (a transfer, not spend)
+  //   received — settlements this person RECEIVED
+  //
+  // The net-balance maths is unchanged:
+  //   net = (spent + repaid) − (share + received)
+  // which is exactly the old `paid − owed`. Only the display is disambiguated.
   const { balances, sharedPool } = (() => {
     if (isSolo) {
       return {
-        balances: [{ name: people[0], paid: total, share: total, net: 0 }],
+        balances: [{ name: people[0], paid: total, spent: total, share: total, repaid: 0, received: 0, net: 0 }],
         sharedPool: 0,
       };
     }
-    const paid = Object.fromEntries(people.map(p => [p, 0]));
-    const owed = Object.fromEntries(people.map(p => [p, 0]));
+    const spent    = Object.fromEntries(people.map(p => [p, 0]));
+    const owed     = Object.fromEntries(people.map(p => [p, 0]));
+    const repaid   = Object.fromEntries(people.map(p => [p, 0]));
+    const received = Object.fromEntries(people.map(p => [p, 0]));
     let shared = 0;
     expenses.forEach(e => {
       const amt = Number(e.amount || 0);
@@ -810,14 +826,15 @@ export default function App() {
       // reduces their debt and the receiver (to) reduces their credit. Treating
       // it like a "full" expense here is what previously left everyone still
       // looking like they owed money after they'd settled up.
+      // It is kept OUT of `spent`/`owed` so those stay "expenses only".
       if (e.type === 'settlement') {
         const from = e._settleFrom, to = e._settleTo;
-        if (from in paid) paid[from] = (paid[from] || 0) + amt;
-        if (to in owed)   owed[to]   = (owed[to]   || 0) + amt;
+        if (from in repaid)   repaid[from]   = (repaid[from]   || 0) + amt;
+        if (to   in received) received[to]   = (received[to]   || 0) + amt;
         return;
       }
       const mode = e.splitMode || 'equal';
-      paid[e.paidBy] = (paid[e.paidBy] || 0) + amt;
+      spent[e.paidBy] = (spent[e.paidBy] || 0) + amt;
       // Participants frozen at creation (display names from store.js). Equal/
       // full splits use only these people; fall back to all `people` for legacy
       // expenses with no participant list.
@@ -847,7 +864,17 @@ export default function App() {
       }
     });
     return {
-      balances: people.map(p => ({ name: p, paid: paid[p], share: owed[p], net: paid[p] - owed[p] })),
+      balances: people.map(p => ({
+        name:     p,
+        spent:    spent[p],      // expenses only — these sum to `total`
+        share:    owed[p],       // share of expenses only
+        repaid:   repaid[p],     // settlements paid out
+        received: received[p],   // settlements received
+        // `paid` kept for anything still reading it: spend + repayments.
+        paid:     spent[p] + repaid[p],
+        // Identical to the previous `paid - owed`.
+        net:     (spent[p] + repaid[p]) - (owed[p] + received[p]),
+      })),
       sharedPool: shared,
     };
   })();
@@ -1801,14 +1828,17 @@ function BalanceStrip({ balances }) {
     return (
       <div className="mt-3 rounded-xl border border-stone-200 bg-white px-3 py-2.5 flex items-center justify-between text-sm">
         <div className="flex items-center gap-3">
+          {/* `spent`, NOT `paid`: settlements are transfers between people, not
+              money spent on the trip. Using `paid` here made these two figures
+              sum to more than the group total. */}
           <div>
-            <div className="text-[10px] uppercase tracking-wider text-stone-500">{a.name} paid</div>
-            <div className="font-semibold tabular-nums">{fmt(a.paid)}</div>
+            <div className="text-[10px] uppercase tracking-wider text-stone-500">{a.name} spent</div>
+            <div className="font-semibold tabular-nums">{fmt(a.spent)}</div>
           </div>
           <div className="w-px h-8 bg-stone-200" />
           <div>
-            <div className="text-[10px] uppercase tracking-wider text-stone-500">{b.name} paid</div>
-            <div className="font-semibold tabular-nums">{fmt(b.paid)}</div>
+            <div className="text-[10px] uppercase tracking-wider text-stone-500">{b.name} spent</div>
+            <div className="font-semibold tabular-nums">{fmt(b.spent)}</div>
           </div>
         </div>
         {settleAmt > 0.005 ? (
@@ -1836,8 +1866,9 @@ function BalanceStrip({ balances }) {
           <div key={b.name} className="shrink-0 flex items-center gap-3">
             {i > 0 && <div className="w-px h-8 bg-stone-200" />}
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-stone-500 truncate max-w-[80px]">{b.name} paid</div>
-              <div className="font-semibold tabular-nums">{fmt(b.paid)}</div>
+              {/* `spent`, not `paid` — see the 2-person branch above. */}
+              <div className="text-[10px] uppercase tracking-wider text-stone-500 truncate max-w-[80px]">{b.name} spent</div>
+              <div className="font-semibold tabular-nums">{fmt(b.spent)}</div>
             </div>
           </div>
         ))}
@@ -2274,8 +2305,15 @@ function SummaryTab({ expenses, settlements, balances, sharedPool, total, people
           <div key={b.name} className="p-4 flex items-center justify-between">
             <div>
               <div className="font-medium">{b.name}</div>
+              {/* Every component shown separately so the net on the right is
+                  checkable: net = (spent + repaid) − (owes + received).
+                  Previously this read "Paid X · Owes Y" where BOTH silently
+                  folded in settlements, so the figures could not be reconciled
+                  against the group total. */}
               <div className="text-xs text-stone-500 mt-0.5">
-                Paid {fmt(b.paid)} · Owes {fmt(b.share)}
+                Spent {fmt(b.spent)} · Owes {fmt(b.share)}
+                {b.repaid   > 0.005 && <> · Repaid {fmt(b.repaid)}</>}
+                {b.received > 0.005 && <> · Received {fmt(b.received)}</>}
               </div>
             </div>
             <div className={`text-right tabular-nums font-semibold ${b.net > 0 ? 'text-emerald-700' : b.net < 0 ? 'text-red-700' : 'text-stone-500'}`}>
