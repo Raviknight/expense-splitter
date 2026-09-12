@@ -89,6 +89,11 @@ function FeatureList({ className = '' }) {
 //
 //   NOTE: the code only appears in the email once the Supabase email template
 //   includes {{ .Token }} — see the setup note in CLAUDE.md.
+//
+//   DO NOT hard-code the code length. Supabase's OTP length is a project
+//   setting (Authentication → Sign In/Up → OTP length); this project issues 8
+//   digits, not the documented default of 6. An input capped at 6 truncates the
+//   pasted code and every verification fails with no visible cause.
 function MagicLinkForm() {
   const [email, setEmail] = useState('');
   const [sent, setSent]   = useState(false);
@@ -121,7 +126,11 @@ function MagicLinkForm() {
     e.preventDefault();
     setCodeErr('');
     const token = code.replace(/\D/g, '');   // tolerate spaces/dashes when pasting
-    if (token.length < 6) { setCodeErr('Enter the 6-digit code from the email.'); return; }
+    // Supabase's OTP length is CONFIGURABLE (Auth → Sign In/Up → OTP length) and
+    // this project issues 8 digits, not the documented default of 6. Hard-coding
+    // 6 here silently truncated the code and every verification failed. Accept
+    // any plausible length instead of pinning it to one project's setting.
+    if (token.length < 6) { setCodeErr('Enter the code from the email.'); return; }
     setVerify(true);
     const { error: err } = await supabase.auth.verifyOtp({
       email: email.trim(),
@@ -160,8 +169,11 @@ function MagicLinkForm() {
               inputMode="numeric"
               pattern="[0-9]*"
               autoComplete="one-time-code"
-              maxLength={6}
-              placeholder="123456"
+              // 10, not 6: the OTP length is a project setting and this one
+              // issues 8 digits. A tight maxLength truncates the pasted code
+              // with no error shown, which is the worst kind of failure.
+              maxLength={10}
+              placeholder="12345678"
               value={code}
               onChange={e => setCode(e.target.value)}
               className="flex-1 rounded-xl border border-stone-200 bg-white px-4 py-3 text-base tracking-[0.3em] text-center text-stone-900 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-indigo-500"
