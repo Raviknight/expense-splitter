@@ -146,6 +146,38 @@ Deno.serve(async (req) => {
     // Monthly is a closed period: it must not include the current month.
     const windowEnd = kind === "monthly" ? thisMonthStart : now;
 
+    // Snap a monthly window START to a calendar boundary.
+    //
+    // Two bugs this fixes, both of which produce a statement that is quietly
+    // WRONG rather than obviously broken:
+    //
+    //  1. Using last_monthly_digest_at raw means the next window starts at the
+    //     exact send time — 07:40 on the 1st — silently omitting anything
+    //     created in the first ~7.7 hours of that month. It compounds every
+    //     month and nobody would ever notice.
+    //
+    //  2. GitHub delays and sometimes DROPS scheduled runs (noted in
+    //     digests.yml). If October's run is dropped, November's covers two
+    //     months of expenses — and the heading, computed from "the month before
+    //     now", would claim it was just one. Two months of spending under a
+    //     one-month title is exactly the silent wrongness worth guarding.
+    const monthStartOf = (d: Date) =>
+      new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+
+    // Name the period from the ACTUAL window, not from an assumption about when
+    // the job ran. Spanning months says so.
+    const monthLabel = (from: Date, toExclusive: Date) => {
+      const last = new Date(toExclusive.getTime() - 1);   // inclusive end
+      const fmt = (d: Date, withYear: boolean) =>
+        d.toLocaleString("en-US", withYear ? { month: "long", year: "numeric", timeZone: "UTC" }
+                                           : { month: "long", timeZone: "UTC" });
+      const sameMonth = from.getUTCFullYear() === last.getUTCFullYear()
+        && from.getUTCMonth() === last.getUTCMonth();
+      if (sameMonth) return fmt(from, true);
+      const sameYear = from.getUTCFullYear() === last.getUTCFullYear();
+      return `${fmt(from, !sameYear)} – ${fmt(last, true)}`;
+    };
+
     const userIds = profiles.map((p: any) => p.id);
 
     // 2. Which groups each recipient belongs to.
@@ -176,7 +208,9 @@ Deno.serve(async (req) => {
 
     // 4. Expenses in the widest window any recipient needs, fetched once.
     const earliest = profiles.reduce((min: Date, p: any) => {
-      const since = p[sentCol] ? new Date(p[sentCol]) : defaultSince;
+      const sinceRaw = p[sentCol] ? new Date(p[sentCol]) : defaultSince;
+      // Monthly windows run boundary-to-boundary; see monthStartOf above.
+      const since = kind === "monthly" ? monthStartOf(sinceRaw) : sinceRaw;
       return since < min ? since : min;
     }, new Date());
 
@@ -193,7 +227,9 @@ Deno.serve(async (req) => {
     const details: any[] = [];
 
     for (const p of profiles as any[]) {
-      const since = p[sentCol] ? new Date(p[sentCol]) : defaultSince;
+      const sinceRaw = p[sentCol] ? new Date(p[sentCol]) : defaultSince;
+      // Monthly windows run boundary-to-boundary; see monthStartOf above.
+      const since = kind === "monthly" ? monthStartOf(sinceRaw) : sinceRaw;
       const myGroups = new Set(groupsByUser.get(p.id) ?? []);
 
       const mine = (expenses ?? []).filter((e: any) =>
@@ -243,7 +279,7 @@ Deno.serve(async (req) => {
           </div>`;
         }
       } else {
-        const label = prevMonthStart.toLocaleString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
+        const label = monthLabel(since, windowEnd);
         subject = `Splitab — your ${label} statement`;
         footer = "You're getting this because the monthly statement is on for your account.";
         bodyHtml = `<p style="font-size:15px;line-height:1.6;color:#44403c;margin:0 0 18px;">Hi ${esc(name)}, here's your ${esc(label)} summary.</p>`;
