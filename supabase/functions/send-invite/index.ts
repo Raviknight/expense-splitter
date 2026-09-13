@@ -66,8 +66,20 @@ Deno.serve(async (req) => {
     }
 
     const inviter = (inviterName || user.email || "A friend").toString();
-    const group   = (groupName || "a group").toString();
     const subject = `${inviter} invited you to split expenses on Splitab`;
+
+    // Invites now arrive from TWO places, and only one of them has a group:
+    //   • a ghost member inside a group  → groupName is set
+    //   • Connections, person-to-person  → no group at all
+    // groupName used to default to the literal string "a group", so a
+    // connection invite claimed "added you to a group" when no group existed.
+    // Saying something untrue in the first email a stranger receives is exactly
+    // how mail gets reported as spam.
+    const group    = (groupName || "").toString().trim();
+    const hasGroup = group.length > 0;
+    const intro = hasGroup
+      ? `<strong>${escapeHtml(inviter)}</strong> added you to <strong>${escapeHtml(group)}</strong> and wants to split expenses with you. Sign up (free) to see what you're owed and settle up easily.`
+      : `<strong>${escapeHtml(inviter)}</strong> wants to split expenses with you on Splitab. Sign up (free) to share costs and settle up easily.`;
 
     // 3) Create an invite token so the app can auto-connect them on signup
     //    (db/09 invites table + accept_invite function). The link carries the
@@ -97,7 +109,7 @@ Deno.serve(async (req) => {
               You're invited to Splitab
             </td></tr>
             <tr><td align="center" style="font-size:14px;color:#78716c;line-height:1.6;padding-bottom:24px;">
-              <strong>${escapeHtml(inviter)}</strong> added you to <strong>${escapeHtml(group)}</strong> and wants to split expenses with you. Sign up (free) to see what you're owed and settle up easily.
+              ${intro}
             </td></tr>
             <tr><td align="center" style="padding-bottom:24px;">
               <a href="${inviteLink}" style="background:#4f46e5;color:#fff;text-decoration:none;font-size:15px;font-weight:500;padding:12px 28px;border-radius:12px;display:inline-block;">
