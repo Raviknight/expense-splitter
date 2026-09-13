@@ -333,6 +333,56 @@ function setSortPref(v) {
   }
 }
 
+/* ── Scan draft ────────────────────────────────────────────────────────────
+ *
+ * Scanned rows are written to localStorage as each file completes, so they
+ * survive the page being discarded.
+ *
+ * Why this exists: locking an iPhone mid-scan suspends the page, and iOS may
+ * throw the web view away. React state goes with it — but the scans have
+ * ALREADY been charged on the server, so without this the user pays a second
+ * time to recover receipts they already paid to read. Credits are real money.
+ *
+ * The draft is keyed per user and expires, so a forgotten one from last week
+ * never resurfaces as a surprise. Cleared once the rows are imported or the
+ * user discards them.
+ */
+const SCAN_DRAFT_PREFIX = 'slitab.scandraft.';
+const SCAN_DRAFT_MAX_AGE_MS = 24 * 60 * 60 * 1000;   // a day
+
+function saveScanDraft(key, rows) {
+  if (!key) return;
+  try {
+    localStorage.setItem(key, JSON.stringify({ savedAt: Date.now(), rows }));
+  } catch (e) {
+    /* storage full or blocked — the scan still works, it just isn't recoverable */
+  }
+}
+
+function loadScanDraft(key) {
+  if (!key) return null;
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.rows) || parsed.rows.length === 0) return null;
+    // Stale drafts are dropped rather than offered: restoring last week's
+    // receipts into today's group would be worse than losing them.
+    if (Date.now() - (parsed.savedAt || 0) > SCAN_DRAFT_MAX_AGE_MS) {
+      localStorage.removeItem(key);
+      return null;
+    }
+    return parsed;
+  } catch (e) {
+    return null;
+  }
+}
+
+function clearScanDraft(key) {
+  if (!key) return;
+  try { localStorage.removeItem(key); } catch (e) { /* nothing to do */ }
+}
+
 // Count how many activity items (expenses + settlements + member joins) in a
 // group were created AFTER `since` (a millisecond timestamp). Used for the home
 // card "N new" badge. Rows with a missing/invalid createdAt are ignored.
@@ -1587,6 +1637,7 @@ export default function App() {
           people={people}
           isSolo={isSolo}
           myName={profile?.display_name || 'Me'}
+          myUserId={user?.id}
           startMode={importStartMode}
           onClose={() => setShowImport(false)}
           onImport={(rows, opts) => actions.importExpenses(activeGroup.id, rows, opts)}
@@ -4352,7 +4403,7 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
 //
 // All the heavy lifting (parsing, normalizing, building) lives in csv.js so this
 // component just collects choices and shows results.
-function ImportModal({ people, isSolo, myName, startMode = 'csv', onClose, onImport, onScan }) {
+function ImportModal({ people, isSolo, myName, myUserId, startMode = 'csv', onClose, onImport, onScan }) {
   // Which source the user is importing from: 'csv' (a spreadsheet file) or
   // 'scan' (a receipt/statement photo or PDF read by AI vision). Both paths
   // end at the SAME preview + "Paid by"/split defaults + Import button below.
@@ -4393,6 +4444,23 @@ function ImportModal({ people, isSolo, myName, startMode = 'csv', onClose, onImp
   // several receipts takes a few seconds each, and a bare spinner for half a
   // minute reads as a hang.
   const [scanProgress, setScanProgress] = useState(null);
+  // True when the rows on screen were recovered from a discarded session rather
+  // than scanned just now — worth saying, so the user knows why they appeared.
+  const [scanRestored, setScanRestored] = useState(false);
+
+  // Per-user so a shared device never restores someone else's receipts.
+  const draftKey = myUserId ? SCAN_DRAFT_PREFIX + myUserId : null;
+
+  // Recover anything a discarded page left behind. Runs once on mount: if iOS
+  // threw the web view away mid-scan, those rows were already paid for.
+  useEffect(() => {
+    if (!draftKey) return;
+    const draft = loadScanDraft(draftKey);
+    if (!draft) return;
+    setScanRows(draft.rows);
+    setScanRestored(true);
+    setMode('scan');
+  }, [draftKey]);
 
   // ── Scan: turn the picked image/PDF into base64 + read it via AI ───────────
   // Turn one File into the base64 payload the Edge Function expects.
@@ -4482,6 +4550,15 @@ function ImportModal({ people, isSolo, myName, startMode = 'csv', onClose, onImp
         if (mapped.length === 0) skipped.push(`${file.name}: no expenses found`);
         collected.push(...mapped);
         if (res.quota) quotaInfo = res.quota;
+
+        // Persist after EVERY file, not at the end.
+        //
+        // Locking an iPhone mid-scan suspends the page, and iOS may discard the
+        // web view entirely — React state goes with it. The scans were already
+        // charged server-side, so losing the rows means the user pays twice for
+        // the same receipts. Writing each batch as it arrives means a reload
+        // recovers everything already paid for.
+        saveScanDraft(draftKey, collected);
       } catch (err) {
         skipped.push(`${file.name}: could not be opened`);
       }
@@ -4607,6 +4684,11 @@ function ImportModal({ people, isSolo, myName, startMode = 'csv', onClose, onImp
       setImportError(res.error);
     } else {
       setResult(res);
+      // The rows are now saved as real expenses, so the recovery draft has done
+      // its job. Clearing it here — and ONLY on success — means a failed import
+      // still leaves the paid-for scans recoverable.
+      clearScanDraft(draftKey);
+      setScanRestored(false);
       // Auto-close shortly after success so the user sees the confirmation.
       setTimeout(onClose, 1200);
     }
@@ -4714,6 +4796,28 @@ function ImportModal({ people, isSolo, myName, startMode = 'csv', onClose, onImp
                   </div>
                 )}
                 {scanError && <div className="text-sm text-rose-600 mt-2">{scanError}</div>}
+
+                {/* Recovered rows. Worth saying explicitly: otherwise expenses
+                    the user doesn't remember scanning just appear, which looks
+                    like a bug rather than a rescue. */}
+                {scanRestored && (
+                  <div className="mt-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5">
+                    <div className="text-sm font-medium text-emerald-900">
+                      Recovered your last scan
+                    </div>
+                    <div className="text-xs text-emerald-800 mt-0.5">
+                      The app closed before these were saved. They're already paid for, so
+                      here they are — import them, or discard to start over.
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => { clearScanDraft(draftKey); setScanRows(null); setScanRestored(false); }}
+                      className="text-xs text-emerald-900 underline underline-offset-2 mt-1.5"
+                    >
+                      Discard
+                    </button>
+                  </div>
+                )}
 
                 {/* Out of scans — an upgrade prompt, not an error. Deliberately
                     amber rather than red: nothing broke, and there is no point
