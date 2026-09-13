@@ -158,6 +158,13 @@ export function useExpenseStore(userId, profile) {
   // Keep a stable ref so realtime callbacks always call the latest fetch.
   const fetchRef = useRef(null);
 
+  // { [merchantToken]: category } — the user's own learned categories (db/19).
+  // A ref rather than state: it is read while categorising and written when a
+  // correction is saved, but changing it should not re-render the whole app.
+  // Exposed through `categoryOverrides` below for the UI to consult.
+  const categoryOverridesRef = useRef({});
+  const [categoryOverrides, setCategoryOverrides] = useState({});
+
   // Watchdog timer: a backgrounded PWA can resume with a stale auth token whose
   // refresh stalls, leaving a query pending forever and the spinner stuck. This
   // guarantees loading is always cleared so the user at least sees cached data.
@@ -616,6 +623,32 @@ export function useExpenseStore(userId, profile) {
     });
   }, [userId, fetchAll, flushOutbox]);
 
+  // ── Learned categories (db/19) ─────────────────────────────────────────────
+  // Loaded once per sign-in. Deliberately NOT part of fetchAll: it is small,
+  // unrelated to group data, and a failure here must not take the dashboard
+  // down. If db/19 hasn't been run the query errors and we simply carry on with
+  // an empty map — categorisation falls back to the built-in RULES.
+  useEffect(() => {
+    if (!userId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data, error } = await supabase
+          .from('category_overrides')
+          .select('merchant, category')
+          .eq('user_id', userId);
+        if (cancelled || error || !data) return;
+        const map = {};
+        data.forEach(r => { if (r.merchant) map[r.merchant] = r.category; });
+        categoryOverridesRef.current = map;
+        setCategoryOverrides(map);
+      } catch (e) {
+        /* table missing or offline — built-in rules still work */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [userId]);
+
   // ── online / offline tracking ──────────────────────────────────────────────
   useEffect(() => {
     const handleOnline = () => {
@@ -768,6 +801,43 @@ export function useExpenseStore(userId, profile) {
     // ── Switch active group (local only, no DB call needed) ──────────────────
     switchGroup(groupId) {
       setActiveGroupId(groupId);
+    },
+
+    // ── Remember a category the user chose for a merchant (db/19) ───────────
+    //
+    // Called when someone corrects an expense's category. `merchant` is the
+    // normalised token from merchantKey() in App.jsx, not the raw name — two
+    // Uber trips have different digits but must share one learned category.
+    //
+    // Upsert, so correcting the same merchant twice keeps the LATEST choice
+    // rather than erroring on the primary key.
+    //
+    // Returns { error } instead of throwing: failing to learn a preference must
+    // never block saving the expense itself, which is what the user actually
+    // asked for.
+    async rememberCategory(merchant, category) {
+      if (!userId || !merchant || !category) return {};
+      try {
+        const { error } = await supabase
+          .from('category_overrides')
+          .upsert({
+            user_id:    userId,
+            merchant,
+            category,
+            updated_at: new Date().toISOString(),
+          }, { onConflict: 'user_id,merchant' });
+        if (error) return { error: error.message };
+        // Update BOTH the ref and the state. The ref alone was not enough: the
+        // UI consumes the state value, so writing only the ref meant a freshly
+        // learned category didn't reach the expense form until a reload —
+        // exactly the opposite of the "learns as you go" behaviour intended.
+        const next = { ...categoryOverridesRef.current, [merchant]: category };
+        categoryOverridesRef.current = next;
+        setCategoryOverrides(next);
+        return {};
+      } catch (e) {
+        return { error: String(e?.message ?? e) };
+      }
     },
 
     // ── Save the user's pinned groups (dashboard ordering) ───────────────────
@@ -1419,5 +1489,5 @@ export function useExpenseStore(userId, profile) {
     },
   };
 
-  return { groups, activeGroupId, loading, error, online, pendingCount, stale, actions };
+  return { groups, activeGroupId, loading, error, online, pendingCount, stale, categoryOverrides, actions };
 }

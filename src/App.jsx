@@ -127,7 +127,40 @@ const RULES = [
 //     (Attractions), for the same reason.
 // Preferring the longest match makes the most specific keyword win regardless
 // of where its rule sits, so new entries can be added without re-ordering.
-function autoCategorize(name) {
+// Reduce a messy expense name to a stable merchant token used for learning.
+//
+//   "UBER *TRIP 866-576-1"      -> "uber trip"
+//   "UPI/SWIGGY/8412345/Payment" -> "upi swiggy"
+//   "Taco Bell 037135"           -> "taco bell"
+//
+// Digits and punctuation are stripped because they are exactly what differs
+// between two visits to the same merchant — keying on the raw name would learn
+// nothing, since every transaction looks unique.
+//
+// Two words, not one: "swiggy" alone would collapse Swiggy and Swiggy Instamart
+// into one merchant even though they are a restaurant and a grocer. Not three:
+// statements pad names with branch codes and cities, which would split the same
+// merchant into many keys.
+function merchantKey(name) {
+  const cleaned = String(name || '')
+    .toLowerCase()
+    .replace(/[^a-z]+/g, ' ')   // digits and punctuation become separators
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!cleaned) return '';
+  return cleaned.split(' ').slice(0, 2).join(' ');
+}
+
+// `overrides` is the user's own learned map (db/19), merchantKey → category.
+// It is consulted FIRST and wins outright: a choice this person has already
+// made for this merchant beats any built-in guess, which is the entire point of
+// learning. The built-in RULES remain the fallback for merchants they have
+// never corrected.
+function autoCategorize(name, overrides) {
+  if (overrides) {
+    const learned = overrides[merchantKey(name)];
+    if (learned) return learned;
+  }
   const lower = ' ' + String(name || '').toLowerCase() + ' ';
   let best = 'Other';
   let bestLen = 0;
@@ -347,6 +380,12 @@ function setSortPref(v) {
  * never resurfaces as a surprise. Cleared once the rows are imported or the
  * user discards them.
  */
+// Most files accepted in one scan batch. Each file costs a credit, so an
+// accidental select-all on a camera roll must not be able to drain a month's
+// quota in a single tap. The server's per-minute burst cap is the backstop;
+// this is the friendlier guard that stops it happening at all.
+const MAX_SCAN_FILES = 10;
+
 const SCAN_DRAFT_PREFIX = 'slitab.scandraft.';
 const SCAN_DRAFT_MAX_AGE_MS = 24 * 60 * 60 * 1000;   // a day
 
@@ -740,7 +779,7 @@ export default function App() {
 
   // Load all data from Supabase. The store returns the same shape the UI
   // already knows how to render, so minimal UI changes are needed.
-  const { groups, activeGroupId, loading, error, online, pendingCount, stale, actions } = useExpenseStore(
+  const { groups, activeGroupId, loading, error, online, pendingCount, stale, categoryOverrides, actions } = useExpenseStore(
     user?.id,
     profile,
   );
@@ -1573,6 +1612,8 @@ export default function App() {
           expense={editing === 'new' ? null : editing}
           people={people}
           isSolo={isSolo}
+          categoryOverrides={categoryOverrides}
+          onRememberCategory={actions.rememberCategory}
           onClose={() => setEditing(null)}
           onSave={upsertExpense}
         />
@@ -1638,6 +1679,7 @@ export default function App() {
           isSolo={isSolo}
           myName={profile?.display_name || 'Me'}
           myUserId={user?.id}
+          categoryOverrides={categoryOverrides}
           startMode={importStartMode}
           onClose={() => setShowImport(false)}
           onImport={(rows, opts) => actions.importExpenses(activeGroup.id, rows, opts)}
@@ -3878,7 +3920,7 @@ function MultiSettleModal({ people, entries, onClose, onRecord }) {
 
 /* ============ Expense modal ============ */
 
-function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
+function ExpenseModal({ expense, people, isSolo, onClose, onSave, categoryOverrides, onRememberCategory }) {
   const isNew = !expense;
   const [name, setName] = useState(expense?.name || '');
   const [amount, setAmount] = useState(expense?.amount?.toString() || '');
@@ -3949,8 +3991,8 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
   useEffect(() => {
     if (catManuallySet) return;
     if (!name.trim()) return;
-    setCategory(autoCategorize(name));
-  }, [name, catManuallySet]);
+    setCategory(autoCategorize(name, categoryOverrides));
+  }, [name, catManuallySet, categoryOverrides]);
 
   // The expense total as a number (0 if blank/invalid). Used by the custom
   // editor for the "Assigned of total" math and the equal-split helper.
@@ -4155,7 +4197,15 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
           <Field label="Category">
             <select
               value={category}
-              onChange={(e) => { setCategory(e.target.value); setCatManuallySet(true); }}
+              onChange={(e) => {
+                setCategory(e.target.value);
+                setCatManuallySet(true);
+                // Learn from an explicit correction only. Accepting the guess
+                // teaches nothing; overriding it is a real preference, and the
+                // next expense from this merchant should honour it.
+                const key = merchantKey(name);
+                if (key && onRememberCategory) onRememberCategory(key, e.target.value);
+              }}
               className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm bg-white focus:outline-none focus:border-indigo-500"
             >
               {CATEGORIES.map(c => <option key={c.name} value={c.name}>{c.emoji} {c.name}</option>)}
@@ -4403,7 +4453,7 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave }) {
 //
 // All the heavy lifting (parsing, normalizing, building) lives in csv.js so this
 // component just collects choices and shows results.
-function ImportModal({ people, isSolo, myName, myUserId, startMode = 'csv', onClose, onImport, onScan }) {
+function ImportModal({ people, isSolo, myName, myUserId, categoryOverrides, startMode = 'csv', onClose, onImport, onScan }) {
   // Which source the user is importing from: 'csv' (a spreadsheet file) or
   // 'scan' (a receipt/statement photo or PDF read by AI vision). Both paths
   // end at the SAME preview + "Paid by"/split defaults + Import button below.
@@ -4482,7 +4532,7 @@ function ImportModal({ people, isSolo, myName, myUserId, startMode = 'csv', onCl
       name,
       amount:   Number(ex.amount) || 0,
       date:     hasDate ? ex.date : today,
-      category: (ex.category || '').trim() || autoCategorize(name),
+      category: (ex.category || '').trim() || autoCategorize(name, categoryOverrides),
       _source:  sourceName,
     };
     const flags = [];
@@ -4503,8 +4553,16 @@ function ImportModal({ people, isSolo, myName, myUserId, startMode = 'csv', onCl
   // is unreadable, the rows from 1-3 and 5-6 are still offered, with a note
   // saying which files were skipped and why.
   const handleScanFile = async (e) => {
-    const files = Array.from(e.target.files || []);
-    if (files.length === 0) return;
+    const picked = Array.from(e.target.files || []);
+    if (picked.length === 0) return;
+
+    // CAP THE BATCH. Selecting a whole camera roll is one tap on a phone, and
+    // without this that single tap could spend an entire month's quota — each
+    // file is a credit, and the server charges whether or not the picture turns
+    // out to be a receipt. Capping here is kinder than letting the server refuse
+    // file 21 after the user has already paid for twenty.
+    const files = picked.slice(0, MAX_SCAN_FILES);
+    const droppedForCap = picked.length - files.length;
 
     setScanError('');
     setScanRows(null);
@@ -4576,6 +4634,9 @@ function ImportModal({ people, isSolo, myName, myUserId, startMode = 'csv', onCl
 
     // Report anything that went wrong WITHOUT throwing away what worked.
     const notes = [];
+    if (droppedForCap > 0) {
+      notes.push(`Only the first ${MAX_SCAN_FILES} files were scanned (${droppedForCap} skipped) — each one uses a scan credit.`);
+    }
     if (stopReason) notes.push(stopReason);
     if (skipped.length) notes.push(`Skipped ${skipped.length} file${skipped.length === 1 ? '' : 's'} — ${skipped.join('; ')}`);
     setScanError(notes.join(' ') || '');
@@ -4629,8 +4690,12 @@ function ImportModal({ people, isSolo, myName, myUserId, startMode = 'csv', onCl
   // Reuse the app's autoCategorize so categorization stays consistent.
   const csvBuilt = useMemo(() => {
     if (rows.length === 0 || !mapping.amount) return { expenses: [], skipped: 0 };
-    return buildExpenses(rows, mapping, options, autoCategorize);
-  }, [rows, mapping, options]);
+    // Bind the learned map so CSV imports honour the user's own categories too.
+    return buildExpenses(rows, mapping, options, (n) => autoCategorize(n, categoryOverrides));
+    // categoryOverrides IS a dependency: the learned map loads asynchronously
+    // after sign-in, so omitting it left the preview holding an empty map and
+    // quietly ignoring the user's own categories on the first import.
+  }, [rows, mapping, options, categoryOverrides]);
 
   // `built` is the active source for the shared preview + Import button.
   // CSV mode uses the parsed/mapped rows; scan mode uses the AI's rows.

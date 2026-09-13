@@ -31,11 +31,8 @@ If it is not in this file, it is not agreed work. If it is done, it leaves this 
 
 | # | Item | Notes |
 |---|------|-------|
-| 17d | 🔒 **Per-minute scan burst cap** | The monthly quota stops sustained abuse but not a burst: one account can spend a whole month's allowance in seconds, and each scan costs real money. Needs a short rolling window in `scan_usage` checked alongside the monthly count, inside the function. Smallest remaining security item with a real cost attached. |
 | 17c | 🔒 **CAPTCHA on sign-in** | Supabase supports Cloudflare Turnstile / hCaptcha: a dashboard setting plus passing a token from `AuthScreen.jsx`. Bigger job than the rate limits, and only worth it if bot sign-ups actually appear. |
 | 17f | 🔒 **Cloudflare rate limiting** in front of the domain | DNS is already there, so this is configuration rather than code. Catches abuse before it reaches Supabase at all. |
-| 4 | **Multi-image upload** — several images per scan, 1 credit each, capped per batch | Unblocked now the credit accounting exists (`db/16`). Images (vision) are the expensive path; PDFs (text) are cheap. |
-| 5 | **Merchant learning from corrections** | Record when a user re-categorises an expense and reuse it, then aggregate toward the shared rules. Auto-adapts to any country with no hand-written keyword lists. Note **scanned** receipts already get a category from the AI, so `RULES` only affects CSV import and manual entry. |
 | 19 | **Premium features while offline** | Entitlement is already cached with the profile, so the app knows you're premium with no signal — but scanning needs an AI provider, so it genuinely cannot work offline. Needs an honest "needs a connection" state rather than a confusing failure. |
 | 21 | **Payment hand-off (Zelle / Venmo / UPI …)** | **Do not hard-code apps per country** — endless maintenance, and it breaks for anyone abroad. Instead let each person store a free-text "how to pay me" on their profile (UPI ID, Venmo handle, bank reference, "cash"); the payer sees it at settle-up and pays in whatever app they already use. Works everywhere with no per-country code, and needs no payment licence: **the app never touches money, it only shows a note and records that a payment happened.** Handling money in-app would make this a regulated payment service. |
 | 9 | **No way for a user to pay for premium** | Set by hand in Supabase today (`profiles.is_premium`, db/11); `PREMIUM_ENFORCED` is still `false`. Needs a payment-provider decision (a business/tax question — merchant-of-record handles cross-border sales tax, a direct gateway does not). Ask any provider whether they issue **India-format FIRA** before integrating. Blocked on flipping `SCAN_LIMIT_ENABLED` — no point selling a limit that isn't enforced. |
@@ -76,6 +73,24 @@ If it is not in this file, it is not agreed work. If it is done, it leaves this 
   project ever upgrades.
 
 ## Done (recent — trim as it grows)
+
+- **Per-user category learning** (#5) — `db/19`. A category the user picks by hand is
+  remembered against a normalised merchant token, so "UBER *TRIP 866-576-1" and
+  "UBER *TRIP 901-222-8" share one learned category. Applies to manual entry, CSV import
+  and scans. Per-user on purpose: one person filing AMAZON under Groceries and another
+  under Shopping are both right. Verified by agent: builds, renders, expense modal opens,
+  no ReferenceError. Two bugs it found were fixed — a stale `useMemo` closure that ignored
+  the learned map on first import, and `rememberCategory` writing only a ref so a new
+  preference didn't reach the UI until reload.
+- **Multi-image scanning** (#4) — several receipts per batch, processed sequentially so the
+  burst cap isn't tripped, 1 credit per file, partial success preserved, source filename
+  shown per row, and a **10-file cap** so one tap on a camera roll can't drain a month's
+  quota.
+- **Scan burst cap** (#17d) — rolling 1-minute window, applies to everyone including
+  premium; premium is 500/month rather than unlimited, with `bonus_scans` for top-ups.
+- **Scan draft recovery** — locking the phone mid-scan no longer loses paid-for rows.
+- **Monthly digest correctness** — month-boundary gap and mislabelled statement after a
+  dropped run, both fixed and tested.
 
 - **Security, first pass** (#17 a/b/e). CORS on `scan-receipt` and `send-invite` was `*`,
   letting any website invoke them with a signed-in user's token — spending that user's scan

@@ -17,10 +17,15 @@
 //      WOULD be sent, without calling Resend. Always dry-run first after any
 //      change — a mass-email job you cannot test safely is a liability.
 //
-// ── QUIET DAYS ───────────────────────────────────────────────────────────────
-// The daily digest is SKIPPED for a user with no new activity. "Nothing
-// happened" is not worth an email, and sending it anyway is how you train
-// people to ignore (or report) your mail.
+// ── NO ACTIVITY, NO EMAIL ────────────────────────────────────────────────────
+// BOTH digests are skipped for a user with no new activity in their window —
+// not just the daily one. "Nothing happened" is not worth an email, and an
+// empty monthly statement is equally pointless. Sending anyway is how you train
+// people to ignore your mail, or report it, which damages the sending domain
+// the sign-in codes also depend on.
+//
+// Confirmed as the intended product behaviour, and verified by a dry run where
+// all eight opted-in recipients were skipped and nothing was sent.
 //
 // DEPLOY (Supabase dashboard):
 //   1. Edge Functions → create a function named exactly  send-digest , paste
