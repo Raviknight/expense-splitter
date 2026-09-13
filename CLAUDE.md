@@ -107,6 +107,14 @@ don't return data).
 | `db/10_expense_participants.sql` | Adds `expenses.participants` (jsonb member-id list) so an expense is split among its frozen participants; backfills existing expenses. | Once. Old expenses change when adding members until run. |
 | `db/11_premium.sql` | Adds `profiles.is_premium`, read by `Settings.jsx` and the (dormant) `PREMIUM_ENFORCED` gate in `App.jsx`. | Once. |
 | `db/12_keepalive.sql` | Adds the one-row `keepalive` table the scheduled ping queries so Supabase doesn't pause the project. | Once, before enabling the keep-alive workflow. |
+| `db/13_pinned_groups.sql` | Adds `profiles.pinned_groups` (jsonb array of group ids) for the home dashboard. | Once. Pinning falls back to per-device localStorage until run. |
+| `db/14_email_prefs.sql` | Adds `profiles.notify_daily` (default off) and `profiles.notify_monthly` (default on) + the digest recipient indexes. | Once, before the digest job. |
+| `db/15_digest_tracking.sql` | Records when each digest was last sent per user, so a delayed job never drops activity and a retry can't double-mail. | Once, with db/14. |
+| `db/16_scan_limits.sql` | Adds the `scan_usage` table (SELECT-only by design) for the server-side receipt-scan quota. | Once, before enabling scan limits. |
+| `db/17_invite_withdraw.sql` | Adds the DELETE policy that lets an inviter withdraw a pending invite. | Once. Withdraw errors until run. |
+| `db/18_scan_burst.sql` | Adds burst-window columns to `scan_usage` so a script can't spend a month's scan allowance in seconds. | Once, after db/16. |
+| `db/19_category_learning.sql` | Adds the per-user `category_overrides` table so the app learns your own merchant→category corrections. | Once. |
+| `db/20_payment_note.sql` | Adds `profiles.payment_note` (free text, ≤200 chars) — the "how to pay me" note shown to others at settle-up. No new RLS policy needed: `profiles` already has "update own profile" + "read connected profiles". | Once. Saving payment details shows a "run db/20" hint until run. |
 
 > `db/02` is personal to the owner. The app itself never seeds anyone's data — new users
 > start empty.
@@ -452,6 +460,17 @@ only path.
 - **Activity feed** — per-group log of expenses / settlements / member changes, next to Connections.
 - **Donation link** — a simple "Support Splitab" link to Ko-fi / Buy Me a Coffee in Settings. No
   payment system to build (the provider handles money). Only meaningful if shared publicly.
+- **Payment hand-off — DECIDED: a free-text note, and the app NEVER touches money.** Each
+  person writes their own "how to pay me" line on their profile (`profiles.payment_note`,
+  db/20) — "UPI: name@bank", "Venmo: @handle", "Cash is fine" — and the payer reads it at
+  settle-up and pays in whatever app they already use. Two rejected options, recorded so
+  they don't come back: (1) *a field per payment app, per country* — an endless maintenance
+  tail, and it breaks for anyone travelling; (2) *actually moving the money in-app* — that
+  makes Splitab a regulated payment service, a completely different undertaking. So there
+  is deliberately **no payment SDK, deep link or API**; the app displays a string the user
+  wrote and records that a payment happened elsewhere. The note is visible to everyone you
+  are connected to (the existing "read connected profiles" RLS policy), which the Profile
+  screen states plainly next to the field.
 - **Bank linking — DECIDED: skip.** Regulated (Plaid/aggregators), real cost, compliance/liability
   for bank data. CSV import + receipt scanning cover "get transactions in" without the burden.
   Revisit only if this becomes a funded commercial product.

@@ -25,7 +25,9 @@ If it is not in this file, it is not agreed work. If it is done, it leaves this 
 
 ## In progress
 
-*(nothing — pick the next item deliberately)*
+| # | Item | Where it stopped |
+|---|------|------------------|
+| 21 | **Payment hand-off (Zelle / Venmo / UPI …)** — profile half DONE, settle-up half PENDING | Built: `db/20_payment_note.sql` (adds `profiles.payment_note`, free text ≤200 chars, no new RLS policy needed) and the "How people pay you" section in `src/auth/Profile.jsx` (view/edit/clear, "run db/20" fallback when the column is missing, a visible warning that people in your groups can see it). **Still to do:** show the payee's note to the payer at settle-up in `src/App.jsx` — and `store.js` does not fetch `payment_note` yet (`loadAll` selects `id, display_name, avatar_url` for other members, with a name-only retry when that fails). Add it there in the same change, keeping that graceful-degradation retry intact. Reminder for whoever picks it up: **the app must never touch money** — display the note, record that a payment happened, no SDK / deep link / API. Rendering of the Profile change is UNVERIFIED (build only). |
 
 ## Agreed — next up
 
@@ -34,7 +36,7 @@ If it is not in this file, it is not agreed work. If it is done, it leaves this 
 | 17c | 🔒 **CAPTCHA on sign-in** | Supabase supports Cloudflare Turnstile / hCaptcha: a dashboard setting plus passing a token from `AuthScreen.jsx`. Bigger job than the rate limits, and only worth it if bot sign-ups actually appear. |
 | 17f | 🔒 **Cloudflare rate limiting** in front of the domain | DNS is already there, so this is configuration rather than code. Catches abuse before it reaches Supabase at all. |
 | 19 | **Premium features while offline** | Entitlement is already cached with the profile, so the app knows you're premium with no signal — but scanning needs an AI provider, so it genuinely cannot work offline. Needs an honest "needs a connection" state rather than a confusing failure. |
-| 21 | **Payment hand-off (Zelle / Venmo / UPI …)** | **Do not hard-code apps per country** — endless maintenance, and it breaks for anyone abroad. Instead let each person store a free-text "how to pay me" on their profile (UPI ID, Venmo handle, bank reference, "cash"); the payer sees it at settle-up and pays in whatever app they already use. Works everywhere with no per-country code, and needs no payment licence: **the app never touches money, it only shows a note and records that a payment happened.** Handling money in-app would make this a regulated payment service. |
+| ~~21~~ | *(moved to In progress above)* | **Do not hard-code apps per country** — endless maintenance, and it breaks for anyone abroad. Instead let each person store a free-text "how to pay me" on their profile (UPI ID, Venmo handle, bank reference, "cash"); the payer sees it at settle-up and pays in whatever app they already use. Works everywhere with no per-country code, and needs no payment licence: **the app never touches money, it only shows a note and records that a payment happened.** Handling money in-app would make this a regulated payment service. |
 | 9 | **No way for a user to pay for premium** | Set by hand in Supabase today (`profiles.is_premium`, db/11); `PREMIUM_ENFORCED` is still `false`. Needs a payment-provider decision (a business/tax question — merchant-of-record handles cross-border sales tax, a direct gateway does not). Ask any provider whether they issue **India-format FIRA** before integrating. Blocked on flipping `SCAN_LIMIT_ENABLED` — no point selling a limit that isn't enforced. |
 
 ## Decisions pending (not work — just choices)

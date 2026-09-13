@@ -1572,6 +1572,9 @@ export default function App() {
           the JSX tag early and leaves the div unterminated. The compiler then
           reports a confusing error hundreds of lines later. */}
       <div className="max-w-3xl mx-auto px-4 flex flex-col items-end gap-3">
+        {/* Offline, this button STAYS PUT — a control that vanishes reads as a
+            bug, and the user has no way to learn why. It carries the reason in
+            its label/tooltip instead, and the scan tab repeats it in full. */}
         {SCAN_ENABLED && (
         <button
           onClick={() => {
@@ -1583,8 +1586,12 @@ export default function App() {
             setShowImport(true);
           }}
           className="pointer-events-auto w-12 h-12 rounded-full bg-white border border-stone-300 text-stone-700 shadow-md hover:bg-stone-50 active:scale-95 transition flex items-center justify-center"
-          aria-label="Scan receipt or statement"
-          title="Scan a receipt or statement photo / PDF"
+          aria-label={online
+            ? 'Scan receipt or statement'
+            : 'Scan receipt or statement — needs an internet connection'}
+          title={online
+            ? 'Scan a receipt or statement photo / PDF'
+            : 'Scanning needs an internet connection'}
         >
           <ScanLine className="w-5 h-5" />
         </button>
@@ -1681,6 +1688,7 @@ export default function App() {
           myUserId={user?.id}
           categoryOverrides={categoryOverrides}
           startMode={importStartMode}
+          online={online}
           onClose={() => setShowImport(false)}
           onImport={(rows, opts) => actions.importExpenses(activeGroup.id, rows, opts)}
           onScan={(base64, mimeType) => actions.scanReceipt(base64, mimeType)}
@@ -4453,7 +4461,10 @@ function ExpenseModal({ expense, people, isSolo, onClose, onSave, categoryOverri
 //
 // All the heavy lifting (parsing, normalizing, building) lives in csv.js so this
 // component just collects choices and shows results.
-function ImportModal({ people, isSolo, myName, myUserId, categoryOverrides, startMode = 'csv', onClose, onImport, onScan }) {
+// `online` defaults to true on purpose: if a future caller forgets to pass it,
+// the modal behaves exactly as it did before rather than locking scanning off
+// for everyone.
+function ImportModal({ people, isSolo, myName, myUserId, categoryOverrides, startMode = 'csv', online = true, onClose, onImport, onScan }) {
   // Which source the user is importing from: 'csv' (a spreadsheet file) or
   // 'scan' (a receipt/statement photo or PDF read by AI vision). Both paths
   // end at the SAME preview + "Paid by"/split defaults + Import button below.
@@ -4555,6 +4566,14 @@ function ImportModal({ people, isSolo, myName, myUserId, categoryOverrides, star
   const handleScanFile = async (e) => {
     const picked = Array.from(e.target.files || []);
     if (picked.length === 0) return;
+
+    // Belt and braces: the connection can drop between opening this tab and
+    // picking a file, and the disabled input was decided a moment ago. Say the
+    // real reason rather than letting the fetch fail with a network error.
+    if (!online) {
+      setScanError('Scanning needs an internet connection. Try again once you are back online.');
+      return;
+    }
 
     // CAP THE BATCH. Selecting a whole camera roll is one tap on a phone, and
     // without this that single tap could spend an entire month's quota — each
@@ -4841,12 +4860,29 @@ function ImportModal({ people, isSolo, myName, myUserId, categoryOverrides, star
               {/* ── Scan mode: pick a photo/PDF, then AI reads it ────────── */}
               {mode === 'scan' && (
               <Field label="Choose receipts or statements (photos or PDF)">
+                {/* Scanning is the ONE thing here that genuinely cannot work
+                    offline — the image goes to an AI provider over the network.
+                    Say so before the tap, not after a failed request whose error
+                    ("Failed to fetch") reads like a bug. Amber, not red: nothing
+                    is broken, and the CSV tab beside it still works. */}
+                {!online && (
+                  <div className="mb-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5">
+                    <div className="text-sm font-medium text-amber-900">
+                      Scanning needs an internet connection
+                    </div>
+                    <div className="text-xs text-amber-800 mt-0.5">
+                      Receipts are read by an AI service online, so this one can't
+                      work offline. You can still add expenses by hand or import a
+                      CSV — those save on this device and sync when you reconnect.
+                    </div>
+                  </div>
+                )}
                 <input
                   type="file"
                   accept="image/*,application/pdf"
                   multiple
                   onChange={handleScanFile}
-                  disabled={scanning}
+                  disabled={scanning || !online}
                   className="w-full text-sm text-stone-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border file:border-stone-300 file:bg-stone-50 file:text-sm file:font-medium hover:file:bg-stone-100 disabled:opacity-50"
                 />
                 {scanFileName && !scanning && !scanError && (

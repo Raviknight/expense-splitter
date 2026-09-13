@@ -5,14 +5,19 @@
 //   1. Upload / change / remove their profile photo (avatar).
 //   2. Edit their display name — saved to profiles.display_name.
 //   3. See their email address (read-only) and "member since" date.
+//   4. Write a free-text "how to pay me" note — saved to profiles.payment_note
+//      (db/20). It is SHOWN TO OTHER PEOPLE at settle-up, so the UI says so.
+//      The app never touches money: this is a note the payer reads, nothing
+//      more. No payment SDK, deep link or API — see db/20_payment_note.sql.
 //
 // Account-level settings (default currency, appearance, password change, and
 // sign out) now live on the separate Settings screen (src/auth/Settings.jsx),
 // opened from the gear icon in the top bar. This keeps Profile focused on
 // "who am I" and Settings on "how the app behaves".
 //
-// Table: profiles — columns used: id, display_name, email, created_at, avatar_url.
-// All names match 01_schema.sql / db/08 exactly.
+// Table: profiles — columns used: id, display_name, email, created_at,
+// avatar_url, payment_note.
+// All names match 01_schema.sql / db/08 / db/20 exactly.
 //
 // After a successful save we call refreshProfile() from AuthProvider so the
 // new values propagate to the top bar and to store.js.
@@ -20,11 +25,17 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   X, User, Mail, Save, Check, AlertCircle,
-  Camera, Trash2,
+  Camera, Trash2, Wallet, Eye,
 } from 'lucide-react';
 import { supabase } from '../supabaseClient.js';
 import { useAuth } from './AuthProvider.jsx';
 import Avatar from '../ui/Avatar.jsx';
+
+// Longest "how to pay me" note we accept. MUST match the check constraint in
+// db/20_payment_note.sql (profiles_payment_note_len) — if the input let someone
+// type more than the database allows, the save would fail with a constraint
+// error they could do nothing about.
+const PAYMENT_NOTE_MAX = 200;
 
 export default function Profile({ onClose }) {
   // Pull what we need from the auth context.
@@ -43,6 +54,19 @@ export default function Profile({ onClose }) {
   const [photoBusy, setPhotoBusy]   = useState(false);   // uploading / removing
   const [photoError, setPhotoError] = useState(null);
   const [photoSaved, setPhotoSaved] = useState(false);
+
+  // ── "How to pay me" note state (db/20) ────────────────────────────────────
+  // Kept SEPARATE from the display-name form on purpose: if db/20 hasn't been
+  // run, saving this fails — and it must not take the (working) display-name
+  // save down with it. Same reasoning as the currency section in Settings.jsx.
+  //
+  // These hooks MUST stay above the `if (!user) return null` guard further
+  // down. A hook after a conditional return only runs on some renders, which
+  // React rejects with a hook-order error.
+  const [paymentNote, setPaymentNote]   = useState(profile?.payment_note || '');
+  const [noteSaving, setNoteSaving]     = useState(false);
+  const [noteSaved, setNoteSaved]       = useState(false);
+  const [noteError, setNoteError]       = useState(null);
 
   // Downscale an image file to a max dimension using a <canvas>, returning a
   // small JPEG Blob. Keeps stored photos tiny and fast to load. If anything
@@ -185,7 +209,16 @@ export default function Profile({ onClose }) {
     if (profile?.display_name) setDisplayName(profile.display_name);
   }, [profile?.display_name]);
 
+  // Same for the payment note. Checked with typeof rather than truthiness so an
+  // intentionally-cleared note ('') still replaces whatever was typed before.
+  // Before db/20 is run the column is missing, so this is undefined and the box
+  // simply stays empty.
+  useEffect(() => {
+    if (typeof profile?.payment_note === 'string') setPaymentNote(profile.payment_note);
+  }, [profile?.payment_note]);
+
   // Guard: if somehow no user, render nothing.
+  // ⚠️ Every hook above this line — no hooks below it.
   if (!user) return null;
 
   // ── Date formatter ────────────────────────────────────────────────────────
@@ -227,6 +260,61 @@ export default function Profile({ onClose }) {
     await refreshProfile();
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
+  }
+
+  // ── Save the "how to pay me" note ─────────────────────────────────────────
+  // Writes profiles.payment_note (added by db/20). An empty box saves NULL, so
+  // clearing the note removes it rather than leaving an empty string that the
+  // settle-up screen would have to special-case.
+  //
+  // If db/20 hasn't been run the column doesn't exist and PostgREST returns an
+  // error mentioning the column name or "schema cache" — the same shape
+  // Settings.jsx handles for db/04 and db/14. We translate it into a friendly
+  // nudge instead of showing the raw message.
+  async function handleNoteSave(e) {
+    e.preventDefault();
+    setNoteError(null);
+    setNoteSaved(false);
+
+    const trimmedNote = paymentNote.trim();
+    if (trimmedNote.length > PAYMENT_NOTE_MAX) {
+      setNoteError(`Please keep this under ${PAYMENT_NOTE_MAX} characters.`);
+      return;
+    }
+
+    setNoteSaving(true);
+    const { error: updateErr } = await supabase
+      .from('profiles')
+      .update({ payment_note: trimmedNote || null })   // column: payment_note
+      .eq('id', user.id);                              // column: id
+    setNoteSaving(false);
+
+    if (updateErr) {
+      const msg = updateErr.message || '';
+      const lower = msg.toLowerCase();
+      // Length constraint FIRST: its name (profiles_payment_note_len) contains
+      // "payment_note", so the missing-column test below would swallow it and
+      // tell the user to run a migration that is already applied.
+      if (lower.includes('payment_note_len') || lower.includes('check constraint')) {
+        // The database backstop fired (should be unreachable — the input is capped).
+        setNoteError(`Please keep this under ${PAYMENT_NOTE_MAX} characters.`);
+      } else if (
+        lower.includes('payment_note') ||
+        lower.includes('schema cache') ||
+        lower.includes('column')
+      ) {
+        setNoteError(
+          'Payment details need a one-time database update — run db/20 in Supabase.'
+        );
+      } else {
+        setNoteError(msg || 'Could not save. Please try again.');
+      }
+      return;
+    }
+
+    await refreshProfile();
+    setNoteSaved(true);
+    setTimeout(() => setNoteSaved(false), 2000);
   }
 
   const memberSince = formatDate(profile?.created_at);
@@ -419,6 +507,102 @@ export default function Profile({ onClose }) {
                 <>
                   <Save className="w-4 h-4" />
                   Save changes
+                </>
+              )}
+            </button>
+          </form>
+        </section>
+
+        {/* ── How people pay you (profiles.payment_note, db/20) ──
+            Its own section and its own Save button, deliberately: the column
+            may not exist yet (db/20 unrun), and a failure here must not stop
+            the display name above from saving.
+
+            The app NEVER moves money. This is a note the other person reads
+            before paying you in whatever app they already use — no payment
+            integration exists or is planned. */}
+        <section className="bg-white border border-stone-200 rounded-2xl p-5 shadow-sm">
+          <div className="flex items-center gap-2 mb-4">
+            <Wallet className="w-4 h-4 text-stone-500" />
+            <span className="text-sm font-semibold text-stone-700">How people pay you</span>
+          </div>
+
+          <form onSubmit={handleNoteSave} className="flex flex-col gap-4">
+            <div className="flex flex-col gap-1.5">
+              <label
+                htmlFor="payment-note"
+                className="text-xs font-medium text-stone-500 uppercase tracking-wide"
+              >
+                Payment details (visible to your groups)
+              </label>
+
+              {/* Said plainly and BEFORE the box, not as fine print underneath:
+                  whatever goes in here is shown to other people. */}
+              <p className="flex items-start gap-1.5 text-xs text-stone-500">
+                <Eye className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                <span>
+                  Anyone in your groups can see this at settle-up. Don’t put anything
+                  private here — no passwords, card numbers or full account numbers.
+                </span>
+              </p>
+
+              {/* text-base = 16 px — prevents iOS zoom on focus */}
+              <textarea
+                id="payment-note"
+                rows={2}
+                value={paymentNote}
+                onChange={e => {
+                  setPaymentNote(e.target.value);
+                  setNoteError(null);
+                  setNoteSaved(false);
+                }}
+                placeholder="e.g. UPI: name@bank"
+                maxLength={PAYMENT_NOTE_MAX}
+                className="rounded-xl border border-stone-200 bg-white px-4 py-2.5 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-stone-400 resize-none"
+              />
+
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-xs text-stone-400">
+                  Examples: “UPI: name@bank” · “Venmo: @handle” · “Bank ref: SPLITAB-RAVI” ·
+                  “Cash is fine”. Splitab never handles the money — it only shows this note
+                  and records that you were paid.
+                </p>
+                <span className="text-xs text-stone-400 shrink-0 tabular-nums">
+                  {paymentNote.length}/{PAYMENT_NOTE_MAX}
+                </span>
+              </div>
+            </div>
+
+            {/* Error — may include the "run db/20" hint */}
+            {noteError && (
+              <div className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600">
+                <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                <span>{noteError}</span>
+              </div>
+            )}
+
+            {/* Success confirmation */}
+            {noteSaved && (
+              <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+                <Check className="w-4 h-4 shrink-0" />
+                <span>Payment details saved.</span>
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={noteSaving}
+              className="flex items-center justify-center gap-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 text-sm font-medium disabled:opacity-50 transition"
+            >
+              {noteSaving ? (
+                <>
+                  <span className="w-4 h-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                  Saving…
+                </>
+              ) : (
+                <>
+                  <Save className="w-4 h-4" />
+                  Save payment details
                 </>
               )}
             </button>
