@@ -442,6 +442,34 @@ only path.
 
 ## 8. Roadmap / deferred decisions (recorded so we don't lose them)
 
+### Free vs premium — DECIDED
+
+The principle: **gate what costs money, not what makes the app useful.** Scanning is the
+only feature with a real marginal cost (~$0.0003 per receipt); everything else is
+effectively free to serve on Supabase's free tier.
+
+| | |
+|---|---|
+| **Free** | Unlimited groups, expenses, people and ghosts · settle-up · CSV import · CSV/PDF export · insights · offline · connections and invites · **20 scan credits, ONE TIME** (a trial, not a recurring cost to absorb) · unlimited manual entry |
+| **Premium** | 500 scans/month, plus top-ups via `scan_usage.bonus_scans` |
+
+**No cap on group members — deliberate.** Members cost nothing to serve, and the only
+growth channel this app has is people inviting each other: someone joins because they were
+added to a group. Capping members throttles exactly that, and it punishes the wrong person
+— a free owner with five flatmates hits a wall while doing nothing expensive. "Your friend
+can't join your holiday group" is also a bad moment in an app about splitting bills with
+friends. If another lever is ever needed, groups-per-owner is far less damaging.
+
+**Rejected: gating export or insights.** They cost nothing to serve, so gating them reads
+as pressure rather than value — corrosive in an app people use to settle debts with
+friends.
+
+### Cloudflare WAF rate limiting — NOT AVAILABLE
+
+Rate limiting rules are a paid add-on on the Free plan, so this is closed rather than
+deferred. Mitigations already in place: Cloudflare **Bot Fight Mode** (free, enabled), and
+Supabase auth rate limits (see §3), which sit at the layer that actually matters.
+
 > 📋 **Open work lives in [BACKLOG.md](BACKLOG.md), not here.** This section records
 > *decisions and their reasoning* — the "why we chose this" that would otherwise be
 > re-litigated. Anything still to be built belongs in `BACKLOG.md`, which is updated in the

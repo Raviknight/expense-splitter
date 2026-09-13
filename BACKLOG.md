@@ -34,7 +34,6 @@ If it is not in this file, it is not agreed work. If it is done, it leaves this 
 | # | Item | Notes |
 |---|------|-------|
 | 17c | 🔒 **CAPTCHA on sign-in** | Supabase supports Cloudflare Turnstile / hCaptcha: a dashboard setting plus passing a token from `AuthScreen.jsx`. Bigger job than the rate limits, and only worth it if bot sign-ups actually appear. |
-| 17f | 🔒 **Cloudflare rate limiting** in front of the domain | DNS is already there, so this is configuration rather than code. Catches abuse before it reaches Supabase at all. |
 | 19 | **Premium features while offline** | Entitlement is already cached with the profile, so the app knows you're premium with no signal — but scanning needs an AI provider, so it genuinely cannot work offline. Needs an honest "needs a connection" state rather than a confusing failure. |
 | ~~21~~ | *(moved to In progress above)* | **Do not hard-code apps per country** — endless maintenance, and it breaks for anyone abroad. Instead let each person store a free-text "how to pay me" on their profile (UPI ID, Venmo handle, bank reference, "cash"); the payer sees it at settle-up and pays in whatever app they already use. Works everywhere with no per-country code, and needs no payment licence: **the app never touches money, it only shows a note and records that a payment happened.** Handling money in-app would make this a regulated payment service. |
 | 9 | **No way for a user to pay for premium** | Set by hand in Supabase today (`profiles.is_premium`, db/11); `PREMIUM_ENFORCED` is still `false`. Needs a payment-provider decision (a business/tax question — merchant-of-record handles cross-border sales tax, a direct gateway does not). Ask any provider whether they issue **India-format FIRA** before integrating. Blocked on flipping `SCAN_LIMIT_ENABLED` — no point selling a limit that isn't enforced. |
@@ -59,6 +58,13 @@ If it is not in this file, it is not agreed work. If it is done, it leaves this 
 | V1 | iPhone PWA no longer hangs on the spinner when reopened from the home icon | Background the app a while, reopen. Must never spin forever. Simulated in dev, **not** confirmed on real hardware. |
 | V2 | Google sign-in works end to end | One real sign-in. The Supabase side is confirmed; a Google-side `redirect_uri_mismatch` would only appear after the redirect. |
 | V3 | Monthly digest | Only the daily path has been dry-run. The monthly branch fires on the 1st; worth a manual `kind: monthly` dry run before then. |
+
+## Closed — not doing
+
+- **Cloudflare WAF rate limiting (#17f)** — a paid add-on on the Free plan, so unavailable.
+  Bot Fight Mode (free, on) plus the Supabase auth rate limits cover the same surface.
+- **Capping group members on the free tier** — members cost nothing to serve, and capping
+  them throttles the only growth channel this app has. Reasoning in `CLAUDE.md` §8.
 
 ## Parking lot (not agreed, do not start)
 
