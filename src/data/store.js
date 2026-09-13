@@ -969,6 +969,7 @@ export function useExpenseStore(userId, profile) {
           // Response). Read it so the owner sees e.g. a missing GEMINI_API_KEY or
           // a Gemini error, instead of the unhelpful generic message.
           let quotaHit = null;
+          let rateLimited = null;
           try {
             if (error.context && typeof error.context.json === 'function') {
               const body = await error.context.json();
@@ -980,10 +981,19 @@ export function useExpenseStore(userId, profile) {
               // upgrade instead of "something went wrong, try again", which
               // would invite the user to retry something that cannot succeed.
               if (body?.code === 'scan_quota_exceeded') {
-                quotaHit = { used: body.used, limit: body.limit };
+                quotaHit = { used: body.used, limit: body.limit, isPremium: body.isPremium };
+              }
+              // Rate limited is a DIFFERENT remedy from out-of-quota: waiting
+              // fixes it, upgrading does not. Telling someone to buy more when
+              // they just need to pause would be both wrong and annoying.
+              if (body?.code === 'scan_rate_limited') {
+                rateLimited = { retryAfterSeconds: body.retryAfterSeconds, message: body.error };
               }
             }
           } catch (_) { /* body wasn't JSON — keep the original message */ }
+          if (rateLimited) {
+            return { ok: false, rateLimited: true, ...rateLimited, message: rateLimited.message || raw };
+          }
           if (quotaHit) {
             return { ok: false, quotaExceeded: true, ...quotaHit, message: raw };
           }

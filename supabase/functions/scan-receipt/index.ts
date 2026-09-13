@@ -56,6 +56,25 @@ const SERVICE_ROLE_KEY     = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 const SCAN_LIMIT_ENABLED   = Deno.env.get("SCAN_LIMIT_ENABLED") === "true";
 const FREE_SCANS_PER_MONTH = Number(Deno.env.get("FREE_SCANS_PER_MONTH") || "20");
 
+// Premium is a HIGHER cap, not an unlimited one. Every scan costs real money at
+// the provider, so "unlimited" would mean one runaway loop on a paid account
+// could spend without bound. 500/month is far beyond normal use — the honest
+// version of unlimited is "a limit you will not reach, and we tell you where it
+// is". Extra scans bought on top are added via scan_usage.bonus_scans (db/18).
+const PREMIUM_SCANS_PER_MONTH = Number(Deno.env.get("PREMIUM_SCANS_PER_MONTH") || "500");
+
+// ── Burst cap ────────────────────────────────────────────────────────────────
+// The monthly quota bounds total damage but not SPEED: a script could spend a
+// whole month's allowance in seconds. This applies to EVERYONE, premium
+// included, because it exists to stop runaway loops and abuse rather than to
+// ration a plan. Nobody scans 8 receipts in a minute by hand.
+//
+// Unlike the monthly cap this is NOT gated behind SCAN_LIMIT_ENABLED — that
+// flag delays *rationing* while real usage accrues, whereas a runaway loop is
+// never acceptable and costs money the moment it happens.
+const BURST_WINDOW_MS = 60_000;
+const BURST_MAX       = Number(Deno.env.get("SCAN_BURST_PER_MINUTE") || "8");
+
 // Parse a comma-separated model list, dropping blanks/stray spaces.
 const list = (v: string | undefined, fallback: string): string[] =>
   (v || fallback).split(",").map((s) => s.trim()).filter(Boolean);
@@ -246,28 +265,74 @@ async function getQuota(admin: any, userId: string) {
   monthStart.setUTCHours(0, 0, 0, 0);
   const period = monthStart.toISOString().slice(0, 10);   // YYYY-MM-01
 
-  const { data, error } = await admin
+  // burst_* and bonus_scans arrive with db/18. Select them separately so a
+  // project that hasn't run it yet still gets the monthly quota rather than
+  // failing the whole lookup on an unknown column.
+  let data: any = null;
+  const full = await admin
     .from("scan_usage")
-    .select("used, period_start")
+    .select("used, period_start, burst_start, burst_count, bonus_scans")
     .eq("user_id", userId)
     .maybeSingle();
-  if (error) return null;
+  if (full.error) {
+    const basic = await admin
+      .from("scan_usage")
+      .select("used, period_start")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (basic.error) return null;
+    data = basic.data;
+  } else {
+    data = full.data;
+  }
+
+  const now = Date.now();
+  const burstStart = data?.burst_start ? new Date(data.burst_start).getTime() : 0;
+  const burstFresh = burstStart > 0 && (now - burstStart) < BURST_WINDOW_MS;
 
   // No row yet, or the stored period is an earlier month → this month is fresh.
   // Rolling forward here means quotas reset without needing a scheduled job.
-  if (!data || String(data.period_start) < period) return { used: 0, period };
-  return { used: Number(data.used) || 0, period };
+  const newMonth = !data || String(data.period_start) < period;
+
+  return {
+    period,
+    used:  newMonth ? 0 : (Number(data.used) || 0),
+    bonus: Number(data?.bonus_scans) || 0,
+    // An expired window counts as zero — same lazy roll-forward as the month.
+    burstCount: burstFresh ? (Number(data.burst_count) || 0) : 0,
+    burstStart: burstFresh ? burstStart : 0,
+  };
 }
+
+type Quota = NonNullable<Awaited<ReturnType<typeof getQuota>>>;
 
 // Record one unit of usage. One unit per FILE — never per PDF page (a 50-page
 // PDF costs the same as a 3-page one, since the text is clipped at 24k chars).
-async function recordUsage(admin: any, userId: string, quota: { used: number; period: string }) {
-  await admin.from("scan_usage").upsert({
+async function recordUsage(admin: any, userId: string, quota: Quota) {
+  const now = Date.now();
+  // Starting a new window when the old one lapsed is what makes the cap a
+  // ROLLING limit rather than a permanent one.
+  const windowLive = quota.burstStart > 0 && (now - quota.burstStart) < BURST_WINDOW_MS;
+
+  const row: Record<string, unknown> = {
     user_id:      userId,
     period_start: quota.period,
     used:         quota.used + 1,
     updated_at:   new Date().toISOString(),
-  }, { onConflict: "user_id" });
+  };
+
+  // Only written when db/18 has been run; a missing column would reject the
+  // whole upsert and cost the user their scan result.
+  try {
+    row.burst_start = new Date(windowLive ? quota.burstStart : now).toISOString();
+    row.burst_count = windowLive ? quota.burstCount + 1 : 1;
+    const { error } = await admin.from("scan_usage").upsert(row, { onConflict: "user_id" });
+    if (!error) return;
+  } catch (_) { /* fall through */ }
+
+  delete row.burst_start;
+  delete row.burst_count;
+  await admin.from("scan_usage").upsert(row, { onConflict: "user_id" });
 }
 
 Deno.serve(async (req) => {
@@ -285,7 +350,11 @@ Deno.serve(async (req) => {
     // Deliberately BEFORE the AI call: checking afterwards would still cost a
     // request to the provider, so an over-quota user could burn real money.
     const admin = SERVICE_ROLE_KEY ? createClient(SUPABASE_URL, SERVICE_ROLE_KEY) : null;
-    let quota: { used: number; period: string } | null = null;
+    let quota: Quota | null = null;
+    // Hoisted so the SUCCESS response can report the caller's real allowance.
+    // It previously echoed FREE_SCANS_PER_MONTH unconditionally, which would
+    // have told a premium user "3 of 20 left" while the server allowed 500.
+    let monthlyLimit = FREE_SCANS_PER_MONTH;
 
     if (admin) {
       // Premium is read with the ADMIN client: a user can update their own
@@ -297,14 +366,36 @@ Deno.serve(async (req) => {
 
       quota = await getQuota(admin, user.id);
 
-      if (SCAN_LIMIT_ENABLED && !isPremium && quota && quota.used >= FREE_SCANS_PER_MONTH) {
+      // 1. BURST first, and for everyone. Always on, regardless of
+      //    SCAN_LIMIT_ENABLED: that flag delays rationing while usage data
+      //    accrues, but a runaway loop is never acceptable and spends money
+      //    the moment it starts. 429 = Too Many Requests, i.e. "slow down",
+      //    which is a different remedy from "you are out of scans".
+      if (quota && quota.burstCount >= BURST_MAX) {
+        const waitSec = Math.max(1, Math.ceil((BURST_WINDOW_MS - (Date.now() - quota.burstStart)) / 1000));
+        return json({
+          error: `Too many scans at once. Try again in ${waitSec} second${waitSec === 1 ? "" : "s"}.`,
+          code: "scan_rate_limited",
+          retryAfterSeconds: waitSec,
+        }, 429);
+      }
+
+      // 2. MONTHLY allowance. Premium gets a much higher cap rather than none,
+      //    plus any scans bought on top.
+      monthlyLimit = (isPremium ? PREMIUM_SCANS_PER_MONTH : FREE_SCANS_PER_MONTH)
+        + (quota?.bonus ?? 0);
+
+      if (SCAN_LIMIT_ENABLED && quota && quota.used >= monthlyLimit) {
         // 402 Payment Required — distinguishable from a generic failure so the
         // app can show an upgrade prompt rather than "something went wrong".
         return json({
-          error: `You've used all ${FREE_SCANS_PER_MONTH} free scans this month.`,
+          error: isPremium
+            ? `You've used all ${monthlyLimit} scans this month.`
+            : `You've used all ${monthlyLimit} free scans this month.`,
           code: "scan_quota_exceeded",
           used: quota.used,
-          limit: FREE_SCANS_PER_MONTH,
+          limit: monthlyLimit,
+          isPremium,
         }, 402);
       }
     }
@@ -366,7 +457,7 @@ Deno.serve(async (req) => {
       // Lets the app show "3 of 20 left" without another round trip. Omitted
       // when quota can't be evaluated (e.g. before db/16 is run).
       quota: quota
-        ? { used: quota.used + 1, limit: FREE_SCANS_PER_MONTH, enforced: SCAN_LIMIT_ENABLED }
+        ? { used: quota.used + 1, limit: monthlyLimit, enforced: SCAN_LIMIT_ENABLED }
         : undefined,
     });
   } catch (e) {

@@ -4413,7 +4413,12 @@ function ImportModal({ people, isSolo, myName, startMode = 'csv', onClose, onImp
       const mimeType = file.type || 'application/octet-stream';
 
       const res = await onScan(base64, mimeType);
-      if (res?.quotaExceeded) {
+      if (res?.rateLimited) {
+        // Waiting fixes this; upgrading does not. Showing an upgrade prompt here
+        // would be both wrong and irritating.
+        setScanError(res.message || 'Too many scans at once — please wait a moment.');
+        setScanRows(null);
+      } else if (res?.quotaExceeded) {
         // Out of free scans is an expected state, not a failure. Telling the
         // user to "try again" here would invite retrying something that cannot
         // succeed until next month.
