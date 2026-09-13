@@ -1218,6 +1218,8 @@ export default function App() {
         onNewGroup={() => openGroups('form')}
         pinnedIds={pinnedIds}
         onTogglePin={togglePin}
+        stale={stale}
+        onRetry={actions.retry}
         groupsModal={showGroups && (
           <GroupsModal
             groups={groups}
@@ -1666,6 +1668,11 @@ function HomeScreen({
   groups, myName, online, pendingCount, error, onClearError,
   onOpenGroup, onNewGroup, groupsModal, confirmDelete,
   pinnedIds = [], onTogglePin,
+  // `stale` and `onRetry` MUST be passed in. They live on the store, which only
+  // App holds — an earlier version referenced `stale`/`actions` directly in this
+  // component, which esbuild happily compiled (it treats unknown identifiers as
+  // globals) and which then threw ReferenceError at render, blanking the app.
+  stale = false, onRetry,
 }) {
   // First name for the greeting (myName is the owner's display name, or 'Me').
   // (The greeting that used this moved into the app bar in AuthGate.)
@@ -1781,7 +1788,7 @@ function HomeScreen({
             Showing saved data — these figures may be out of date.
           </span>
           <button
-            onClick={actions.retry}
+            onClick={onRetry}
             className="text-xs text-amber-900 underline underline-offset-2 shrink-0"
           >
             Refresh
