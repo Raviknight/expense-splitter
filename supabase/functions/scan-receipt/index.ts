@@ -85,13 +85,41 @@ const GROQ_TEXT = list(
   "llama-3.3-70b-versatile",
 );
 
+// Origins allowed to call this function from a browser.
+//
+// Was "*", which let ANY website invoke it. That matters here because a signed-in
+// user's browser will happily attach their token: a malicious page could spend
+// this user's scan quota (and the account's real AI credit) without them
+// noticing. An allowlist costs nothing and removes that.
+//
+// CORS is a browser control, not a server one — it does not stop a script
+// calling the endpoint directly. The real protections remain the auth check and
+// the per-user quota below; this just closes the drive-by case.
+const ALLOWED_ORIGINS = [
+  "https://splitab.app",
+  "http://localhost:5173",   // local dev server
+];
+function corsFor(req: Request) {
+  const origin = req.headers.get("Origin") || "";
+  const allowed = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+  return {
+    "Access-Control-Allow-Origin": allowed,
+    // Responses differ per origin, so caches must key on it.
+    "Vary": "Origin",
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+  };
+}
+
 const CORS = {
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": ALLOWED_ORIGINS[0],
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
+// `cors` is set per-request in the handler so the echoed Origin is correct.
+let cors: Record<string, string> = CORS;
 function json(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: { ...CORS, "Content-Type": "application/json" } });
+  return new Response(JSON.stringify(body), { status, headers: { ...cors, "Content-Type": "application/json" } });
 }
 
 const PROMPT = `You extract expenses from a receipt or bank/card statement for a bill-splitting app.
@@ -243,7 +271,8 @@ async function recordUsage(admin: any, userId: string, quota: { used: number; pe
 }
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
+  cors = corsFor(req);
+  if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.method !== "POST") return json({ error: "Use POST" }, 405);
 
   try {

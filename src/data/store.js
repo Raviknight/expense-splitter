@@ -133,6 +133,16 @@ export function useExpenseStore(userId, profile) {
   });
   const [error, setError]             = useState(null);
 
+  // TRUE when what's on screen came from the cached snapshot rather than a
+  // completed fetch — i.e. the watchdog fired, or the network failed and we kept
+  // the last-known data.
+  //
+  // Falling back to cache is the right call (better than an endless spinner),
+  // but doing it SILENTLY is not: one device showed four groups while another
+  // showed five, with nothing to say which was current. Stale data presented as
+  // live is worse than an obvious wait, because the user acts on it.
+  const [stale, setStale]             = useState(false);
+
   // ── Offline / outbox state ─────────────────────────────────────────────────
   const [online, setOnline]           = useState(navigator.onLine);
 
@@ -174,7 +184,9 @@ export function useExpenseStore(userId, profile) {
     // never let the spinner hang — force loading off after 12s. Cached snapshot
     // data stays on screen; a later successful fetch reconciles it.
     if (watchdogRef.current) clearTimeout(watchdogRef.current);
-    watchdogRef.current = setTimeout(() => setLoading(false), 12000);
+    // Firing means the fetch never finished, so whatever is on screen is the
+    // cached snapshot — mark it stale so the UI can say so.
+    watchdogRef.current = setTimeout(() => { setLoading(false); setStale(true); }, 12000);
 
     try {
       setError(null);
@@ -451,6 +463,8 @@ export function useExpenseStore(userId, profile) {
       });
 
       setGroups(assembled);
+      // A completed fetch means what's on screen is current again.
+      setStale(false);
 
       // Keep active group stable across refetches; fall back to first group.
       setActiveGroupId(prev => {
@@ -472,7 +486,11 @@ export function useExpenseStore(userId, profile) {
       // Only show an error when we have NO data at all.
       if (isNetworkError(err)) {
         // Stay on snapshot (or empty) — do not wipe what the user can see.
-        // Don't set error here; the `online` state / banner covers it.
+        // No `error` here; the offline banner covers connectivity. But mark it
+        // stale so the UI says the figures may be out of date — the offline
+        // banner alone doesn't, and a wrong balance read as current is exactly
+        // the failure this guards against.
+        setStale(true);
       } else {
         setError(err.message || 'Failed to load data. Please try again.');
       }
@@ -1391,5 +1409,5 @@ export function useExpenseStore(userId, profile) {
     },
   };
 
-  return { groups, activeGroupId, loading, error, online, pendingCount, actions };
+  return { groups, activeGroupId, loading, error, online, pendingCount, stale, actions };
 }

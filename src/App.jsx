@@ -690,7 +690,7 @@ export default function App() {
 
   // Load all data from Supabase. The store returns the same shape the UI
   // already knows how to render, so minimal UI changes are needed.
-  const { groups, activeGroupId, loading, error, online, pendingCount, actions } = useExpenseStore(
+  const { groups, activeGroupId, loading, error, online, pendingCount, stale, actions } = useExpenseStore(
     user?.id,
     profile,
   );
@@ -1315,6 +1315,28 @@ export default function App() {
         </div>
       )}
 
+      {/* STALE DATA warning. Shown when the figures on screen came from the
+          cached snapshot rather than a completed fetch — the watchdog fired, or
+          the network failed. Falling back to cache beats an endless spinner,
+          but doing it silently is how one device showed four groups while
+          another showed five with nothing to say which was right. A wrong
+          balance read as current is worse than an obvious wait.
+          Amber, not red: nothing is broken, the numbers are just possibly old. */}
+      {stale && online && (
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-1.5 flex items-center gap-2 max-w-3xl mx-auto">
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
+          <span className="text-xs text-amber-800 flex-1">
+            Showing saved data — these figures may be out of date.
+          </span>
+          <button
+            onClick={actions.retry}
+            className="text-xs text-amber-900 underline underline-offset-2 shrink-0"
+          >
+            Refresh
+          </button>
+        </div>
+      )}
+
       <header className="sticky top-11 z-20 bg-[#FAFAF7]/95 backdrop-blur border-b border-stone-200">
         <div className="max-w-3xl mx-auto px-4 pt-4 pb-3">
           {/* Back control: returns to the groups dashboard (view = 'home'). */}
@@ -1742,6 +1764,28 @@ function HomeScreen({
               ? 'Offline — changes saved on this device will sync when you reconnect'
               : `Syncing ${pendingCount} change${pendingCount === 1 ? '' : 's'}…`}
           </span>
+        </div>
+      )}
+
+      {/* STALE DATA warning. Shown when the figures on screen came from the
+          cached snapshot rather than a completed fetch — the watchdog fired, or
+          the network failed. Falling back to cache beats an endless spinner,
+          but doing it silently is how one device showed four groups while
+          another showed five with nothing to say which was right. A wrong
+          balance read as current is worse than an obvious wait.
+          Amber, not red: nothing is broken, the numbers are just possibly old. */}
+      {stale && online && (
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-1.5 flex items-center gap-2 max-w-3xl mx-auto">
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
+          <span className="text-xs text-amber-800 flex-1">
+            Showing saved data — these figures may be out of date.
+          </span>
+          <button
+            onClick={actions.retry}
+            className="text-xs text-amber-900 underline underline-offset-2 shrink-0"
+          >
+            Refresh
+          </button>
         </div>
       )}
 

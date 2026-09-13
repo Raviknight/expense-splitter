@@ -24,16 +24,38 @@ const APP_URL = "https://splitab.app/";
 const FROM    = "Splitab <hello@splitab.app>"; // must be on your Resend-verified domain
 
 // Allow the browser app to call this function.
+// Origins allowed to call this from a browser. Was "*", which let any website
+// trigger an invite email using a signed-in user's token — a way to send mail
+// from your verified domain without the user realising, which is how a sending
+// reputation gets destroyed. CORS is a browser control only; the auth check
+// remains the real protection.
+const ALLOWED_ORIGINS = [
+  "https://splitab.app",
+  "http://localhost:5173",   // local dev server
+];
+function corsFor(req: Request) {
+  const origin = req.headers.get("Origin") || "";
+  const allowed = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+  return {
+    "Access-Control-Allow-Origin": allowed,
+    "Vary": "Origin",
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+  };
+}
+
 const CORS = {
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": ALLOWED_ORIGINS[0],
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
+// `cors` is set per-request so the echoed Origin is correct.
+let cors: Record<string, string> = CORS;
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...CORS, "Content-Type": "application/json" },
+    headers: { ...cors, "Content-Type": "application/json" },
   });
 }
 
@@ -44,7 +66,8 @@ function escapeHtml(s: string) {
 
 Deno.serve(async (req) => {
   // Browser pre-flight check.
-  if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
+  cors = corsFor(req);
+  if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.method !== "POST") return json({ error: "Use POST" }, 405);
 
   try {
