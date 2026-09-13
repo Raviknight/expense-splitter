@@ -11,7 +11,7 @@
 // Visual style: background #FAFAF7, indigo accent for primary actions,
 // Tailwind via CDN, lucide-react icons, rounded cards, mobile-first layout.
 
-import { useState } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Mail, KeyRound, Eye, EyeOff, ChevronDown, ChevronUp,
   ArrowRight, CheckCircle, Users, WifiOff, Smartphone,
@@ -23,6 +23,142 @@ import { supabase } from '../supabaseClient.js';
 // "/<repo>/" part, which would send the sign-in redirect to the wrong place.
 // origin + pathname keeps it correct on both localhost and GitHub Pages.
 const APP_URL = window.location.origin + window.location.pathname;
+
+// ---- Cloudflare Turnstile (the CAPTCHA) ----
+//
+// PUBLIC value. A Turnstile sitekey is designed to be readable in the page
+// source — it only names the widget. The secret half lives in Supabase and is
+// never in this repo. (The script tag that loads Turnstile is in
+// public/index.html.)
+const TURNSTILE_SITEKEY = '0x4AAAAAAEyIZXeY6pnjwznA';
+
+// How long to keep waiting for the Turnstile script before giving up, in ms.
+// The script is loaded async, so it is normally NOT ready when React mounts.
+const TURNSTILE_WAIT_MS = 10000;
+const TURNSTILE_POLL_MS = 200;
+
+// useTurnstile — renders ONE Turnstile widget and hands its token to whichever
+// form submits.
+//
+// WHY ONE WIDGET, NOT THREE: this screen has three sign-in routes (magic link,
+// Google, email+password) but a person only ever uses one of them. Three
+// widgets would mean three Cloudflare challenges on one page, three times the
+// script work, and three tokens to keep straight. One shared widget sits in the
+// card and every form reads from it.
+//
+// WHY REFS AND NOT useState: the token is only ever read inside a submit
+// handler, never rendered. Keeping it in a ref means a solved challenge does
+// not re-render the whole sign-in card (which would, among other things, throw
+// away whatever the user had half-typed into a field).
+//
+// WHY EXPLICIT RENDERING: the alternative is putting class="cf-turnstile" on a
+// div and letting the script find it. That works on a static page, but React
+// owns this div's lifecycle — it can mount, unmount and remount it — and the
+// auto-scan has no idea about any of that, so widgets stack up. Calling
+// window.turnstile.render() ourselves means we hold the widget id and can
+// remove it again on unmount.
+//
+// THE WHOLE THING IS BEST-EFFORT. If Cloudflare is blocked, slow, or the user
+// is on a network that eats the script, there is simply no token and sign-in
+// proceeds without one. Sign-in is the door to the entire app: a CDN hiccup
+// must never be the reason nobody can get in.
+function useTurnstile() {
+  const containerRef = useRef(null);   // the <div> the widget is drawn into
+  const widgetIdRef  = useRef(null);   // what render() gave us; needed by reset()/remove()
+  const tokenRef     = useRef('');     // the most recent solved token
+
+  useEffect(() => {
+    let cancelled = false;    // set on unmount, so a late poll can't render into a dead div
+    let pollId    = null;
+    let waited    = 0;
+
+    // Returns true when there is nothing left to wait for (rendered, or gave up).
+    function tryRender() {
+      if (cancelled) return true;
+      // window.turnstile only exists once the script from index.html has run.
+      const api = window.turnstile;
+      if (!api || !containerRef.current) return false;
+
+      // Belt and braces: if this effect ever runs twice against the same div
+      // (React StrictMode double-mounts in development), start from an empty
+      // container so widgets cannot stack.
+      containerRef.current.innerHTML = '';
+
+      try {
+        // Documented signature: render(container, params) -> widgetId.
+        // The container is passed as a CSS selector string, which is the form
+        // Cloudflare's own example uses.
+        widgetIdRef.current = api.render('#turnstile-container', {
+          sitekey: TURNSTILE_SITEKEY,
+          // Fired when the challenge is solved. The token is SINGLE USE.
+          callback: (token) => { tokenRef.current = token || ''; },
+          // Tokens go stale (~5 minutes). Drop ours so we never send a dead one.
+          'expired-callback': () => { tokenRef.current = ''; },
+          // Network error, blocked domain, etc. No token — and that is fine,
+          // the forms still submit.
+          'error-callback': () => { tokenRef.current = ''; },
+          // Match the app's own theme. This app drives dark mode with a `.dark`
+          // class on <html> (see tailwind.config.js darkMode: 'class'), which
+          // can differ from the OS preference the user picked — so read the
+          // class rather than using Turnstile's OS-following 'auto'.
+          theme: document.documentElement.classList.contains('dark') ? 'dark' : 'light',
+        });
+      } catch (e) {
+        // A throw here means no widget and no token. Sign-in still works.
+        widgetIdRef.current = null;
+      }
+      return true;
+    }
+
+    // The script is async, so it usually is NOT ready on first paint. Poll for
+    // it briefly, then stop asking. Stopping matters: an interval that never
+    // clears would keep running for as long as the sign-in screen is open.
+    if (!tryRender()) {
+      pollId = setInterval(() => {
+        waited += TURNSTILE_POLL_MS;
+        if (tryRender() || waited >= TURNSTILE_WAIT_MS) {
+          clearInterval(pollId);
+          pollId = null;
+        }
+      }, TURNSTILE_POLL_MS);
+    }
+
+    // Clean up so a remount (dev hot reload, or React re-mounting this screen)
+    // does not leave an orphaned widget behind and then stack a second one.
+    return () => {
+      cancelled = true;
+      if (pollId) clearInterval(pollId);
+      try {
+        if (widgetIdRef.current && window.turnstile) {
+          window.turnstile.remove(widgetIdRef.current);
+        }
+      } catch (e) { /* already gone — nothing to do */ }
+      widgetIdRef.current = null;
+      tokenRef.current    = '';
+    };
+  }, []);
+
+  // Read the current token. Returns undefined when there isn't one, which makes
+  // the call sites read naturally: `options: { captchaToken }` with an
+  // undefined value sends no captcha field at all, exactly like before this
+  // feature existed.
+  const getCaptchaToken = useCallback(() => tokenRef.current || undefined, []);
+
+  // A Turnstile token can only be spent ONCE. If someone mistypes their
+  // password and tries again, the second attempt would reuse a spent token and
+  // fail with a confusing "captcha protection: request disallowed" — so we ask
+  // for a fresh challenge after every submit attempt, successful or not.
+  const resetCaptcha = useCallback(() => {
+    tokenRef.current = '';
+    try {
+      if (widgetIdRef.current && window.turnstile) {
+        window.turnstile.reset(widgetIdRef.current);
+      }
+    } catch (e) { /* no widget to reset — nothing to do */ }
+  }, []);
+
+  return { containerRef, getCaptchaToken, resetCaptcha };
+}
 
 // ---- small helpers ----
 
@@ -92,7 +228,10 @@ function FeatureList({ className = '' }) {
 //   setting (Authentication → Sign In/Up → OTP length); this project issues 8
 //   digits, not the documented default of 6. An input capped at 6 truncates the
 //   pasted code and every verification fails with no visible cause.
-function MagicLinkForm() {
+//
+// The two captcha props come from useTurnstile() up in AuthScreen. Defaults are
+// provided so this form still works if it is ever rendered on its own.
+function MagicLinkForm({ getCaptchaToken = () => undefined, resetCaptcha = () => {} }) {
   const [email, setEmail] = useState('');
   const [sent, setSent]   = useState(false);
   const [busy, setBusy]   = useState(false);
@@ -108,13 +247,21 @@ function MagicLinkForm() {
     setError('');
     if (!email.trim()) { setError('Please enter your email address.'); return; }
     setBusy(true);
+    // May be undefined (Turnstile blocked/slow) — see useTurnstile. Supabase
+    // simply receives no captcha field in that case, which is what it received
+    // before this feature existed.
+    const captchaToken = getCaptchaToken();
     const { error: err } = await supabase.auth.signInWithOtp({
       email: email.trim(),
       options: {
         // After clicking the link, the browser is redirected back to this URL.
         emailRedirectTo: APP_URL,
+        captchaToken,
       },
     });
+    // Single-use token: burn it and get a fresh challenge, whether or not the
+    // request succeeded, so a retry is not doomed before it starts.
+    resetCaptcha();
     setBusy(false);
     if (err) { setError(err.message); return; }
     setSent(true);
@@ -234,6 +381,13 @@ function MagicLinkForm() {
 }
 
 // ---- Google section ----
+//
+// NO CAPTCHA TOKEN HERE, DELIBERATELY. signInWithOAuth does not accept a
+// captchaToken — its options are only redirectTo / scopes / queryParams /
+// skipBrowserRedirect. That is not an oversight in supabase-js: this call does
+// not post credentials to Supabase at all, it just builds a URL and sends the
+// browser to Google, who does its own abuse checking. Adding a captchaToken
+// here would be silently ignored. So this button takes no captcha props.
 function GoogleButton() {
   const [busy, setBusy]   = useState(false);
   const [error, setError] = useState('');
@@ -274,7 +428,9 @@ function GoogleButton() {
 }
 
 // ---- Email + password (collapsible, optional) ----
-function EmailPasswordForm() {
+// The two captcha props come from useTurnstile() up in AuthScreen. Defaults are
+// provided so this form still works if it is ever rendered on its own.
+function EmailPasswordForm({ getCaptchaToken = () => undefined, resetCaptcha = () => {} }) {
   const [open, setOpen]         = useState(false);
   const [isSignUp, setIsSignUp] = useState(false);
   const [email, setEmail]       = useState('');
@@ -295,13 +451,24 @@ function EmailPasswordForm() {
     setError(''); setSuccess('');
     if (!email.trim() || !password) { setError('Please fill in email and password.'); return; }
     setBusy(true);
+    // May be undefined when Turnstile didn't load — see useTurnstile.
+    const captchaToken = getCaptchaToken();
     if (isSignUp) {
-      const { error: err } = await supabase.auth.signUp({ email: email.trim(), password });
+      const { error: err } = await supabase.auth.signUp({
+        email: email.trim(), password, options: { captchaToken },
+      });
+      // Single-use token — burn it so a retry gets a fresh challenge.
+      resetCaptcha();
       setBusy(false);
       if (err) { setError(err.message); return; }
       setSuccess('Account created! Check your email to confirm, then sign in.');
     } else {
-      const { error: err } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+      const { error: err } = await supabase.auth.signInWithPassword({
+        email: email.trim(), password, options: { captchaToken },
+      });
+      // Single-use token — burn it. A mistyped password is the common case
+      // here, and the retry must not fail on a spent captcha instead.
+      resetCaptcha();
       setBusy(false);
       if (err) { setError(err.message); return; }
       // On success AuthProvider's onAuthStateChange fires and the gate swaps to the app.
@@ -320,10 +487,21 @@ function EmailPasswordForm() {
       return;
     }
     setResetBusy(true);
+    // NOTE THE SHAPE: resetPasswordForEmail takes (email, options) and
+    // captchaToken sits DIRECTLY in that second argument — there is no nested
+    // `options: {...}` here, unlike signInWithOtp / signInWithPassword / signUp
+    // which take a single credentials object with an `options` key inside it.
+    // Nesting it would put the token somewhere supabase-js never reads, and it
+    // would fail silently until CAPTCHA protection is switched on.
     const { error: err } = await supabase.auth.resetPasswordForEmail(
       email.trim(),
-      { redirectTo: APP_URL }   // same base URL used by magic-link and Google
+      {
+        redirectTo: APP_URL,          // same base URL used by magic-link and Google
+        captchaToken: getCaptchaToken(),
+      }
     );
+    // Single-use token — burn it so a second reset request still works.
+    resetCaptcha();
     setResetBusy(false);
     if (err) { setError(err.message); return; }
     // Show the "check your email" confirmation state.
@@ -467,6 +645,11 @@ function EmailPasswordForm() {
 
 // ---- Main screen ----
 export default function AuthScreen() {
+  // ONE shared Turnstile widget for the whole screen. This call sits at the very
+  // top of the component and AuthScreen has no early return above it, so the
+  // hook order can never change between renders.
+  const { containerRef, getCaptchaToken, resetCaptcha } = useTurnstile();
+
   return (
     <div
       className="relative overflow-hidden min-h-screen bg-[#FAFAF7] flex flex-col items-center justify-center px-4 py-12"
@@ -518,7 +701,7 @@ export default function AuthScreen() {
               Recommended
             </span>
           </div>
-          <MagicLinkForm />
+          <MagicLinkForm getCaptchaToken={getCaptchaToken} resetCaptcha={resetCaptcha} />
         </section>
 
         {/* Divider */}
@@ -542,8 +725,22 @@ export default function AuthScreen() {
 
         {/* 3. Email + password (collapsible) */}
         <section>
-          <EmailPasswordForm />
+          <EmailPasswordForm getCaptchaToken={getCaptchaToken} resetCaptcha={resetCaptcha} />
         </section>
+
+        {/* ── The shared CAPTCHA ──
+            ONE widget for the whole card. The magic-link form, the
+            email+password form and "Forgot password?" all read their token from
+            it; the Google button doesn't use one (see GoogleButton).
+            It sits at the bottom because it belongs to all of them rather than
+            to any single form.
+
+            The div is deliberately EMPTY in the JSX: React owns the element,
+            Turnstile owns what goes inside it. The id is what
+            window.turnstile.render() is pointed at. If Turnstile never loads,
+            this stays an empty div taking up no space and every form still
+            submits — no token, no blocking. */}
+        <div ref={containerRef} id="turnstile-container" className="flex justify-center empty:hidden" />
 
         {/* Features sit BELOW the form at every width, so the form is what you
             land on. */}

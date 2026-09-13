@@ -33,6 +33,26 @@
     <link rel="stylesheet" href="styles.css" />
     <!-- Custom CSS (iOS 16px inputs, dark-mode overrides) moved to src/styles.css -->
 
+    <!-- Cloudflare Turnstile — the CAPTCHA on the sign-in screen.
+         It proves "a real person is doing this" without asking anyone to pick
+         traffic lights, and Supabase Auth can be told to require the token it
+         produces (Authentication -> Attack Protection -> CAPTCHA protection).
+
+         The SITEKEY is PUBLIC by design. It identifies the widget to
+         Cloudflare and is meant to be visible in the page source, exactly like
+         the Supabase anon key. The matching SECRET key lives only in Supabase
+         and is never in this repo. It lives in src/auth/AuthScreen.jsx as
+         TURNSTILE_SITEKEY.
+
+         async + defer so a slow or blocked Cloudflare CDN can never hold up
+         the page paint. AuthScreen renders the widget EXPLICITLY
+         (window.turnstile.render) rather than relying on this script
+         auto-scanning the page for a ".cf-turnstile" element, so React stays in
+         control of when the widget is created and destroyed. If this script
+         never arrives, AuthScreen signs people in with no token instead of
+         blocking them. -->
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+
     <!-- Service worker registration.
          'sw.js' is a relative path so the SW scope matches the GitHub Pages
          subpath (/expense-splitter/) rather than locking to the root (/). -->
