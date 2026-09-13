@@ -22,7 +22,10 @@
 // Bump this version string whenever you make a meaningful change to the SW itself.
 // The activate handler below deletes any cache whose name does NOT match this string,
 // so users cleanly migrate to the new cache on their next visit.
-const CACHE_NAME = 'expense-shell-v1';
+// Bumped to v2: the navigation handler gained a timeout (see RULE 2). The
+// activate handler deletes caches whose name doesn't match, so bumping this is
+// what migrates existing users onto the new behaviour.
+const CACHE_NAME = 'expense-shell-v2';
 
 // The minimal app shell we pre-cache on install.
 // We only cache the HTML entry points — NOT the hashed bundle by name,
@@ -87,23 +90,50 @@ self.addEventListener('fetch', event => {
     request.headers.get('Accept')?.includes('text/html');
 
   if (isNavigation) {
-    event.respondWith(
-      fetch(request)
-        .then(networkResponse => {
-          // Network succeeded: store the fresh index.html in cache and return it.
-          if (networkResponse.ok) {
-            const clone = networkResponse.clone();
-            caches.open(CACHE_NAME).then(cache => cache.put(request, clone));
-          }
-          return networkResponse;
-        })
-        .catch(() =>
-          // Network failed (offline): return the cached index.html.
-          caches.match('./index.html').then(
-            cached => cached || new Response('Offline', { status: 503 })
-          )
-        )
-    );
+    // Network-first, but with a TIMEOUT.
+    //
+    // Without one, every page load blocks on a full round trip before anything
+    // renders — and a slow or flaky connection simply hangs, which is how the
+    // app came to feel slow to start even though the assets themselves transfer
+    // in well under a second.
+    //
+    // If the network hasn't answered within NAV_TIMEOUT_MS we serve the cached
+    // index.html so the app starts immediately. The real response is still
+    // awaited in the background and written to the cache, so the NEXT load has
+    // the newest shell. Freshness is delayed by at most one visit; startup is
+    // never held hostage.
+    //
+    // Safe because index.html only points at the hashed bundle — it carries no
+    // data of its own, and a new build always produces a new bundle URL.
+    const NAV_TIMEOUT_MS = 2500;
+
+    event.respondWith((async () => {
+      const cache = await caches.open(CACHE_NAME);
+
+      const network = fetch(request).then(res => {
+        if (res.ok) cache.put(request, res.clone());
+        return res;
+      });
+
+      const cached = await cache.match('./index.html');
+
+      // Nothing cached yet (first ever visit) — we have to wait for the network.
+      if (!cached) {
+        try {
+          return await network;
+        } catch (_) {
+          return new Response('Offline', { status: 503 });
+        }
+      }
+
+      // Race the network against the timeout. A rejected network promise must
+      // not become an unhandled rejection when the cache wins the race.
+      network.catch(() => {});
+      const timeout = new Promise(resolve => setTimeout(() => resolve(null), NAV_TIMEOUT_MS));
+      const winner = await Promise.race([network.catch(() => null), timeout]);
+
+      return winner || cached;
+    })());
     return;
   }
 

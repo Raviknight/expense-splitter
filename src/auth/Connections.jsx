@@ -570,10 +570,14 @@ export default function Connections({ onClose }) {
           </section>
         )}
 
-        {/* Outgoing requests */}
-        {!loading && outgoing.length > 0 && (
+        {/* Outgoing requests AND sent email invites.
+            The gate must consider BOTH: it used to be `outgoing.length > 0`, so
+            someone whose only pending item was an emailed invite saw no section
+            at all — the invite was fetched and rendered, then hidden by a
+            condition that only knew about connections. */}
+        {!loading && (outgoing.length > 0 || sentInvites.length > 0) && (
           <section className="bg-white border border-stone-200 rounded-2xl p-5 shadow-sm">
-            <SectionHeader icon={Clock} title="Sent requests" count={outgoing.length} />
+            <SectionHeader icon={Clock} title="Sent requests" count={outgoing.length + sentInvites.length} />
             <OutgoingList outgoing={outgoing} currentUserId={user.id} sentInvites={sentInvites} onChanged={refreshAll} />
           </section>
         )}
