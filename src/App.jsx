@@ -4389,80 +4389,119 @@ function ImportModal({ people, isSolo, myName, startMode = 'csv', onClose, onImp
   // { used, limit, enforced, exceeded } — only present once db/16 is applied and
   // the scan function redeployed, so every read of this must tolerate null.
   const [scanQuota, setScanQuota] = useState(null);
+  // { done, total } while a multi-file scan is running, else null. Scanning
+  // several receipts takes a few seconds each, and a bare spinner for half a
+  // minute reads as a hang.
+  const [scanProgress, setScanProgress] = useState(null);
 
   // ── Scan: turn the picked image/PDF into base64 + read it via AI ───────────
+  // Turn one File into the base64 payload the Edge Function expects.
+  const fileToBase64 = (file) => new Promise((resolve, reject) => {
+    // readAsDataURL gives "data:image/jpeg;base64,/9j/4AAQ..." — the function
+    // wants only the part after the comma.
+    const reader = new FileReader();
+    reader.onload  = () => resolve(String(reader.result).split(',')[1] || '');
+    reader.onerror = () => reject(reader.error || new Error('Could not read file'));
+    reader.readAsDataURL(file);
+  });
+
+  // Map one scanned expense into the row shape the CSV preview already uses.
+  const mapScanned = (ex, sourceName) => {
+    const today = new Date().toISOString().slice(0, 10);
+    const name = (ex.description || '').trim() || 'Expense';
+    const hasDate = !!ex.date;
+    const row = {
+      name,
+      amount:   Number(ex.amount) || 0,
+      date:     hasDate ? ex.date : today,
+      category: (ex.category || '').trim() || autoCategorize(name),
+      _source:  sourceName,
+    };
+    const flags = [];
+    if (ex.uncertain) flags.push(ex.note ? `Low confidence — ${ex.note}` : 'Low confidence — please check');
+    if (!hasDate) flags.push('No date found — set to today.');
+    if (flags.length) row._warning = flags.join(' · ');
+    return row;
+  };
+
+  // ── Scan one or MORE files ────────────────────────────────────────────────
+  //
+  // Files are processed ONE AT A TIME, deliberately, not with Promise.all.
+  // Each scan costs a credit and the server enforces a per-minute burst cap, so
+  // firing ten at once would trip that cap and waste the attempts. Sequential
+  // also means a failure part-way through keeps everything already scanned.
+  //
+  // Partial success is a real outcome here and is treated as one: if file 4 of 6
+  // is unreadable, the rows from 1-3 and 5-6 are still offered, with a note
+  // saying which files were skipped and why.
   const handleScanFile = async (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+
     setScanError('');
     setScanRows(null);
     setResult(null);
-    setScanFileName(file.name);
     setScanning(true);
-    try {
-      // FileReader.readAsDataURL gives us a string like
-      // "data:image/jpeg;base64,/9j/4AAQ...". The Edge Function wants ONLY the
-      // part after the comma, so we strip the "data:<mime>;base64," prefix.
-      const dataUrl = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload  = () => resolve(reader.result);
-        reader.onerror = () => reject(reader.error || new Error('Could not read file'));
-        reader.readAsDataURL(file);
-      });
-      const base64   = String(dataUrl).split(',')[1] || '';
-      const mimeType = file.type || 'application/octet-stream';
+    setScanProgress({ done: 0, total: files.length });
+    setScanFileName(files.length === 1 ? files[0].name : `${files.length} files`);
 
-      const res = await onScan(base64, mimeType);
-      if (res?.rateLimited) {
-        // Waiting fixes this; upgrading does not. Showing an upgrade prompt here
-        // would be both wrong and irritating.
-        setScanError(res.message || 'Too many scans at once — please wait a moment.');
-        setScanRows(null);
-      } else if (res?.quotaExceeded) {
-        // Out of free scans is an expected state, not a failure. Telling the
-        // user to "try again" here would invite retrying something that cannot
-        // succeed until next month.
-        setScanQuota({ used: res.used, limit: res.limit, exceeded: true });
-        setScanError('');
-        setScanRows(null);
-      } else if (!res?.ok) {
-        setScanError(res?.message || 'Scanning failed — please try again.');
-        setScanRows(null);
-      } else if (res.unreadable && (res.expenses || []).length === 0) {
-        // The scanner said the file was too unclear to read at all.
-        setScanError('Couldn’t read this clearly — try a sharper photo, better lighting, or a single page.');
-        setScanRows(null);
-      } else {
-        // Map the AI's expenses into the SAME row shape the CSV preview uses:
-        //   description → name, keep amount/date, fill category/date sensibly.
-        const today = new Date().toISOString().slice(0, 10);
-        const mapped = (res.expenses || []).map(ex => {
-          const name = (ex.description || '').trim() || 'Expense';
-          const hasDate = !!ex.date;
-          const row = {
-            name,
-            amount:   Number(ex.amount) || 0,
-            // No readable date → fall back to today and flag it like the CSV flow.
-            date:     hasDate ? ex.date : today,
-            category: (ex.category || '').trim() || autoCategorize(name),
-          };
-          // Build a "please review" flag from the model's confidence + a guessed date.
-          const flags = [];
-          if (ex.uncertain) flags.push(ex.note ? `Low confidence — ${ex.note}` : 'Low confidence — please check');
-          if (!hasDate) flags.push('No date found — set to today.');
-          if (flags.length) row._warning = flags.join(' · ');
-          return row;
-        }).filter(r => r.amount > 0);
-        setScanRows(mapped);
-        // Present only once db/16 is applied and the function redeployed.
-        if (res.quota) setScanQuota({ ...res.quota, exceeded: false });
+    const collected = [];
+    const skipped   = [];
+    let quotaInfo   = null;
+    let stopReason  = null;   // set when we must abandon the remaining files
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      setScanProgress({ done: i, total: files.length });
+      try {
+        const base64   = await fileToBase64(file);
+        const mimeType = file.type || 'application/octet-stream';
+        const res      = await onScan(base64, mimeType);
+
+        if (res?.rateLimited) {
+          // Stop rather than hammer: the remaining files would all be refused,
+          // and each refusal is another pointless round trip.
+          stopReason = res.message || 'Too many scans at once — please wait a moment.';
+          break;
+        }
+        if (res?.quotaExceeded) {
+          setScanQuota({ used: res.used, limit: res.limit, exceeded: true });
+          stopReason = null;   // the quota banner explains it; no error text needed
+          break;
+        }
+        if (!res?.ok) {
+          skipped.push(`${file.name}: ${res?.message || 'could not be read'}`);
+          continue;
+        }
+        if (res.unreadable && (res.expenses || []).length === 0) {
+          skipped.push(`${file.name}: too unclear to read`);
+          continue;
+        }
+
+        const mapped = (res.expenses || []).map(ex => mapScanned(ex, file.name)).filter(r => r.amount > 0);
+        if (mapped.length === 0) skipped.push(`${file.name}: no expenses found`);
+        collected.push(...mapped);
+        if (res.quota) quotaInfo = res.quota;
+      } catch (err) {
+        skipped.push(`${file.name}: could not be opened`);
       }
-    } catch (err) {
-      setScanError('Could not read that file. Try a clearer photo or a single page.');
-      setScanRows(null);
-    } finally {
-      setScanning(false);
     }
+
+    setScanProgress(null);
+    setScanning(false);
+
+    if (collected.length > 0) {
+      setScanRows(collected);
+      if (quotaInfo) setScanQuota({ ...quotaInfo, exceeded: false });
+    } else {
+      setScanRows(null);
+    }
+
+    // Report anything that went wrong WITHOUT throwing away what worked.
+    const notes = [];
+    if (stopReason) notes.push(stopReason);
+    if (skipped.length) notes.push(`Skipped ${skipped.length} file${skipped.length === 1 ? '' : 's'} — ${skipped.join('; ')}`);
+    setScanError(notes.join(' ') || '');
   };
 
   // ── Step 1: read & parse the chosen file ──────────────────────────────────
@@ -4654,10 +4693,11 @@ function ImportModal({ people, isSolo, myName, startMode = 'csv', onClose, onImp
 
               {/* ── Scan mode: pick a photo/PDF, then AI reads it ────────── */}
               {mode === 'scan' && (
-              <Field label="Choose a receipt or statement (photo or PDF)">
+              <Field label="Choose receipts or statements (photos or PDF)">
                 <input
                   type="file"
                   accept="image/*,application/pdf"
+                  multiple
                   onChange={handleScanFile}
                   disabled={scanning}
                   className="w-full text-sm text-stone-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border file:border-stone-300 file:bg-stone-50 file:text-sm file:font-medium hover:file:bg-stone-100 disabled:opacity-50"
@@ -4667,7 +4707,10 @@ function ImportModal({ people, isSolo, myName, startMode = 'csv', onClose, onImp
                 )}
                 {scanning && (
                   <div className="flex items-center gap-2 text-sm text-stone-500 mt-2">
-                    <Loader2 className="w-4 h-4 animate-spin" /> Scanning…
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    {scanProgress && scanProgress.total > 1
+                      ? `Scanning ${scanProgress.done + 1} of ${scanProgress.total}…`
+                      : 'Scanning…'}
                   </div>
                 )}
                 {scanError && <div className="text-sm text-rose-600 mt-2">{scanError}</div>}
@@ -4805,7 +4848,19 @@ function ImportModal({ people, isSolo, myName, startMode = 'csv', onClose, onImp
                             <tbody>
                               {built.expenses.slice(0, 8).map((ex, i) => (
                                 <tr key={i} className={`border-t border-stone-100 ${ex._warning ? 'bg-amber-50' : ''}`}>
-                                  <td className="px-2 py-1.5 truncate max-w-[120px]" title={ex._warning || ''}>{ex.name}</td>
+                                  {/* `_source` is the filename, set only when a
+                                      scan produced this row. With several
+                                      receipts scanned at once the preview mixes
+                                      them together, and without this there is no
+                                      way to tell which receipt a line came from
+                                      — or which one to re-shoot if it looks wrong. */}
+                                  <td className="px-2 py-1.5 truncate max-w-[120px]"
+                                      title={[ex._source, ex._warning].filter(Boolean).join(' — ')}>
+                                    {ex.name}
+                                    {ex._source && (
+                                      <span className="block text-[10px] text-stone-400 truncate">{ex._source}</span>
+                                    )}
+                                  </td>
                                   <td className="px-2 py-1.5 text-right tabular-nums">{fmt(ex.amount)}</td>
                                   <td className="px-2 py-1.5 tabular-nums">{ex.date}{ex._warning ? ' ⚠️' : ''}</td>
                                   <td className="px-2 py-1.5">{ex.category}</td>
