@@ -1,0 +1,53 @@
+# Merchant auto-categorisation tests.
+#
+# Why: RULES in src/App.jsx is a hand-maintained keyword list, and adding one
+# keyword can silently steal merchants from another category. That has already
+# happened twice — a bare 'booking' keyword pulled "REDBUS BOOKING" into
+# Lodging, and ' park ' pulled "LETCHWORTH STATE PARK" into Parking. Nothing
+# about those failures is visible in the UI; an expense just lands in the wrong
+# bucket. This workflow runs scripts/test-categories.mjs so the repo says so.
+#
+# Setup: none. No secrets, no network calls, no database — the test reads
+# src/App.jsx off disk and runs pure functions. It is safe on pull requests
+# from forks for the same reason.
+#
+# Note: the test EXTRACTS the real rules out of src/App.jsx as text (that file
+# is JSX and exports nothing), so it tests the shipped source, not a copy. That
+# is also why App.jsx is a path trigger below: editing a keyword there must
+# re-run this.
+
+name: Category tests
+
+on:
+  push:
+    paths:
+      - 'src/App.jsx'
+      - 'scripts/test-categories.mjs'
+      - '.github/workflows/categories.yml'
+  pull_request:
+    paths:
+      - 'src/App.jsx'
+      - 'scripts/test-categories.mjs'
+      - '.github/workflows/categories.yml'
+  # Lets you trigger a run by hand from the Actions tab.
+  workflow_dispatch:
+
+# The job only reads the checked-out source, so a read-only token is enough.
+permissions:
+  contents: read
+
+jobs:
+  categories:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Deliberately no `npm ci`. The test uses only node builtins, so skipping
+      # the install keeps the run fast and stops an unrelated dependency
+      # problem from turning this check red.
+      - name: Run category tests
+        run: npm run test:categories

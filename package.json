@@ -6,7 +6,8 @@
   "description": "Multi-user, cloud-synced expense splitter PWA (React + Supabase).",
   "scripts": {
     "dev": "node build.mjs --dev",
-    "build": "node build.mjs"
+    "build": "node build.mjs",
+    "test:categories": "node scripts/test-categories.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

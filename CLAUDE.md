@@ -192,6 +192,8 @@ are judgement calls that look arbitrary later.
 npm install        # one-time, installs dependencies
 npm run dev        # local dev server at http://localhost:5173 (rebuilds on save)
 npm run build      # production build into docs/ (what GitHub Pages serves)
+
+npm run test:categories   # merchant auto-categorisation tests (no network, no secrets)
 ```
 
 ### How the build works (`build.mjs`)
@@ -232,17 +234,31 @@ code), or check the repo's Actions tab for the Pages build.
   code*, not the *data* — expenses are behind login + RLS in Supabase. The anon key in the
   code is public by design.
 
-### Scheduled GitHub Actions (`.github/workflows/`)
+### GitHub Actions (`.github/workflows/`)
 
-Two cron jobs guard things that fail *silently* — problems you'd otherwise discover weeks
+These guard things that fail *silently* — problems you'd otherwise discover weeks
 late, via a broken app rather than a red build.
 
-| Workflow | Schedule | What it does |
-|----------|----------|--------------|
+| Workflow | Runs | What it does |
+|----------|------|--------------|
 | `keepalive.yml` | daily 06:17 UTC | Runs one tiny query against the `keepalive` table (db/12) so Supabase doesn't pause the Free-plan project. Fails red on any non-200. |
 | `provider-health.yml` | Mondays 07:23 UTC | Runs `scripts/test-providers.mjs` against the real AI APIs and fails on any `FAIL`, so a retired scan model surfaces as a red CI run. |
+| `categories.yml` | push/PR touching `src/App.jsx` or the script | Runs `scripts/test-categories.mjs` — the merchant auto-categorisation tests. No secrets, no network, no `npm ci` (node builtins only), so it is safe on fork PRs and can't go red for an unrelated dependency. |
 
-Both need **repository secrets** (Settings → Secrets and variables → Actions):
+**The category test reads `src/App.jsx` as text.** `RULES` and `autoCategorize` are not
+exported (App.jsx is JSX and a plain `node` test cannot import it), so
+`scripts/test-categories.mjs` slices the source between `const RULES = [` and
+`const SPLIT_MODES`, writes that slice plus an export line to a temp file, and imports
+it. That is deliberate: the test exercises the shipped source rather than a copy that
+drifts. **If you rename either marker, the test fails loudly with a message telling you
+to update them** — it does not silently pass. If the rules are ever moved into their own
+module, delete the extraction and import that module instead; the cases stay as they are.
+
+It also fails when the same keyword appears in two categories. That check earns its keep:
+a duplicated keyword is resolved by rule *order*, which is exactly the fragility the
+longest-match rewrite removed, and no amount of example cases reliably catches it.
+
+The first two need **repository secrets** (Settings → Secrets and variables → Actions):
 `SUPABASE_URL` + `SUPABASE_ANON_KEY` for the keep-alive; `OPENROUTER_API_KEY` (and
 `GROQ_API_KEY` if used) for the health check. Use **Run workflow** once after adding them —
 a scheduled job that has never run successfully is not proof of anything.

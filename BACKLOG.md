@@ -51,7 +51,6 @@ If it is not in this file, it is not agreed work. If it is done, it leaves this 
 | # | Item | Notes |
 |---|------|-------|
 | 14 | 🔴 **Performance — improved, not explained** | **Ruled out by measurement:** network latency (Supabase 120–350ms), asset size (bundle **155KB gzipped in 673ms**; Pages does compress), CSS compilation (Play CDN removed), five sequential queries (now three parallel stages). **Fixed one real mechanism:** the service worker's navigation was network-first with no timeout, so a slow response blocked startup — hence "faster with cache disabled", which should never be true. Now races a 2.5s timeout against the cached shell. Owner reports reload is good. If slowness returns, the next step is a real browser profile (DevTools → Network, hard reload, slowest request + total), not a fifth guess. |
-| 7 | **Move the category test suite into the repo** | Currently only in a scratch directory. It already caught a real bug (`booking` → Lodging swallowed "REDBUS BOOKING"). Required before any automated merchant-list updates. |
 | 8 | **Deploy drift on Edge Functions** | They are deployed by pasting into the Supabase dashboard, which has no version control, so repo and deployment are separate copies. This exact drift produced the misleading "Gemini not active" error. The Supabase CLI would make deploys come from git. |
 
 ## Needs verification (built, not proven)
