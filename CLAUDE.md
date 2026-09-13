@@ -150,6 +150,20 @@ curl -s -o /dev/null -w '%{http_code}\n' \
   ```html
   <p>Or enter this code: <strong style="font-size:20px">{{ .Token }}</strong></p>
   ```
+### Auth hardening — chosen values and why
+
+Set in Authentication → Rate Limits and → Providers → Email. Recorded here because these
+are judgement calls that look arbitrary later.
+
+| Setting | Value | Reasoning |
+|---------|-------|-----------|
+| Rate limit for sending emails | **300/hour** (was 3000) | Mail goes out from the *verified domain*. If anything ever loops, 3000/hour would wreck the Resend sending reputation — and the first casualty is our own sign-in codes not arriving. A personal-scale app sends a handful an hour. |
+| Sign-ups / sign-ins | **15 per 5 min per IP** | The default 30 is loose; 5 is too tight. Mobile carriers put thousands of users behind one IP (CGNAT), so an aggressive cap locks out real people who did nothing wrong. 15 still stops bots. |
+| Email OTP expiry | **900s (15 min)** | Was 3600. A sign-in code valid for an hour is a wide window if an inbox is exposed. |
+| Email OTP length | **8 digits** | ⚠️ NOT the documented default of 6. `AuthScreen.jsx` must never hard-code the length — an input capped at 6 silently truncates the pasted code and every verification fails with no visible cause. It already did once. |
+| Password requirements | **relaxed** (not all four character classes) | Composition rules push people toward `Password1!` and writing passwords down; length does more for security. Most users here sign in with Google or a magic link and never set a password at all. |
+| Prevent leaked passwords | **off** | Not a choice — Supabase gates it behind the Pro plan. Revisit if the project upgrades. |
+
 - **Google sign-in** needs a one-time Google OAuth credential pasted into Authentication →
   Providers → Google. Magic link and email+password work without it.
 
