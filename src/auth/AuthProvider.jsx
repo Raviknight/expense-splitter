@@ -16,6 +16,41 @@ import { supabase } from '../supabaseClient.js';
 // The context object — starts empty; AuthProvider fills it in.
 const AuthContext = createContext({});
 
+// ── Last-known profile, cached locally ──────────────────────────────────────
+// WHY this exists, because it is not merely a speed-up:
+//   The offline snapshot in data/offline.js persists groups but NOT the
+//   profile, so a cold start on a bad network left `profile` null. That is not
+//   cosmetic. App.jsx derives `myName` from profile.display_name and falls back
+//   to 'Me', which matches no member of any group — so every balance quietly
+//   rendered as "Settled up" and the home screen announced "You're all settled
+//   up across your groups". The app was at its most reassuring exactly when it
+//   knew least. App.jsx now refuses to claim a balance it cannot compute, and
+//   this cache is the other half: it means a flaky network degrades to a
+//   slightly stale NAME rather than to unavailable MONEY.
+// Only the profile row is stored, which the user already has locally in the
+// groups snapshot; no tokens or secrets are written here.
+const PROFILE_CACHE_KEY = (uid) => `splitab.profile.${uid}`;
+
+function readCachedProfile(uid) {
+  if (!uid) return null;
+  try {
+    const raw = localStorage.getItem(PROFILE_CACHE_KEY(uid));
+    return raw ? JSON.parse(raw) : null;
+  } catch (_) {
+    return null;   // private mode, quota, or corrupt JSON — treat as no cache
+  }
+}
+
+function writeCachedProfile(uid, p) {
+  if (!uid) return;
+  try {
+    if (p) localStorage.setItem(PROFILE_CACHE_KEY(uid), JSON.stringify(p));
+    else   localStorage.removeItem(PROFILE_CACHE_KEY(uid));
+  } catch (_) {
+    // Quota exceeded or private mode — silently skip, same as offline.js.
+  }
+}
+
 export function AuthProvider({ children }) {
   // session      = Supabase auth session (contains tokens). null when signed out.
   // user         = Supabase auth user object (id, email, etc.)
@@ -50,6 +85,12 @@ export function AuthProvider({ children }) {
       setProfile(null);
       return;
     }
+    // Show the last known profile immediately so the app can identify the user
+    // (and therefore compute balances) before the network answers — or at all,
+    // if it never does. Never clobber a fresher profile already in state.
+    const cached = readCachedProfile(authUser.id);
+    if (cached) setProfile((prev) => prev || cached);
+
     const { data, error } = await supabase
       .from('profiles')   // table name matches 01_schema.sql
       .select('*')        // select all columns — resilient to new columns being added
@@ -57,12 +98,24 @@ export function AuthProvider({ children }) {
       .single();
 
     if (error) {
-      // Profile might not exist yet (edge case: trigger hasn't fired yet).
-      // Log and continue — the UI can still work with the auth user alone.
       console.warn('[AuthProvider] Could not load profile:', error.message);
-      setProfile(null);
+      // Distinguish "this user genuinely has no profile row" from "we could not
+      // reach the server". PGRST116 is PostgREST's zero-rows-from-.single(),
+      // i.e. a real answer: the row is absent (the signup trigger may not have
+      // fired yet), so null is correct and the cache must be cleared.
+      // Everything else is a transport failure, and this used to setProfile(null)
+      // regardless — throwing away a perfectly good profile because of a
+      // momentary network blip, which is what turned an iPhone resume into
+      // "all settled up". On those, keep what we have.
+      if (error.code === 'PGRST116') {
+        setProfile(null);
+        writeCachedProfile(authUser.id, null);
+      } else {
+        setProfile((prev) => prev || cached || null);
+      }
     } else {
       setProfile(data);
+      writeCachedProfile(authUser.id, data);
     }
   }
 
@@ -145,8 +198,44 @@ export function AuthProvider({ children }) {
     };
   }, []);
 
+  // RETRY a missing profile. loadProfile was previously called from exactly two
+  // places — mount and an auth event — with no retry and no timeout, so one
+  // failed fetch meant the profile stayed null for the entire life of the page.
+  // store.js has its own resume listener for group data; the profile had none,
+  // which is why an iPhone reopened after hours showed "Hi there" indefinitely.
+  //
+  // Only fires when we are signed in but have no profile, so a healthy session
+  // costs nothing. Deliberately mirrors store.js's triggers.
+  useEffect(() => {
+    if (!user || profile) return;
+
+    let cancelled = false;
+    const attempt = () => {
+      if (cancelled) return;
+      if (document.visibilityState === 'hidden') return;
+      if (!navigator.onLine) return;   // the 'online' listener below covers this
+      loadProfile(user);
+    };
+
+    // One prompt retry for the common case (first load lost a waking radio),
+    // then lean on the listeners rather than polling.
+    const t = setTimeout(attempt, 3000);
+    document.addEventListener('visibilitychange', attempt);
+    window.addEventListener('online', attempt);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+      document.removeEventListener('visibilitychange', attempt);
+      window.removeEventListener('online', attempt);
+    };
+  }, [user, profile]);
+
   // signOut: called by the sign-out button in the UI.
   async function signOut() {
+    // Drop the cached profile first. Signing out should not leave the user's
+    // name sitting in localStorage on a shared or borrowed device, and doing it
+    // before the await means it happens even if signOut() itself fails.
+    if (user?.id) writeCachedProfile(user.id, null);
     await supabase.auth.signOut();
     // onAuthStateChange fires automatically and clears session/user/profile.
     // Also make sure recovery mode is cleared on explicit sign-out.

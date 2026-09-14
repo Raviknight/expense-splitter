@@ -1781,18 +1781,25 @@ function HomeScreen({
   // Your overall position across SHARED groups, kept SEPARATE per currency —
   // we can't add ₹ to $ into one number, so we show one chip per currency that
   // isn't settled. Solo groups are personal spending, not money owed, so skip them.
-  const netByCurrency = useMemo(() => {
+  //
+  // A group where we cannot find the user is counted, not silently dropped.
+  // Dropping it used to turn a failed profile load into "You're all settled up
+  // across your groups" — the most reassuring sentence in the app, shown at
+  // precisely the moment we knew least. A total assembled from an unknown
+  // number of missing groups is not a total.
+  const { netByCurrency, unresolved } = useMemo(() => {
     const m = {};
+    let missing = 0;
     groups.forEach(g => {
       const people = g.people || [];
       const isSolo = (g.type === 'solo') || people.length === 1;
       if (isSolo) return;
       const mine = computeNetBalances(people, g.expenses || []).find(b => b.name === myName);
-      if (!mine) return;
+      if (!mine) { missing += 1; return; }
       const code = g.currency || 'USD';
       m[code] = (m[code] || 0) + mine.net;
     });
-    return m;
+    return { netByCurrency: m, unresolved: missing };
   }, [groups, myName]);
 
   // Currencies with a real (non-rounding) balance, for the summary chips.
@@ -1910,7 +1917,15 @@ function HomeScreen({
         {hasShared && (
           <div className="bg-white border border-stone-200 rounded-2xl p-4">
             <div className="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-2">Your balance</div>
-            {balanceChips.length === 0 ? (
+            {unresolved > 0 ? (
+              /* At least one group's balance could not be worked out, so no
+                 honest total exists. Never fall through to "all settled up"
+                 here — that is the claim most likely to be believed and least
+                 likely to be questioned. */
+              <div className="text-sm text-stone-500">
+                Your balance isn&rsquo;t available yet.
+              </div>
+            ) : balanceChips.length === 0 ? (
               <div className="text-sm text-stone-600 flex items-center gap-2">
                 <Check className="w-4 h-4 text-emerald-600 shrink-0" />
                 You&rsquo;re all settled up across your groups.
@@ -2041,14 +2056,22 @@ function GroupCard({ group, myName, onOpen, pinned = false, onTogglePin }) {
   // The signed-in user's net balance in THIS group, using the shared math.
   // We match the current user by the name the owner appears as in group.people
   // (their profile display name, falling back to 'Me' — same convention the
-  // rest of App.jsx uses). If that name isn't found (e.g. an unusual setup),
-  // `mine` is undefined and we just show "settled up".
+  // rest of App.jsx uses).
+  //
+  // "Not found" is NOT the same as "owes nothing", and conflating the two used
+  // to make this card lie. When the profile fetch fails, myName falls back to
+  // 'Me', which matches no member of any group, so every card rendered the
+  // reassuring green "Settled up" no matter what was actually owed — and the
+  // summary above agreed with it. A balance we could not compute must never be
+  // displayed as a balance of zero, so `settled` now requires actually having
+  // found the user.
   const net = computeNetBalances(people, group.expenses || []);
   const mine = net.find(b => b.name === myName);
+  const identified = !!mine;
   const myNet = mine ? mine.net : 0;
 
   // Within a cent = settled up (matches the settle-up rounding elsewhere).
-  const settled = Math.abs(myNet) < SETTLED_EPSILON;
+  const settled = identified && Math.abs(myNet) < SETTLED_EPSILON;
   const owed = myNet > 0;   // positive net → you are OWED money
 
   // This card must print in THIS group's own currency — several cards are on
@@ -2146,6 +2169,14 @@ function GroupCard({ group, myName, onOpen, pinned = false, onTogglePin }) {
         <div>
           <div className="text-[10px] uppercase tracking-wider text-stone-400 font-medium">Personal</div>
           <div className="text-sm text-stone-500 mt-0.5">Spending only</div>
+        </div>
+      ) : !identified ? (
+        /* We could not find the signed-in user among this group's members —
+           almost always because their profile hasn't loaded yet. Say so
+           plainly. Silence would be read as "settled up". */
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-stone-400 font-medium">Balance</div>
+          <div className="text-sm font-medium text-stone-400 mt-0.5">Not available yet</div>
         </div>
       ) : settled ? (
         <div>

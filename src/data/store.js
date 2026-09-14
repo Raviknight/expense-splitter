@@ -174,6 +174,27 @@ export function useExpenseStore(userId, profile) {
   // when the app resumes from the background (the live socket dies while suspended).
   const channelRef = useRef(null);
 
+  // Scheduled auto-retry after a failed or hung fetch. Refs, not state: a
+  // re-render must never reschedule. A failed first load used to be TERMINAL —
+  // `stale` is only cleared by a COMPLETED fetchAll, and on iOS reopening a
+  // backgrounded PWA IS the page load, so the resume listener below has already
+  // fired by the time that first fetch fails. There was no second chance.
+  const retryTimerRef   = useRef(null);
+  const retryAttemptRef = useRef(0);
+
+  const scheduleRetry = useCallback(() => {
+    if (!navigator.onLine) return;              // genuinely offline: the 'online' listener owns recovery
+    if (outboxRef.current.length > 0) return;   // don't stomp optimistic rows; flushOutbox refetches itself
+    if (retryAttemptRef.current >= 4) return;
+    const delay = 2000 * Math.pow(2, retryAttemptRef.current);  // 2s, 4s, 8s, 16s
+    retryAttemptRef.current += 1;
+    if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+    retryTimerRef.current = setTimeout(() => {
+      retryTimerRef.current = null;
+      fetchRef.current?.();
+    }, delay);
+  }, []);
+
   // Helper: update outbox ref + localStorage + pendingCount in one shot.
   const commitOutbox = useCallback((newOutbox) => {
     outboxRef.current = newOutbox;
@@ -186,6 +207,9 @@ export function useExpenseStore(userId, profile) {
   // then for each group loads members and expenses in parallel.
   const fetchAll = useCallback(async () => {
     if (!userId) return;
+    // Any retry still pending is now redundant — this fetch supersedes it.
+    // Without this, two chains could run side by side and double the traffic.
+    if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
 
     // Watchdog: if a query stalls (stale token after resume, dead socket, etc.)
     // never let the spinner hang — force loading off after 12s. Cached snapshot
@@ -193,7 +217,8 @@ export function useExpenseStore(userId, profile) {
     if (watchdogRef.current) clearTimeout(watchdogRef.current);
     // Firing means the fetch never finished, so whatever is on screen is the
     // cached snapshot — mark it stale so the UI can say so.
-    watchdogRef.current = setTimeout(() => { setLoading(false); setStale(true); }, 12000);
+    // A HUNG query never reaches the catch below, so retry from here too.
+    watchdogRef.current = setTimeout(() => { setLoading(false); setStale(true); scheduleRetry(); }, 12000);
 
     try {
       setError(null);
@@ -214,6 +239,12 @@ export function useExpenseStore(userId, profile) {
         setGroups([]);
         setActiveGroupId(null);
         setLoading(false);
+        // This IS a completed fetch — the answer is simply "no groups". Without
+        // these two lines a user with no groups stayed pinned on the stale
+        // banner forever, because `stale` is otherwise only cleared on the
+        // assembled-groups success path far below.
+        setStale(false);
+        retryAttemptRef.current = 0;
         saveSnapshot(userId, [], null);
         return;
       }
@@ -472,6 +503,7 @@ export function useExpenseStore(userId, profile) {
       setGroups(assembled);
       // A completed fetch means what's on screen is current again.
       setStale(false);
+      retryAttemptRef.current = 0;
 
       // Keep active group stable across refetches; fall back to first group.
       setActiveGroupId(prev => {
@@ -498,6 +530,9 @@ export function useExpenseStore(userId, profile) {
         // banner alone doesn't, and a wrong balance read as current is exactly
         // the failure this guards against.
         setStale(true);
+        // Nothing else ever clears `stale`, so without a retry a failed first
+        // load is terminal until the user manually taps Refresh.
+        scheduleRetry();
       } else {
         setError(err.message || 'Failed to load data. Please try again.');
       }
@@ -505,7 +540,15 @@ export function useExpenseStore(userId, profile) {
       if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
       setLoading(false);
     }
-  }, [userId, profile]);
+    // Depend on the two FIELDS actually used above (display_name at :306,
+    // avatar_url at :312), not on the `profile` OBJECT. AuthProvider hands us a
+    // fresh object identity on every profile load, which recreated fetchAll,
+    // which re-fired the mount effect that calls it. That churn was invisible
+    // before because a failed fetch simply gave up; now that failures schedule
+    // a retry, each re-fire started ANOTHER retry chain and they stacked —
+    // measured as ~11 requests where 5 were intended. Primitives compare by
+    // value, so an identical profile re-fetch is now a no-op.
+  }, [userId, profile?.display_name, profile?.avatar_url, scheduleRetry]);
 
   // Keep the ref current so realtime callbacks always call the latest version.
   fetchRef.current = fetchAll;
@@ -714,8 +757,14 @@ export function useExpenseStore(userId, profile) {
       if (now - lastRun < 3000) return;   // one event; visibilitychange + focus can both fire
       lastRun = now;
       subscribeRealtime();
-      // getSession() refreshes an expired token; refetch either way to unstick the UI.
-      Promise.resolve(supabase.auth.getSession()).finally(() => fetchRef.current?.());
+      // Nudge the token, but NEVER gate the refetch on it. getSession() awaits a
+      // refresh_token POST and @supabase/auth-js ships no fetch timeout, so a
+      // socket iOS froze while we were backgrounded can leave it pending
+      // forever — and the old `.finally(...)` meant the refetch then never ran.
+      // Ordering is unnecessary: PostgREST requests resolve the token
+      // themselves via SupabaseClient._getAccessToken.
+      Promise.resolve(supabase.auth.getSession()).catch(() => {});
+      fetchRef.current?.();
     };
     document.addEventListener('visibilitychange', resume);
     window.addEventListener('focus', resume);
@@ -724,6 +773,7 @@ export function useExpenseStore(userId, profile) {
       document.removeEventListener('visibilitychange', resume);
       window.removeEventListener('focus', resume);
       window.removeEventListener('online', resume);
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
     };
   }, [userId, subscribeRealtime]);
 
