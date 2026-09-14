@@ -573,9 +573,26 @@ function EmailPasswordForm({ getCaptchaToken = () => undefined, resetCaptcha = (
         <div className="flex flex-col items-center gap-3 py-4 text-center">
           <CheckCircle className="w-10 h-10 text-emerald-500" />
           <p className="font-semibold text-stone-800">Check your email</p>
+          {/* "IF an account exists" is deliberate, and it is not hedging for its
+              own sake. This screen is shown even when the address has no
+              account, because saying "no account found" would turn the reset
+              form into a way to discover who is registered — the first step of
+              a credential-stuffing run. But the old copy stated flatly that we
+              HAD sent a link, which is simply untrue in that case: someone who
+              mistyped their address was told an email was on its way and then
+              waited for something that could never arrive. This phrasing leaks
+              nothing and is true either way. */}
           <p className="text-sm text-stone-500 max-w-xs">
-            We sent a password-reset link to <strong>{email}</strong>.
-            Click it to set a new password.
+            If an account exists for <strong>{email}</strong>, we&rsquo;ve sent it a
+            password-reset link. Click it to set a new password.
+          </p>
+          {/* iOS cannot route a link from Mail into a home-screen web app, and
+              the app and the browser keep SEPARATE storage — so finishing in
+              Safari leaves the installed app still signed out, which reads as a
+              broken reset. Say it before it happens. */}
+          <p className="text-xs text-stone-400 max-w-xs">
+            On iPhone the link opens in your browser, not the app. Set your
+            password there, then return to the app and sign in.
           </p>
           <button
             onClick={() => { setResetSent(false); setEmail(''); setError(''); }}
