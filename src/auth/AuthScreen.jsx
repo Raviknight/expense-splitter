@@ -37,6 +37,17 @@ const TURNSTILE_SITEKEY = '0x4AAAAAAEyIZXeY6pnjwznA';
 const TURNSTILE_WAIT_MS = 10000;
 const TURNSTILE_POLL_MS = 200;
 
+// How long a SUBMIT will wait for a solved token before going ahead without
+// one. Separate from the two above, which are about the script arriving.
+//
+// 12s is chosen to cover the slowest legitimate case: Cloudflare escalating to
+// an interactive checkbox that the user has to notice and click. Shorter values
+// re-introduce the race this exists to kill. It is still bounded, because a
+// Turnstile outage must never stop someone signing in — on timeout the request
+// goes out with no token, which is exactly how the app behaved before CAPTCHA.
+const CAPTCHA_WAIT_MS = 12000;
+const CAPTCHA_POLL_MS = 150;
+
 // useTurnstile — renders ONE Turnstile widget and hands its token to whichever
 // form submits.
 //
@@ -138,11 +149,36 @@ function useTurnstile() {
     };
   }, []);
 
-  // Read the current token. Returns undefined when there isn't one, which makes
-  // the call sites read naturally: `options: { captchaToken }` with an
-  // undefined value sends no captcha field at all, exactly like before this
-  // feature existed.
-  const getCaptchaToken = useCallback(() => tokenRef.current || undefined, []);
+  // WAIT for a token rather than snatching whatever happens to be there.
+  //
+  // This was synchronous — `() => tokenRef.current || undefined` — and that
+  // shipped a race that broke password reset in production. There is no token
+  // during the first second or two after load while the challenge solves; there
+  // is none for a moment after EVERY submit, because resetCaptcha() deliberately
+  // throws the spent one away and a replacement takes time to arrive; and there
+  // is none at all while Cloudflare is showing an interactive checkbox, until
+  // the user clicks it. Reading synchronously in any of those windows sent NO
+  // token, and once CAPTCHA protection is enforced Supabase answers
+  // "captcha protection: request disallowed (no captcha_token found)".
+  //
+  // Sign-in appeared to work only because typing a password takes long enough
+  // for the token to land. Password reset is a single click, so it lost the
+  // race almost every time. The bug was in the timing, not the call shape.
+  //
+  // So: poll briefly for a token. The wait is generous enough to cover a
+  // re-solve and an interactive click, and it STILL gives up rather than
+  // blocking sign-in forever — a Turnstile outage must never lock anyone out,
+  // which is the rule this whole integration is built around. On give-up we
+  // return undefined and the request goes out bare, exactly as before.
+  const getCaptchaToken = useCallback(async () => {
+    if (tokenRef.current) return tokenRef.current;
+    const deadline = Date.now() + CAPTCHA_WAIT_MS;
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, CAPTCHA_POLL_MS));
+      if (tokenRef.current) return tokenRef.current;
+    }
+    return undefined;
+  }, []);
 
   // A Turnstile token can only be spent ONCE. If someone mistypes their
   // password and tries again, the second attempt would reuse a spent token and
@@ -247,10 +283,12 @@ function MagicLinkForm({ getCaptchaToken = () => undefined, resetCaptcha = () =>
     setError('');
     if (!email.trim()) { setError('Please enter your email address.'); return; }
     setBusy(true);
-    // May be undefined (Turnstile blocked/slow) — see useTurnstile. Supabase
-    // simply receives no captcha field in that case, which is what it received
-    // before this feature existed.
-    const captchaToken = getCaptchaToken();
+    // AWAIT: this waits for the challenge to solve instead of grabbing whatever
+    // is there this instant. `setBusy(true)` above already put the button in its
+    // pending state, so the wait reads as a normal submit. Still may resolve to
+    // undefined if Turnstile never answers — see useTurnstile for why that has
+    // to stay possible.
+    const captchaToken = await getCaptchaToken();
     const { error: err } = await supabase.auth.signInWithOtp({
       email: email.trim(),
       options: {
@@ -451,8 +489,9 @@ function EmailPasswordForm({ getCaptchaToken = () => undefined, resetCaptcha = (
     setError(''); setSuccess('');
     if (!email.trim() || !password) { setError('Please fill in email and password.'); return; }
     setBusy(true);
-    // May be undefined when Turnstile didn't load — see useTurnstile.
-    const captchaToken = getCaptchaToken();
+    // AWAIT — see useTurnstile. Reading this synchronously is what broke
+    // password reset: the token is frequently not there yet at click time.
+    const captchaToken = await getCaptchaToken();
     if (isSignUp) {
       const { error: err } = await supabase.auth.signUp({
         email: email.trim(), password, options: { captchaToken },
@@ -487,6 +526,12 @@ function EmailPasswordForm({ getCaptchaToken = () => undefined, resetCaptcha = (
       return;
     }
     setResetBusy(true);
+    // AWAIT THE TOKEN BEFORE CALLING. This single line is the bug that broke
+    // password reset in production: it used to read `getCaptchaToken()`
+    // synchronously, and reset is ONE CLICK with no typing to cover the delay,
+    // so it almost always fired before a token existed and Supabase rejected it
+    // with "captcha protection: request disallowed (no captcha_token found)".
+    const captchaToken = await getCaptchaToken();
     // NOTE THE SHAPE: resetPasswordForEmail takes (email, options) and
     // captchaToken sits DIRECTLY in that second argument — there is no nested
     // `options: {...}` here, unlike signInWithOtp / signInWithPassword / signUp
@@ -497,7 +542,7 @@ function EmailPasswordForm({ getCaptchaToken = () => undefined, resetCaptcha = (
       email.trim(),
       {
         redirectTo: APP_URL,          // same base URL used by magic-link and Google
-        captchaToken: getCaptchaToken(),
+        captchaToken,
       }
     );
     // Single-use token — burn it so a second reset request still works.
