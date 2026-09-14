@@ -1379,17 +1379,30 @@ export default function App() {
       {/* Floating notice after auto-accepting an invite */}
       {inviteNoticeEl}
 
-      {/* Non-blocking error banner — shown when a write fails but data is loaded */}
+      {/* Non-blocking error banner — shown when a write fails but data is loaded.
+          FIXED, not inline, and that is the entire point of this block.
+          It used to sit in normal document flow at the top of the page. A group
+          with fifty expenses is several screens long, so failing to delete one
+          near the bottom put the explanation somewhere the user could never see
+          — while the row vanished optimistically and reappeared on the next
+          refetch. The result read as "nothing happened, no message", which is
+          indistinguishable from a broken app and took three rounds to diagnose
+          precisely because the message WAS being set correctly all along.
+          An error you cannot see is the same as no error.
+          z-[60] puts it above the modals (z-40/z-50) too, so a failure raised
+          just as a dialog closes cannot hide behind one. */}
       {error && (
-        <div className="bg-red-50 border-b border-red-200 px-4 py-2 flex items-center gap-3 max-w-3xl mx-auto">
-          <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />
-          <div className="text-sm text-red-800 flex-1">{error}</div>
-          <button
-            onClick={actions.clearError}
-            className="text-xs text-red-600 underline shrink-0"
-          >
-            Dismiss
-          </button>
+        <div className="fixed top-0 inset-x-0 z-[60] px-4 pt-2 pointer-events-none">
+          <div className="max-w-3xl mx-auto bg-red-50 border border-red-200 rounded-xl shadow-lg px-4 py-2.5 flex items-center gap-3 pointer-events-auto">
+            <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />
+            <div className="text-sm text-red-800 flex-1">{error}</div>
+            <button
+              onClick={actions.clearError}
+              className="text-xs text-red-600 underline shrink-0"
+            >
+              Dismiss
+            </button>
+          </div>
         </div>
       )}
 
