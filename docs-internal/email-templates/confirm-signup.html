@@ -1,0 +1,67 @@
+<!--
+  SUPABASE EMAIL TEMPLATE — "Confirm signup"
+  Paste into: Supabase Dashboard → Authentication → Emails → Confirm signup
+  Subject line: Confirm your Splitab account
+
+  Same rule as magic-link.html: NO LINKS. See that file for the full reasoning
+  and the auth-log evidence — a corporate mail scanner opens any URL here and
+  spends the one-time token before the person ever reads the message.
+
+  ORDER OF OPERATIONS — this one matters more than the magic link:
+  the app only gained the ability to verify a SIGN-UP code in commit bf8ce11
+  ("Let a new account be confirmed with the emailed CODE, not only the link").
+  If this template is made code-only while an older build is live, a new user
+  gets a code and has nowhere to type it, and cannot finish signing up at all.
+  Confirm splitab.app is serving that build or later before pasting this in.
+
+  The app verifies it with:
+      supabase.auth.verifyOtp({ email, token, type: 'signup' })
+  note type 'signup', NOT 'email' — 'email' is the sign-in variant and Supabase
+  rejects the wrong one as invalid.
+
+  Available variables — WRITTEN WITHOUT THEIR DOUBLE BRACES ON PURPOSE. Supabase
+  substitutes template variables anywhere in the file, INCLUDING inside an HTML
+  comment, so spelling the URL variable out in full even in a note would inject
+  a real confirmation link into every email and re-create the bug:
+      .Token   .TokenHash   .ConfirmationURL   .SiteURL   .Email   .RedirectTo
+  Only .Token is used in the markup below, deliberately.
+-->
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#FAFAF7;padding:32px 0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+  <tr>
+    <td align="center">
+      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:440px;background-color:#ffffff;border:1px solid #e7e5e4;padding:32px;">
+        <tr>
+          <td align="center" style="padding-bottom:8px;">
+            <span style="font-size:20px;font-weight:700;color:#1c1917;">Splitab</span>
+          </td>
+        </tr>
+        <tr>
+          <td align="center" style="padding-bottom:24px;">
+            <span style="font-size:15px;color:#57534e;">Confirm your account with this code</span>
+          </td>
+        </tr>
+        <tr>
+          <td align="center" style="background-color:#f5f5f4;border:1px solid #e7e5e4;padding:20px;">
+            <span style="font-size:32px;font-weight:700;letter-spacing:8px;color:#4f46e5;font-family:'SF Mono',Menlo,Consolas,monospace;">{{ .Token }}</span>
+          </td>
+        </tr>
+        <tr>
+          <td align="center" style="padding-top:24px;">
+            <span style="font-size:14px;color:#57534e;line-height:22px;">
+              Type this into the confirmation box in Splitab to finish setting up
+              your account. It expires in 15 minutes and can only be used once.
+            </span>
+          </td>
+        </tr>
+        <tr>
+          <td align="center" style="padding-top:20px;border-top:1px solid #f5f5f4;">
+            <span style="font-size:12px;color:#a8a29e;line-height:20px;">
+              If you didn&rsquo;t create a Splitab account, you can ignore this email
+              and nothing further will happen.
+            </span>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
