@@ -14,7 +14,7 @@
 //      anyone who found the URL could trigger mass mail.
 //
 //   2. DRY RUN. Send { "dryRun": true } to compute everything and report what
-//      WOULD be sent, without calling Resend. Always dry-run first after any
+//      WOULD be sent, without calling any email provider. Always dry-run first after any
 //      change — a mass-email job you cannot test safely is a liability.
 //
 // ── NO ACTIVITY, NO EMAIL ────────────────────────────────────────────────────
@@ -31,11 +31,20 @@
 //   1. Edge Functions → create a function named exactly  send-digest , paste
 //      this file, Deploy.
 //   2. Secrets:
+//        BREVO_API_KEY             = xkeysib-…       (PRIMARY sender — see below)
 //        RESEND_API_KEY            = re_…            (same key the other functions use)
 //        SUPABASE_SERVICE_ROLE_KEY = eyJ…            (Settings → API → service_role)
 //        DIGEST_SECRET             = <any long random string>
 //   3. Put the same DIGEST_SECRET into the GitHub repo secrets so the workflow
 //      can authenticate.
+//
+// ── WHY BREVO IS TRIED FIRST ─────────────────────────────────────────────────
+// Supabase AUTH email (sign-in codes, sign-up confirmations) goes through the
+// SAME Resend account, which on the free plan allows 100/day and 3000/month.
+// A digest run that exhausts the daily quota would stop people SIGNING IN — the
+// least important mail starving the most important. So bulk mail like this goes
+// to Brevo first, and Resend stays as the safety net. If BREVO_API_KEY is not
+// set, or Brevo errors, this falls back to Resend automatically and logs why.
 //
 // NOTE ON SCALE: this loads the relevant rows and assembles digests in memory,
 // which is right for a small user base and a handful of queries. If this ever
@@ -47,6 +56,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 const SUPABASE_URL      = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE_KEY  = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 const RESEND_API_KEY    = Deno.env.get("RESEND_API_KEY");
+const BREVO_API_KEY     = Deno.env.get("BREVO_API_KEY");
 const DIGEST_SECRET     = Deno.env.get("DIGEST_SECRET");
 
 const APP_URL = "https://splitab.app/";
@@ -96,7 +106,61 @@ function row(left: string, right: string, muted = false) {
   </tr>`;
 }
 
+// ── Sending: Brevo first, Resend as the fallback ─────────────────────────────
+// This block is duplicated, deliberately, in send-invite and send-welcome. These
+// functions are deployed by pasting ONE file into the Supabase dashboard, so a
+// shared module would be an import the dashboard cannot resolve. A little
+// duplication is the price of a file that always deploys.
+
+// FROM is RFC5322 — "Splitab <hello@splitab.app>". Resend takes that string as
+// it is; Brevo needs the name and the address as separate fields. Anything that
+// doesn't match Name <addr> is treated as a bare address with no name, so an
+// unexpected shape degrades instead of throwing.
+function parseFrom(from: string): { email: string; name?: string } {
+  const m = /^\s*(.*?)\s*<\s*([^<>\s]+)\s*>\s*$/.exec(String(from ?? ""));
+  if (m) {
+    const name = m[1].replace(/^"|"$/g, "").trim();
+    return name ? { email: m[2], name } : { email: m[2] };
+  }
+  return { email: String(from ?? "").trim() };
+}
+
+// Throws on any non-2xx, with the status and a truncated body — a fallback that
+// hides a real misconfiguration (wrong key, unverified sender) is a trap.
+async function sendViaBrevo(to: string, subject: string, html: string) {
+  const sender = parseFrom(FROM);
+  const resp = await fetch("https://api.brevo.com/v3/smtp/email", {
+    method: "POST",
+    headers: {
+      "api-key": BREVO_API_KEY!,      // Brevo uses its own header, not Bearer auth.
+      "content-type": "application/json",
+      "accept": "application/json",
+    },
+    body: JSON.stringify({
+      sender: sender.name ? { email: sender.email, name: sender.name } : { email: sender.email },
+      to: [{ email: to }],
+      subject,
+      htmlContent: html,              // Brevo calls it htmlContent, not html.
+    }),
+  });
+  if (!resp.ok) throw new Error(`Brevo ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+}
+
+// Unchanged contract: returns on success, throws `Resend <status>: <body>` on
+// failure. The caller's per-recipient try/catch still records that message.
 async function sendEmail(to: string, subject: string, html: string) {
+  if (BREVO_API_KEY) {
+    try {
+      await sendViaBrevo(to, subject, html);
+      console.log("[send-digest] sent via brevo");
+      return;
+    } catch (err) {
+      console.error(`[send-digest] brevo failed, falling back to resend — ${String((err as Error)?.message ?? err)}`);
+    }
+  } else {
+    console.log("[send-digest] BREVO_API_KEY not set — using resend");
+  }
+
   const resp = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
@@ -106,6 +170,7 @@ async function sendEmail(to: string, subject: string, html: string) {
     body: JSON.stringify({ from: FROM, to: [to], subject, html }),
   });
   if (!resp.ok) throw new Error(`Resend ${resp.status}: ${(await resp.text()).slice(0, 200)}`);
+  console.log("[send-digest] sent via resend");
 }
 
 Deno.serve(async (req) => {
@@ -122,7 +187,12 @@ Deno.serve(async (req) => {
     const kind   = body?.kind === "monthly" ? "monthly" : "daily";
     const dryRun = body?.dryRun === true;
 
-    if (!dryRun && !RESEND_API_KEY) return json({ error: "Server missing RESEND_API_KEY" }, 500);
+    // At least ONE provider. Insisting on Resend would block a healthy Brevo
+    // setup the moment the Resend key is removed — the fallback has to be able
+    // to stand on either leg. The dry run needs neither, since it sends nothing.
+    if (!dryRun && !RESEND_API_KEY && !BREVO_API_KEY) {
+      return json({ error: "Server missing BREVO_API_KEY / RESEND_API_KEY" }, 500);
+    }
 
     // service_role bypasses RLS — required, since this reads across all users.
     const db = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
