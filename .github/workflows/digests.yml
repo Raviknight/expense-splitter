@@ -25,10 +25,30 @@ on:
     # Daily summary — 07:12 UTC. Odd minute because GitHub delays or drops
     # scheduled runs clustered on the hour.
     - cron: '12 7 * * *'
-    # Monthly statement — 07:40 UTC on the 1st, covering the PREVIOUS calendar
-    # month. The function itself enforces that the window ends at the start of
-    # the current month, so a late run can't leak this month's data in.
-    - cron: '40 7 1 * *'
+    # Monthly statement — 07:40 UTC on each of the first 7 days of the month,
+    # covering the PREVIOUS calendar month. The function itself enforces that
+    # the window ends at the start of the current month, so a late run can't
+    # leak this month's data in.
+    #
+    # It runs on seven days but NOBODY gets seven emails: send-digest gives each
+    # user one stable day in 1..DIGEST_SPREAD_DAYS (hashed from their user id)
+    # and skips everyone else, so each user still gets exactly one statement a
+    # month. The spread exists because email capacity is per DAY (Brevo free =
+    # 300/day) — one burst on the 1st capped the whole app at ~300 users and
+    # could starve the sign-in mail that shares the quota. (backlog #26)
+    #
+    # ⚠️ KEEP THIS RANGE AND DIGEST_SPREAD_DAYS IN STEP. This workflow cannot
+    #    read the Edge Function's environment, so the two are only ever matched
+    #    by hand:
+    #      • raise DIGEST_SPREAD_DAYS above 7 and the users assigned to day 8+
+    #        are NEVER mailed — no run happens on their day and the function
+    #        can only skip them. Widen this cron to '1-N' at the same time.
+    #      • lower DIGEST_SPREAD_DAYS below 7 and the extra days are harmless:
+    #        the run fires, matches nobody, and reports everyone skipped.
+    #    If you change one, change the other in the SAME commit — and change
+    #    the matching string in the KIND check below, which must equal this
+    #    cron expression exactly.
+    - cron: '40 7 1-7 * *'
   workflow_dispatch:
     inputs:
       kind:
@@ -61,7 +81,10 @@ jobs:
           # actually authorises the digest. Two separate layers.
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
           # On a schedule there are no inputs, so derive the kind from WHICH
-          # cron fired: the 1st-of-month entry is the monthly one.
+          # cron fired: the day-of-month-restricted entry is the monthly one.
+          # github.event.schedule is the cron string COPIED VERBATIM from the
+          # `on.schedule` block above, so the comparison below must match it
+          # character for character — edit both or neither.
           EVENT_NAME:    ${{ github.event_name }}
           CRON:          ${{ github.event.schedule }}
           INPUT_KIND:    ${{ github.event.inputs.kind }}
@@ -77,7 +100,7 @@ jobs:
           if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
             KIND="${INPUT_KIND:-daily}"
             DRY="${INPUT_DRY:-true}"
-          elif [ "${CRON}" = "40 7 1 * *" ]; then
+          elif [ "${CRON}" = "40 7 1-7 * *" ]; then
             KIND="monthly"; DRY="false"
           else
             KIND="daily";   DRY="false"

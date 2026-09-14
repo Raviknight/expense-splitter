@@ -27,6 +27,23 @@
 // Confirmed as the intended product behaviour, and verified by a dry run where
 // all eight opted-in recipients were skipped and nothing was sent.
 //
+// ── SPREADING THE MONTHLY BURST (backlog #26) ────────────────────────────────
+// Email capacity is per DAY (Brevo free = 300/day). The monthly statement used
+// to go to EVERY opted-in user on the 1st, in one burst, so the ceiling was
+// ~300 users no matter how quiet the other 30 days were — and a burst that
+// empties the daily quota also starves the mail that shares it.
+//
+// So the monthly digest is still MONTHLY PER USER, but WHICH DAY a user gets
+// theirs is spread over the first DIGEST_SPREAD_DAYS days of the month. Each
+// user has a stable day derived from their user id (see digestDayFor). Nothing
+// about the window or the contents of a statement changes — only who is
+// eligible on a given day.
+//
+//   ⚠️ The GitHub workflow cannot read this function's environment. The monthly
+//   cron in digests.yml must cover the SAME range of days as DIGEST_SPREAD_DAYS,
+//   or users assigned to an uncovered day are never mailed. See the comment on
+//   the monthly cron in .github/workflows/digests.yml.
+//
 // DEPLOY (Supabase dashboard):
 //   1. Edge Functions → create a function named exactly  send-digest , paste
 //      this file, Deploy.
@@ -35,6 +52,9 @@
 //        RESEND_API_KEY            = re_…            (same key the other functions use)
 //        SUPABASE_SERVICE_ROLE_KEY = eyJ…            (Settings → API → service_role)
 //        DIGEST_SECRET             = <any long random string>
+//      Optional (defaults are sensible; both are plain numbers):
+//        DIGEST_SPREAD_DAYS        = 7               (monthly stagger width, 1–28)
+//        DIGEST_MAX_PER_RUN        = 200             (hard cap on sends per run)
 //   3. Put the same DIGEST_SECRET into the GitHub repo secrets so the workflow
 //      can authenticate.
 //
@@ -61,6 +81,26 @@ const DIGEST_SECRET     = Deno.env.get("DIGEST_SECRET");
 
 const APP_URL = "https://splitab.app/";
 const FROM    = "Splitab <hello@splitab.app>";
+
+// ── Stagger width (MONTHLY ONLY) ─────────────────────────────────────────────
+// How many days at the start of the month the monthly statement is spread over.
+// Clamped to 1..28:
+//   • below 1 would give an assigned day of 0, which no month ever has;
+//   • above 28 would give days (29/30/31) that February does not have, and
+//     those users would silently never be mailed.
+// A non-numeric value (empty string, typo) falls back to the default rather
+// than becoming NaN — NaN passes straight through Math.min/Math.max and would
+// match nobody's day, i.e. it would silently mail no one at all.
+const SPREAD_RAW   = Number(Deno.env.get("DIGEST_SPREAD_DAYS") ?? 7);
+const SPREAD_DAYS  = Math.max(1, Math.min(28, Number.isFinite(SPREAD_RAW) ? Math.floor(SPREAD_RAW) : 7));
+
+// ── Per-run send budget ──────────────────────────────────────────────────────
+// A hard ceiling on how many emails ONE run may send, so a run can never eat a
+// whole day's provider quota (and starve the sign-in codes that share it). Same
+// NaN/typo guard as above; a zero or negative value falls back to the default,
+// because "cap of 0" reads as a mistake — use dryRun to send nothing on purpose.
+const MAX_RAW      = Number(Deno.env.get("DIGEST_MAX_PER_RUN") ?? 200);
+const MAX_PER_RUN  = Number.isFinite(MAX_RAW) && MAX_RAW >= 1 ? Math.floor(MAX_RAW) : 200;
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -173,6 +213,37 @@ async function sendEmail(to: string, subject: string, html: string) {
   console.log("[send-digest] sent via resend");
 }
 
+// ── Which day of the month does this user get their statement? ───────────────
+// Returns a STABLE day in 1..spreadDays for a given user id.
+//
+// Why a hash of the id and not created_at: a join date CLUSTERS. Everyone who
+// signed up on the same day — a launch, a group of flatmates, one shared link —
+// would land on the same digest day, which is the exact pile-up being avoided.
+// A hash of the uuid ignores when people arrived and scatters them evenly.
+//
+// Why FNV-1a: it avalanches (one changed character changes many output bits),
+// so ids that differ in a single hex digit land on unrelated days, and the low
+// bits — the ones `% spreadDays` actually reads — are as mixed as the rest.
+// A cheaper "add up the character codes" hash does NOT do this: uuids are hex
+// plus hyphens, a narrow and lopsided alphabet, so a sum lands in a narrow band
+// and the modulo comes out visibly uneven. With a 32-bit hash and spreadDays
+// ≤ 28 the modulo bias is about one part in 150 million — nothing.
+//
+// STABILITY MATTERS MORE THAN THE ALGORITHM: this must return the same day for
+// the same id on every run, forever. If it drifted, a user could be skipped
+// month after month (day moves ahead of today) or mailed twice in one month.
+// So it depends on nothing but the id string — no dates, no randomness, no
+// recipient count. Changing this function reshuffles everyone for one month.
+function digestDayFor(userId: string, spreadDays: number): number {
+  const s = String(userId ?? "");
+  let h = 0x811c9dc5;                     // FNV offset basis
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);         // FNV prime; imul keeps 32-bit maths exact
+  }
+  return ((h >>> 0) % spreadDays) + 1;    // >>> 0 → unsigned, so never a negative day
+}
+
 Deno.serve(async (req) => {
   if (req.method !== "POST") return json({ error: "Use POST" }, 405);
 
@@ -186,6 +257,18 @@ Deno.serve(async (req) => {
     const body   = await req.json().catch(() => ({}));
     const kind   = body?.kind === "monthly" ? "monthly" : "daily";
     const dryRun = body?.dryRun === true;
+
+    // ── The response the workflow prints (backlog #28) ───────────────────────
+    // A dry run reports `wouldSend`, a real run reports `sent`. It used to say
+    // "sent": N either way, which sent the owner hunting for an email that was
+    // never sent. Same keys otherwise, same order — digests.yml prints this body
+    // verbatim and the owner reads it.
+    const result = (considered: number, count: number, skipped: number, details: any[]) =>
+      json({
+        ok: true, kind, dryRun, considered,
+        ...(dryRun ? { wouldSend: count } : { sent: count }),
+        skipped, details,
+      });
 
     // At least ONE provider. Insisting on Resend would block a healthy Brevo
     // setup the moment the Resend key is removed — the fallback has to be able
@@ -206,9 +289,19 @@ Deno.serve(async (req) => {
       .select(`id, email, display_name, ${prefCol}, ${sentCol}`)
       .eq(prefCol, true);
     if (pErr) throw new Error(`profiles: ${pErr.message}`);
-    if (!profiles?.length) return json({ ok: true, kind, dryRun, considered: 0, sent: 0, skipped: 0, details: [] });
+    if (!profiles?.length) return result(0, 0, 0, []);
 
     const now = new Date();
+    const todayDom = now.getUTCDate();   // UTC day-of-month, 1..31 — the stagger key
+
+    // One line about the stagger on EVERY monthly run, so the logs explain a
+    // quiet run instead of looking like a failure.
+    if (kind === "monthly") {
+      console.log(`[send-digest] monthly stagger: spread over days 1–${SPREAD_DAYS}; today is UTC day ${todayDom}; budget ${MAX_PER_RUN}/run`);
+      if (todayDom > SPREAD_DAYS) {
+        console.log(`[send-digest] today (UTC day ${todayDom}) is OUTSIDE the 1–${SPREAD_DAYS} stagger window, so NO user is assigned today and every recipient will be skipped. This is expected for a manual mid-month run; raise DIGEST_SPREAD_DAYS (and the monthly cron in digests.yml) if it happens on a scheduled run.`);
+      }
+    }
 
     // Default window when we've never sent before.
     //   daily   → last 24h
@@ -271,7 +364,7 @@ Deno.serve(async (req) => {
     }
 
     const allGroupIds = [...new Set((members ?? []).map((m: any) => m.group_id))];
-    if (!allGroupIds.length) return json({ ok: true, kind, dryRun, considered: profiles.length, sent: 0, skipped: profiles.length, details: [] });
+    if (!allGroupIds.length) return result(profiles.length, 0, profiles.length, []);
 
     // 3. Group names + currency.
     const { data: groups, error: gErr } = await db
@@ -298,10 +391,31 @@ Deno.serve(async (req) => {
     if (eErr) throw new Error(`expenses: ${eErr.message}`);
 
     // 5. Build and send one digest per recipient.
-    let sent = 0, skipped = 0;
+    let sent = 0, skipped = 0, overBudget = 0;
     const details: any[] = [];
 
     for (const p of profiles as any[]) {
+      // ── MONTHLY STAGGER: is today this user's day? ────────────────────────
+      // Monthly only. The daily digest is already spread by activity — most
+      // people have nothing new on a given day — so it is left exactly alone.
+      //
+      // This changes WHO IS ELIGIBLE TODAY and nothing else. The window below
+      // is still the closed calendar period ending at the start of this month,
+      // and `last_monthly_digest_at` still only advances on a successful send,
+      // so a user mailed on the 4th gets the 1st–last of the previous month,
+      // and a dropped run still produces a two-month statement whose heading
+      // says so.
+      const assignedDay = kind === "monthly" ? digestDayFor(p.id, SPREAD_DAYS) : 0;
+      if (kind === "monthly" && assignedDay !== todayDom) {
+        skipped++;
+        details.push({
+          email: p.email,
+          skipped: `not their digest day (assigned ${assignedDay}, today ${todayDom})`,
+          assignedDay,
+        });
+        continue;
+      }
+
       const sinceRaw = p[sentCol] ? new Date(p[sentCol]) : defaultSince;
       // Monthly windows run boundary-to-boundary; see monthStartOf above.
       const since = kind === "monthly" ? monthStartOf(sinceRaw) : sinceRaw;
@@ -318,6 +432,23 @@ Deno.serve(async (req) => {
       if (mine.length === 0) {
         skipped++;
         details.push({ email: p.email, skipped: "no new activity", since: since.toISOString() });
+        continue;
+      }
+
+      // ── PER-RUN BUDGET ───────────────────────────────────────────────────
+      // This user HAS activity and would be mailed, but the run has already
+      // sent its allowance. Stop sending and say so per recipient — a silent
+      // cap reads as "everyone was covered" when they were not. Their marker
+      // is untouched, so the window they missed is carried into their next run
+      // (the same guard that covers a dropped GitHub run).
+      if (sent >= MAX_PER_RUN) {
+        skipped++;
+        overBudget++;
+        details.push({
+          email: p.email,
+          skipped: `daily budget reached (${MAX_PER_RUN})`,
+          expenses: mine.length,
+        });
         continue;
       }
 
@@ -378,8 +509,17 @@ Deno.serve(async (req) => {
       }
 
       if (dryRun) {
+        // Counted the same way a real send is, so the budget cut-off below
+        // shows up in a dry run too — the point of a dry run is to see today's
+        // outcome, cap included.
         sent++;
-        details.push({ email: p.email, wouldSend: subject, expenses: mine.length, since: since.toISOString() });
+        details.push({
+          email: p.email,
+          wouldSend: subject,
+          expenses: mine.length,
+          since: since.toISOString(),
+          ...(kind === "monthly" ? { assignedDay } : {}),
+        });
         continue;
       }
 
@@ -395,7 +535,11 @@ Deno.serve(async (req) => {
       }
     }
 
-    return json({ ok: true, kind, dryRun, considered: profiles.length, sent, skipped, details });
+    if (overBudget > 0) {
+      console.log(`[send-digest] BUDGET REACHED: kind=${kind} cap=${MAX_PER_RUN} ${dryRun ? "wouldSend" : "sent"}=${sent} — ${overBudget} recipient(s) with activity were LEFT UNSENT this run. They are not lost: their last-sent marker was not advanced, so the next run for them covers the missed window too. Raise DIGEST_MAX_PER_RUN, or widen DIGEST_SPREAD_DAYS (and the monthly cron) to flatten the peak.`);
+    }
+
+    return result(profiles.length, sent, skipped, details);
   } catch (e) {
     return json({ error: String((e as Error)?.message ?? e) }, 500);
   }
