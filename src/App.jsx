@@ -1554,6 +1554,8 @@ export default function App() {
             total={total}
             people={people}
             entries={expenses}
+            paymentNotes={activeGroup?._memberPaymentNotes || {}}
+            myName={profile?.display_name || 'Me'}
             onSettle={() => setShowSettle(true)}
             onExportCsv={exportCsv}
             onExportPdf={exportPdf}
@@ -1674,6 +1676,8 @@ export default function App() {
           balances={balances}
           people={people}
           entries={expenses}
+          paymentNotes={activeGroup?._memberPaymentNotes || {}}
+          myName={profile?.display_name || 'Me'}
           onClose={() => setShowSettle(false)}
           onConfirm={recordSettlement}
           onRecord={recordSettlementKeepOpen}
@@ -2823,7 +2827,9 @@ function InsightsTab({ expenses, onPick }) {
   );
 }
 
-function SummaryTab({ expenses, settlements, balances, sharedPool, total, people, entries, onSettle, onExportCsv, onExportPdf }) {
+function SummaryTab({ expenses, settlements, balances, sharedPool, total, people, entries, paymentNotes, myName, onSettle, onExportCsv, onExportPdf }) {
+  // display name → "how to pay me" note (from group._memberPaymentNotes).
+  const notes = paymentNotes || {};
   const a = balances[0];
   const settleAmt = Math.abs(a.net);
   const personalTotal = total - sharedPool;
@@ -2835,6 +2841,12 @@ function SummaryTab({ expenses, settlements, balances, sharedPool, total, people
   const netBalances = computeNetBalances(people, entries || expenses);
   const suggestions = suggestSettlements(netBalances);
   const isMulti = people.length >= 3;
+
+  // The 2-person card below states a single "X pays Y". Name both sides once
+  // here so the payment note can be attached to it without repeating the
+  // ternary. Null for a 1-person balance list (nothing to pay).
+  const duoFrom = balances.length >= 2 ? (a.net > 0 ? balances[1].name : a.name) : null;
+  const duoTo   = balances.length >= 2 ? (a.net > 0 ? a.name : balances[1].name) : null;
 
   return (
     <div className="space-y-3">
@@ -2894,9 +2906,16 @@ function SummaryTab({ expenses, settlements, balances, sharedPool, total, people
           <>
             <div className="space-y-1.5 mb-3">
               {suggestions.map((s, i) => (
-                <div key={i} className="flex items-center justify-between text-sm">
-                  <span className="text-stone-200">{s.from} pays {s.to}</span>
-                  <span className="font-semibold tabular-nums">{fmt(s.amount)}</span>
+                <div key={i} className="flex items-start justify-between gap-3 text-sm">
+                  <div className="min-w-0">
+                    <span className="text-stone-200">{s.from} pays {s.to}</span>
+                    {/* Same rule as the settle modal: only the row where YOU
+                        are the payer, because that's the one you must act on. */}
+                    {s.from === myName && (
+                      <PaymentNoteLine name={s.to} note={notes[s.to]} tone="dark" />
+                    )}
+                  </div>
+                  <span className="font-semibold tabular-nums shrink-0">{fmt(s.amount)}</span>
                 </div>
               ))}
             </div>
@@ -2914,7 +2933,13 @@ function SummaryTab({ expenses, settlements, balances, sharedPool, total, people
             <div className="text-lg font-semibold">
               {a.net > 0 ? `${balances[1].name} pays ${a.name}` : `${a.name} pays ${balances[1].name}`}
             </div>
-            <div className="text-3xl font-semibold tabular-nums mt-1 mb-3">{fmt(settleAmt)}</div>
+            <div className="mt-1 mb-3 min-w-0">
+              <div className="text-3xl font-semibold tabular-nums">{fmt(settleAmt)}</div>
+              {/* Only when YOU are the payer — see the multi-person list above. */}
+              {duoFrom === myName && (
+                <PaymentNoteLine name={duoTo} note={notes[duoTo]} tone="dark" />
+              )}
+            </div>
             <button
               onClick={onSettle}
               className="w-full py-2.5 rounded-lg bg-white text-stone-900 text-sm font-medium hover:bg-stone-100 active:scale-[0.99] transition flex items-center justify-center gap-1.5"
@@ -3785,15 +3810,44 @@ function GroupForm({ group, myName, profile, onSave, onCancel }) {
   );
 }
 
+/* ============ "How to pay them" note ============
+ *
+ * Shows the PAYEE's own free-text payment note (a UPI id, a Venmo handle,
+ * "cash is fine"…) to the person who owes them, so they know where to send
+ * the money. It is a plain, selectable string and nothing more:
+ * **the app never touches money** — no payment SDK, no upi:// or venmo://
+ * deep link, no API, no button that launches anything. Handling money in-app
+ * would make Splitab a regulated payment service (CLAUDE.md §8).
+ *
+ * Renders NOTHING when the note is missing, empty or whitespace — a member who
+ * never wrote one costs no space at all (no stray label, no "undefined").
+ *
+ * Long notes: these are free text up to 200 chars and can be one unbroken
+ * token, so `break-words` lets them wrap inside the row instead of blowing the
+ * layout out sideways. It stays inline text (NOT a `title` tooltip, which is
+ * useless on a phone) and `select-all` makes one tap grab the whole handle.
+ */
+function PaymentNoteLine({ name, note, tone = 'light' }) {
+  const text = typeof note === 'string' ? note.trim() : '';
+  if (!text) return null;
+  return (
+    <div className={`text-[11px] mt-0.5 leading-snug break-words ${tone === 'dark' ? 'text-stone-400' : 'text-stone-500'}`}>
+      Pay {name}: <span className="select-all">{text}</span>
+    </div>
+  );
+}
+
 /* ============ Settle modal ============ */
 
-function SettleModal({ balances, people, entries, onClose, onConfirm, onRecord }) {
+function SettleModal({ balances, people, entries, paymentNotes, myName, onClose, onConfirm, onRecord }) {
   // For 3+ members we show a "who pays whom" list instead of a single form.
   if (people.length >= 3) {
     return (
       <MultiSettleModal
         people={people}
         entries={entries}
+        paymentNotes={paymentNotes}
+        myName={myName}
         onClose={onClose}
         onRecord={onRecord}
       />
@@ -3820,11 +3874,17 @@ function SettleModal({ balances, people, entries, onClose, onConfirm, onRecord }
         </div>
 
         <div className="p-4 space-y-3">
-          <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-sm">
+          <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-sm min-w-0">
             <div className="text-[11px] uppercase tracking-wider text-emerald-700 font-medium mb-1">Payment</div>
             <div className="font-semibold text-emerald-900">
               {fromPerson} pays {toPerson}
             </div>
+            {/* Only when YOU are the one paying: you need to know where to send
+                it. Showing one other person's payment handle to a third party
+                would be needless exposure. */}
+            {fromPerson === myName && (
+              <PaymentNoteLine name={toPerson} note={(paymentNotes || {})[toPerson]} />
+            )}
           </div>
 
           <Field label="Amount">
@@ -3881,7 +3941,10 @@ function SettleModal({ balances, people, entries, onClose, onConfirm, onRecord }
  * so the user can clear several debts in a row. After each record the parent
  * refetches, `entries` updates, and the suggestions recompute automatically.
  */
-function MultiSettleModal({ people, entries, onClose, onRecord }) {
+function MultiSettleModal({ people, entries, paymentNotes, myName, onClose, onRecord }) {
+  // display name → "how to pay me" note (from group._memberPaymentNotes).
+  // Defaulted here so a caller that hasn't got the map yet can't crash a render.
+  const notes = paymentNotes || {};
   // Track which rows are mid-write so we can disable their buttons.
   const [busyKey, setBusyKey] = useState(null);
 
@@ -3931,6 +3994,13 @@ function MultiSettleModal({ people, entries, onClose, onRecord }) {
                         {s.from} pays {s.to}
                       </div>
                       <div className="text-lg font-semibold tabular-nums">{fmt(s.amount)}</div>
+                      {/* Only on the row where YOU are the payer — that's the
+                          row you have to act on. On a row between two other
+                          people, showing a third party's payment handle would
+                          be needless exposure, so we don't. */}
+                      {s.from === myName && (
+                        <PaymentNoteLine name={s.to} note={notes[s.to]} />
+                      )}
                     </div>
                     <button
                       onClick={() => handleRecord(s)}

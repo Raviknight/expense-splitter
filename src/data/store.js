@@ -312,34 +312,63 @@ export function useExpenseStore(userId, profile) {
       // db/08 is run — that's fine, it just stays empty and Avatar shows initials.
       const avatarMap = { [userId]: profile?.avatar_url || null };
 
+      // Parallel map: user_id → payment_note (their free-text "how to pay me"
+      // line — a UPI id, a Venmo handle, "cash is fine"…). We seed it with the
+      // CURRENT user's own note from the `profile` arg, because a settle-up
+      // suggestion can name the signed-in user as the PAYEE and the other
+      // person needs to read it. profile.payment_note is undefined until db/20
+      // is run — that's fine, it just stays empty and nothing is displayed.
+      const paymentNoteMap = { [userId]: profile?.payment_note || null };
+
       if (otherUserIds.length > 0) {
-        // We want avatar_url too, but that column only exists AFTER db/08 is run.
-        // Asking for a missing column makes PostgREST error and would break the
-        // whole fetch. So we try WITH avatar_url first; if that fails we retry
-        // with just display_name (names keep working, photos stay as initials).
+        // We want avatar_url AND payment_note too, but each of those columns
+        // only exists after its own migration has been run (avatar_url arrives
+        // with db/08, payment_note one migration later with db/20). Asking for
+        // a column that doesn't exist makes PostgREST error and would break the
+        // WHOLE fetch, so we walk a ladder — most complete query first, falling
+        // back one rung at a time:
+        //   1. id, display_name, avatar_url, payment_note  (db/08 + db/20 run)
+        //   2. id, display_name, avatar_url                (db/08 run, db/20 not)
+        //   3. id, display_name                            (neither run)
+        // Only the LAST rung is allowed to throw. Names therefore keep working
+        // in every case; photos fall back to initials and payment notes are
+        // simply not shown.
         let otherProfiles = null;
-        const withAvatar = await supabase
+        const withNote = await supabase
           .from('profiles')
-          .select('id, display_name, avatar_url')
+          .select('id, display_name, avatar_url, payment_note')
           .in('id', otherUserIds);
 
-        if (withAvatar.error) {
-          // Most likely the avatar_url column doesn't exist yet (db/08 not run).
-          // Fall back to the original name-only query so reads never break.
-          const nameOnly = await supabase
-            .from('profiles')
-            .select('id, display_name')
-            .in('id', otherUserIds);
-          if (nameOnly.error) throw nameOnly.error;
-          otherProfiles = nameOnly.data;
+        if (!withNote.error) {
+          otherProfiles = withNote.data;
         } else {
-          otherProfiles = withAvatar.data;
+          // Most likely the payment_note column doesn't exist yet (db/20 not
+          // run). Retry without it — avatars still work.
+          const withAvatar = await supabase
+            .from('profiles')
+            .select('id, display_name, avatar_url')
+            .in('id', otherUserIds);
+
+          if (!withAvatar.error) {
+            otherProfiles = withAvatar.data;
+          } else {
+            // Most likely the avatar_url column doesn't exist either (db/08 not
+            // run). Fall back to the original name-only query so reads never break.
+            const nameOnly = await supabase
+              .from('profiles')
+              .select('id, display_name')
+              .in('id', otherUserIds);
+            if (nameOnly.error) throw nameOnly.error;
+            otherProfiles = nameOnly.data;
+          }
         }
 
         (otherProfiles || []).forEach(p => {
           profilesMap[p.id] = p.display_name;
           // avatar_url is undefined before db/08 → store null (Avatar shows initials).
           avatarMap[p.id] = p.avatar_url || null;
+          // payment_note is undefined before db/20 → store null (nothing rendered).
+          paymentNoteMap[p.id] = p.payment_note || null;
         });
       }
 
@@ -455,6 +484,11 @@ export function useExpenseStore(userId, profile) {
         // Real members look up their photo by user_id; ghosts have no account
         // so they get null and the UI falls back to initials.
         const memberAvatars = {};
+        // Per-member payment note: display name → free-text "how to pay me"
+        // string (or null). Keyed by display NAME exactly like memberAvatars,
+        // because the settle-up UI works in names, not user ids. Ghosts have no
+        // account and therefore no note.
+        const memberPaymentNotes = {};
         members.forEach(m => {
           const displayName = memberDisplayName(m, profilesMap);
           memberMeta[displayName] = {
@@ -462,6 +496,7 @@ export function useExpenseStore(userId, profile) {
             memberId: m.id,
           };
           memberAvatars[displayName] = m.user_id ? (avatarMap[m.user_id] || null) : null;
+          memberPaymentNotes[displayName] = m.user_id ? (paymentNoteMap[m.user_id] || null) : null;
         });
 
         // One "joined" event per member for the Activity timeline.
@@ -494,6 +529,11 @@ export function useExpenseStore(userId, profile) {
           // Per-member avatar URLs for the UI. Shape: { [displayName]: url|null }.
           // Ghosts and members without a photo are null → Avatar shows initials.
           _memberAvatars: memberAvatars,
+          // Per-member "how to pay me" notes for the settle-up UI.
+          // Shape: { [displayName]: string|null }. Null for ghosts, for anyone
+          // who hasn't written one, and for everyone before db/20 is run.
+          // Display only — the app never touches money (see CLAUDE.md §8).
+          _memberPaymentNotes: memberPaymentNotes,
           // "X joined" events for the Activity timeline. Shape:
           // [{ name, isGhost, createdAt }]. One entry per member.
           _memberJoins: memberJoins,
