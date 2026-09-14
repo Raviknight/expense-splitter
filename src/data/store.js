@@ -586,9 +586,21 @@ export function useExpenseStore(userId, profile) {
             _settleTo:   memberIdToName[s.to_member] || 'Unknown',
           }));
 
-        // Build a map from display-name → { isGhost, memberId } so the UI
-        // can tell apart real connected members from ghost members without
+        // Build a map from display-name → { isGhost, memberId, userId } so the
+        // UI can tell apart real connected members from ghost members without
         // knowing about UUIDs.
+        //
+        // `userId` is the member's ACCOUNT id (profiles.id / auth.uid()), and it
+        // is here for one reason: so the UI can work out, without asking the
+        // server, whether the signed-in person would be allowed to delete a row
+        // (db/23 — the payer of an expense, either party to a settlement, or the
+        // group owner). A ghost has no account, so it is null — and because null
+        // can never equal a signed-in user's id, nobody matches a ghost and the
+        // owner is the only route to deleting a ghost-paid expense. That is
+        // exactly what db/23's policy says.
+        //
+        // This is NOT a security boundary. See the long note next to
+        // `deleteDenyReason` in App.jsx.
         const memberMeta = {};
         // Per-member avatar map: display name → avatar_url (or null).
         // Real members look up their photo by user_id; ghosts have no account
@@ -604,6 +616,11 @@ export function useExpenseStore(userId, profile) {
           memberMeta[displayName] = {
             isGhost:  m.ghost_name !== null && m.ghost_name !== undefined,
             memberId: m.id,
+            // The account behind this member, or null for a ghost. `|| null`
+            // rather than leaving it undefined so a missing value is always the
+            // same value — `undefined === undefined` is true, and an accidental
+            // comparison of two unknowns must never read as a match.
+            userId:   m.user_id || null,
           };
           memberAvatars[displayName] = m.user_id ? (avatarMap[m.user_id] || null) : null;
           memberPaymentNotes[displayName] = m.user_id ? (paymentNoteMap[m.user_id] || null) : null;
@@ -654,8 +671,10 @@ export function useExpenseStore(userId, profile) {
           // Internal maps — not used by UI rendering but needed by write helpers.
           _nameToMemberId: nameToMemberId,
           _memberIdToName: memberIdToName,
-          // Per-member metadata for the UI (ghost badge, etc.).
-          // Shape: { [displayName]: { isGhost: bool, memberId: uuid } }
+          // Per-member metadata for the UI (ghost badge, delete-permission
+          // preview, etc.).
+          // Shape: { [displayName]: { isGhost: bool, memberId: uuid,
+          //                           userId: uuid|null } }
           _memberMeta: memberMeta,
           // Per-member avatar URLs for the UI. Shape: { [displayName]: url|null }.
           // Ghosts and members without a photo are null → Avatar shows initials.
@@ -1809,6 +1828,17 @@ export function useExpenseStore(userId, profile) {
       // up right away without needing a manual reload.
       await fetchRef.current();
       return { ok: true, inviter: data.inviter, group: data.group };
+    },
+
+    // ── Show a message in the app's error banner ─────────────────────────────
+    // For a problem the UI can establish on its own, with NO server round trip
+    // and therefore no write to roll back. Today that means a delete db/23 is
+    // certain to refuse: the caller explains it and never calls deleteExpense,
+    // so nothing is optimistically removed and the row never moves. Every other
+    // error in this file is set on a failure path; this one exists so a failure
+    // path can be avoided entirely.
+    showError(message) {
+      setError(message);
     },
 
     // ── Clear any error (used by retry / dismiss buttons) ────────────────────

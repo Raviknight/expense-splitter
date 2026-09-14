@@ -1104,6 +1104,107 @@ export default function App() {
   const expenses = activeGroup?.expenses || [];
   const realExpenses = expenses.filter(e => e.type !== 'settlement');
 
+  /* ----- Who may delete what — A PREDICTION, NOT A PERMISSION CHECK ---------
+   *
+   * ⚠️ THIS IS NOT A SECURITY CONTROL. Nothing below protects any data.
+   *
+   * The rule that protects the data is the Row-Level Security policy in
+   * db/23 ("payer or owner deletes expenses" / "party or owner deletes
+   * settlements"), enforced by Postgres on every request. It cannot be
+   * bypassed from a browser: editing this file, this bundle, or the React
+   * state in devtools changes nothing about what the database will do. If the
+   * check below were wrong in the permissive direction, the delete would still
+   * be refused by the server — the user would simply see the old behaviour
+   * (a row vanishing and coming back) instead of a clear explanation.
+   *
+   * So what is it for? Purely to avoid OFFERING an action that is certain to
+   * fail. The app deletes optimistically: the row leaves the screen at once and
+   * only returns when the refetch lands. On a slow connection that is seconds
+   * of a money record appearing to be destroyed, followed by it reappearing and
+   * an error. In an app about money, watching a record disappear reads as data
+   * loss — a user may believe they destroyed something and act on it. Showing
+   * the doomed action and then visibly undoing it is the worst of both, so the
+   * control is disabled up front and says why.
+   *
+   * Because it is only a prediction, it MIRRORS db/23 exactly and it fails
+   * OPEN, never closed. If it ever disagrees with the database the database
+   * wins, and an unnecessary-but-attempted delete is a far smaller harm than a
+   * bin that is dead for someone who is in fact allowed to use it. Never let
+   * this grow into something the data is assumed to depend on; if you change
+   * db/23, change this to match, and if you cannot, delete this rather than
+   * leave it lying.
+   */
+
+  // The signed-in account. May be briefly undefined while the session is loading
+  // or a token is refreshing (App is only mounted when signed in, so this is a
+  // moment, not a state). See the `!myUserId` branch below for what we do then.
+  const myUserId = user?.id;
+
+  // Wording. Kept without a trailing full stop so it reads as a tooltip; the
+  // banner adds one so it matches the sentence the server sends back verbatim
+  // ('Only the person who paid, or the group owner, can delete this.').
+  const DENY_EXPENSE    = 'Only the person who paid, or the group owner, can delete this';
+  const DENY_SETTLEMENT = 'Only the two people in this settlement, or the group owner, can delete it';
+
+  // Returns null when the signed-in user would be allowed to delete `entry`,
+  // otherwise the sentence explaining why not.
+  const deleteDenyReason = (entry) => {
+    // Nothing to judge — let the normal path run and let the server answer.
+    if (!entry) return null;
+
+    // FAIL OPEN while we do not know who is signed in. Disabling every bin on
+    // an unknown id risks a permanently dead control if the id never arrives,
+    // which is a worse failure than one doomed request: the user could not
+    // delete their OWN expense and nothing would tell them why. The database
+    // still decides, so the cost of being wrong here is the pre-existing
+    // behaviour, not a lost record.
+    if (!myUserId) return null;
+
+    // The group owner may delete anything in the group (db/23, both policies).
+    if (activeGroup?.owner_id === myUserId) return null;
+
+    const meta = activeGroup?._memberMeta || {};
+
+    // Resolve a member's display NAME to the account behind it. Three answers,
+    // and the third is the one that is easy to miss:
+    //   a uuid    — that member's account
+    //   null      — we know, and there is no account: a ghost, or a name that
+    //               is not a member of this group at all. null never equals
+    //               myUserId (a non-empty string by the time we get here), so
+    //               nobody is ever mistaken for a ghost.
+    //   undefined — we do NOT know. The offline snapshot in localStorage is the
+    //               whole groups array as it was last fetched, so straight after
+    //               this change ships the app renders a snapshot written by the
+    //               PREVIOUS bundle, whose _memberMeta entries have no `userId`
+    //               key at all. Reading that as "no account" would grey out
+    //               everyone's own bin for the second or two until the first
+    //               fetch lands. Unknown means fail open, same as an unknown
+    //               myUserId.
+    // Optional chaining throughout, so a missing map or member cannot throw.
+    const accountFor = (name) => {
+      const m = meta[name];
+      if (m && !('userId' in m)) return undefined;  // pre-upgrade cached shape
+      return m?.userId ?? null;
+    };
+
+    if (entry.type === 'settlement') {
+      // Either party. The row carries display NAMES (_settleFrom / _settleTo).
+      const fromUserId = accountFor(entry._settleFrom);
+      const toUserId   = accountFor(entry._settleTo);
+      if (fromUserId === undefined || toUserId === undefined) return null;
+      if (fromUserId === myUserId || toUserId === myUserId) return null;
+      return DENY_SETTLEMENT;
+    }
+
+    // An expense: only the person it says PAID for it. A ghost has no account,
+    // so its userId is null, nobody matches, and the owner is the only route —
+    // which is precisely what db/23 intends.
+    const payerUserId = accountFor(entry.paidBy);
+    if (payerUserId === undefined) return null;
+    if (payerUserId === myUserId) return null;
+    return DENY_EXPENSE;
+  };
+
   /* ----- Derived ----- */
   const total = realExpenses.reduce((s, e) => s + Number(e.amount || 0), 0);
 
@@ -1224,6 +1325,22 @@ export default function App() {
   const removeExpense = async (id) => {
     // Work out whether this id belongs to a settlement or a regular expense.
     const item = expenses.find(e => e.id === id);
+
+    // BELT AND BRACES. The bin is already disabled on rows the user cannot
+    // delete, but a disabled button is not the only way in — a stale render, a
+    // keyboard activation that lands before the disable, or a future caller
+    // could all reach here. Answering here rather than in the store is what
+    // makes the difference the owner asked for: actions.deleteExpense removes
+    // the row from the screen FIRST and only puts it back when the refetch
+    // lands, so the only way to avoid the flash is not to call it at all.
+    // (Again: this is not the permission check. db/23 is. See the long note by
+    // deleteDenyReason.)
+    const denied = deleteDenyReason(item);
+    if (denied) {
+      actions.showError(`${denied}.`);
+      return;
+    }
+
     const isSettlement = item?.type === 'settlement';
     await actions.deleteExpense(activeGroup.id, id, isSettlement);
   };
@@ -1570,6 +1687,7 @@ export default function App() {
             sortBy={sortBy} setSortBy={setSortBy}
             onEdit={setEditing}
             onDelete={removeExpense}
+            deleteDenyReason={deleteDenyReason}
             isSolo={isSolo}
           />
         )}
@@ -2557,7 +2675,12 @@ function SoloStrip({ expenses, total }) {
 
 /* ============ Tabs ============ */
 
-function ExpensesTab({ grouped, count, visibleTotal, search, setSearch, filterCat, setFilterCat, sortBy, setSortBy, onEdit, onDelete, isSolo }) {
+// `deleteDenyReason(entry)` returns null when the signed-in user may delete that
+// row, or the sentence explaining why not. It defaults to "no reason to refuse"
+// so a caller that forgets to pass it degrades to the old behaviour (every bin
+// enabled, the database still refusing) rather than silently disabling
+// everything — the check is a UX prediction, not a guard. See App().
+function ExpensesTab({ grouped, count, visibleTotal, search, setSearch, filterCat, setFilterCat, sortBy, setSortBy, onEdit, onDelete, deleteDenyReason = () => null, isSolo }) {
   return (
     <div>
       <div className="space-y-2 mb-3">
@@ -2604,9 +2727,20 @@ function ExpensesTab({ grouped, count, visibleTotal, search, setSearch, filterCa
             {date === 'All' ? `${list.length} results` : formatDay(date)}
           </div>
           <div className="bg-white border border-stone-200 rounded-xl overflow-hidden divide-y divide-stone-100">
-            {list.map(e => (
-              <ExpenseRow key={e.id} e={e} onEdit={() => onEdit(e)} onDelete={() => onDelete(e.id)} isSolo={isSolo} />
-            ))}
+            {list.map(e => {
+              const denyReason = deleteDenyReason(e);
+              return (
+                <ExpenseRow
+                  key={e.id}
+                  e={e}
+                  onEdit={() => onEdit(e)}
+                  onDelete={() => onDelete(e.id)}
+                  canDelete={!denyReason}
+                  denyReason={denyReason}
+                  isSolo={isSolo}
+                />
+              );
+            })}
           </div>
         </section>
       ))}
@@ -2614,8 +2748,24 @@ function ExpensesTab({ grouped, count, visibleTotal, search, setSearch, filterCa
   );
 }
 
-function ExpenseRow({ e, onEdit, onDelete, isSolo }) {
+// `canDelete` / `denyReason` come from ExpensesTab and describe whether the
+// signed-in user would be ALLOWED to delete this row (db/23). They default to
+// "allowed" so a missing prop can never produce a dead control.
+//
+// The bin is DISABLED rather than hidden when the answer is no. A control that
+// disappears is confusing and teaches the user nothing; a disabled one with a
+// reason attached says what the rule is and who to ask. Nothing here protects
+// the data — see the note by deleteDenyReason in App().
+function ExpenseRow({ e, onEdit, onDelete, canDelete = true, denyReason = null, isSolo }) {
   const isSettle = e.type === 'settlement';
+  // min-h-[44px]/min-w-[44px]: the minimum comfortable tap target on a phone.
+  // Written as arbitrary values because `min-h-11` does nothing in this Tailwind
+  // version. The icon size is unchanged — only the hit area is guaranteed.
+  const binBase = 'min-h-[44px] min-w-[44px] flex items-center justify-center rounded shrink-0';
+  const binTone = canDelete
+    ? 'text-stone-400 hover:text-red-600'
+    : 'text-stone-300 cursor-not-allowed';
+  const binTitle = canDelete ? 'Delete' : denyReason;
   const meta = catMeta(e.category);
   const mode = e.splitMode || 'equal';
   const modeMeta = SPLIT_MODES.find(m => m.id === mode);
@@ -2637,7 +2787,21 @@ function ExpenseRow({ e, onEdit, onDelete, isSolo }) {
         <div className="text-right shrink-0">
           <div className="font-semibold tabular-nums text-sm text-emerald-900">{fmt(Number(e.amount || 0))}</div>
         </div>
-        <button onClick={onDelete} className="p-1.5 text-stone-400 hover:text-red-600 rounded shrink-0">
+        <button
+          type="button"
+          onClick={onDelete}
+          // aria-disabled, NOT disabled. A truly disabled button cannot be clicked,
+          // and this is a phone-first app: with no hover there is no tooltip, so a
+          // blocked user would see a greyed bin and be told NOTHING - the exact
+          // silent failure this whole change exists to end, reintroduced on the
+          // platform most people use. Left clickable, the tap routes to
+          // removeExpense, which refuses and shows the reason. Still no optimistic
+          // removal, still no doomed request.
+          aria-disabled={!canDelete}
+          title={binTitle}
+          aria-label={binTitle}
+          className={`${binBase} ${binTone}`}
+        >
           <Trash2 className="w-3.5 h-3.5" />
         </button>
       </div>
@@ -2665,7 +2829,21 @@ function ExpenseRow({ e, onEdit, onDelete, isSolo }) {
         <button onClick={onEdit} className="p-1.5 text-stone-400 hover:text-stone-700 rounded">
           <Pencil className="w-3.5 h-3.5" />
         </button>
-        <button onClick={onDelete} className="p-1.5 text-stone-400 hover:text-red-600 rounded">
+        <button
+          type="button"
+          onClick={onDelete}
+          // aria-disabled, NOT disabled. A truly disabled button cannot be clicked,
+          // and this is a phone-first app: with no hover there is no tooltip, so a
+          // blocked user would see a greyed bin and be told NOTHING - the exact
+          // silent failure this whole change exists to end, reintroduced on the
+          // platform most people use. Left clickable, the tap routes to
+          // removeExpense, which refuses and shows the reason. Still no optimistic
+          // removal, still no doomed request.
+          aria-disabled={!canDelete}
+          title={binTitle}
+          aria-label={binTitle}
+          className={`${binBase} ${binTone}`}
+        >
           <Trash2 className="w-3.5 h-3.5" />
         </button>
       </div>
