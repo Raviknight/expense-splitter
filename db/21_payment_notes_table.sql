@@ -67,13 +67,25 @@
 --
 -- Defined here AND in db/22 with identical bodies (`create or replace` makes
 -- that a no-op) so neither migration depends on the other having been run.
+--
+-- NOTE THE NAMED TAG on the quote below rather than an untagged one. Supabase
+-- dashboard's SQL editor splits a script into statements itself, and its
+-- splitter loses track of untagged dollar-quotes once a file contains more than
+-- one such block — it cut this file mid-block and handed Postgres a fragment,
+-- which failed with "unterminated dollar-quoted string". The SQL was valid;
+-- their parser was not. Named tags are unambiguous to both, so every
+-- dollar-quoted block in this file carries one.
+--
+-- For the same reason, the comments in this file deliberately never write an
+-- untagged dollar-quote as literal characters: a naive splitter does not skip
+-- comments, so merely DESCRIBING the problem could re-create it.
 create or replace function public.shares_group_with(other uuid)
 returns boolean
 language sql
 security definer
 stable
 set search_path = public
-as $$
+as $fn$
   select exists (
     select 1
       from group_members mine
@@ -81,7 +93,7 @@ as $$
      where mine.user_id   = auth.uid()
        and theirs.user_id = other
   );
-$$;
+$fn$;
 
 -- 1. The table. One row per user, so the primary key IS the user id.
 create table if not exists public.payment_notes (
@@ -92,16 +104,14 @@ create table if not exists public.payment_notes (
 
 -- Same 200-char cap db/20 used: a note is one short line, not unbounded
 -- storage, and not a wall of text in someone else's settle-up screen.
-do $$
-begin
-  if not exists (
-    select 1 from pg_constraint where conname = 'payment_notes_len'
-  ) then
-    alter table public.payment_notes
-      add constraint payment_notes_len
-      check (note is null or char_length(note) <= 200);
-  end if;
-end $$;
+-- Written as drop-then-add rather than a DO-block existence check. Two
+-- plain statements are idempotent just the same, and they remove one more
+-- dollar-quoted block from a file the dashboard editor already struggled to
+-- split. Dropping a constraint that isn't there is a no-op.
+alter table public.payment_notes drop constraint if exists payment_notes_len;
+alter table public.payment_notes
+  add constraint payment_notes_len
+  check (note is null or char_length(note) <= 200);
 
 alter table public.payment_notes enable row level security;
 
@@ -120,7 +130,12 @@ grant select, insert, update, delete on public.payment_notes to authenticated;
 -- 2. Carry across anything already written under db/20, so nobody has to
 --    retype a note they have already saved. Guarded so this migration still
 --    runs cleanly on a database where db/20 was never applied.
-do $$
+--    This one genuinely needs a block: the insert references
+--    profiles.payment_note, which may not exist, and a plain statement naming a
+--    missing column fails at PARSE time — before any `if` could protect it.
+--    Hence dynamic SQL inside a tagged block, named for the same reason as the
+--    function above.
+do $copy$
 begin
   if exists (
     select 1 from information_schema.columns
@@ -128,14 +143,17 @@ begin
       and table_name   = 'profiles'
       and column_name  = 'payment_note'
   ) then
-    insert into public.payment_notes (user_id, note)
-    select id, payment_note
-      from public.profiles
-     where payment_note is not null
-       and btrim(payment_note) <> ''
-    on conflict (user_id) do nothing;   -- never clobber a newer note
+    execute $sql$
+      insert into public.payment_notes (user_id, note)
+      select id, payment_note
+        from public.profiles
+       where payment_note is not null
+         and btrim(payment_note) <> ''
+      on conflict (user_id) do nothing
+    $sql$;
   end if;
-end $$;
+end
+$copy$;
 
 -- 3. Policies.
 --

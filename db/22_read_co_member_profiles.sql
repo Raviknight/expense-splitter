@@ -51,7 +51,7 @@ language sql
 security definer
 stable
 set search_path = public
-as $$
+as $fn$
   select exists (
     select 1
       from group_members mine
@@ -59,7 +59,7 @@ as $$
      where mine.user_id   = auth.uid()
        and theirs.user_id = other
   );
-$$;
+$fn$;
 
 -- The new read path. Policies are OR'd, so this ADDS to "read own profile" and
 -- "read connected profiles" rather than replacing either — nothing that works
