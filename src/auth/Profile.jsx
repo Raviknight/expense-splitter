@@ -37,6 +37,48 @@ import Avatar from '../ui/Avatar.jsx';
 // error they could do nothing about.
 const PAYMENT_NOTE_MAX = 200;
 
+// ── Example payment notes, ordered by the user's preferred currency ─────────
+//
+// It stays ONE free-text box. This does not add a UPI field and a Venmo field
+// and a PayPal field — that per-app, per-country design was explicitly rejected
+// (CLAUDE.md §8) because it never stops growing and breaks the moment someone
+// travels. All this does is decide which example a person reads FIRST.
+//
+// Why currency and not IP geolocation: a VPN, a work proxy or a two-week trip
+// all make an IP lie, and asking for a location permission to reorder four
+// words is absurd. profiles.preferred_currency (db/04) is something the user
+// set themselves, so it is both more accurate and free.
+//
+// Rules for every list:
+//   • several examples, always — someone in India still has to pay a friend
+//     abroad, so the other options must stay visible rather than be hidden;
+//   • one internationally-usable option (PayPal / Wise) in every list;
+//   • "Cash is fine" everywhere, because it is always a valid answer;
+//   • never an example that invites private data. The copy next to the box
+//     says no card or full account numbers, so the bank-transfer examples are
+//     a reference or "ask me", never an account number or a full IBAN.
+const PAYMENT_NOTE_HINTS = {
+  INR:     ['UPI: name@bank', 'Bank ref: SPLITAB-RAVI', 'PayPal: you@email', 'Cash is fine'],
+  USD:     ['Venmo: @handle', 'Zelle: you@email', 'Cash App: $handle', 'PayPal: you@email', 'Cash is fine'],
+  GBP:     ['Bank transfer — ask me for details', 'Monzo: monzo.me/yourname', 'Revolut: @handle', 'PayPal: you@email', 'Cash is fine'],
+  EUR:     ['Bank transfer — IBAN on request', 'Revolut: @handle', 'Wise: you@email', 'PayPal: you@email', 'Cash is fine'],
+  CAD:     ['Interac e-Transfer: you@email', 'Bank transfer — ask me for details', 'PayPal: you@email', 'Cash is fine'],
+  AUD:     ['PayID: you@email', 'Bank transfer — ask me for details', 'Wise: you@email', 'Cash is fine'],
+  NZD:     ['Bank transfer — ask me for details', 'Wise: you@email', 'PayPal: you@email', 'Cash is fine'],
+  SGD:     ['PayNow: you@email', 'Bank transfer — ask me for details', 'Wise: you@email', 'Cash is fine'],
+  AED:     ['Bank transfer — ask me for details', 'Careem Pay: @handle', 'Wise: you@email', 'Cash is fine'],
+  // Anything else, or nobody has set a currency yet: nothing country-specific
+  // goes first, just the options that work more or less anywhere.
+  DEFAULT: ['PayPal: you@email', 'Wise: you@email', 'Bank transfer — ask me for details', 'Cash is fine'],
+};
+
+// Pick the example list for a currency code. Unknown / missing / not-yet-run
+// db/04 all fall through to the neutral generic order.
+function paymentHintsFor(currency) {
+  const code = typeof currency === 'string' ? currency.trim().toUpperCase() : '';
+  return PAYMENT_NOTE_HINTS[code] || PAYMENT_NOTE_HINTS.DEFAULT;
+}
+
 export default function Profile({ onClose }) {
   // Pull what we need from the auth context.
   // refreshProfile re-fetches the profiles row and updates the whole app.
@@ -64,6 +106,13 @@ export default function Profile({ onClose }) {
   // down. A hook after a conditional return only runs on some renders, which
   // React rejects with a hook-order error.
   const [paymentNote, setPaymentNote]   = useState(profile?.payment_note || '');
+
+  // Which examples to show, and in what order. Driven by the currency the user
+  // already chose in Settings (profiles.preferred_currency, db/04) — see
+  // PAYMENT_NOTE_HINTS above. Plain derived value, no state and no hook: it is
+  // recomputed on render, so changing the currency in Settings is reflected
+  // the next time this screen renders.
+  const noteHints = paymentHintsFor(profile?.preferred_currency);
   const [noteSaving, setNoteSaving]     = useState(false);
   const [noteSaved, setNoteSaved]       = useState(false);
   const [noteError, setNoteError]       = useState(null);
@@ -556,16 +605,18 @@ export default function Profile({ onClose }) {
                   setNoteError(null);
                   setNoteSaved(false);
                 }}
-                placeholder="e.g. UPI: name@bank"
+                placeholder={`e.g. ${noteHints[0]}`}
                 maxLength={PAYMENT_NOTE_MAX}
                 className="rounded-xl border border-stone-200 bg-white px-4 py-2.5 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-stone-400 resize-none"
               />
 
               <div className="flex items-start justify-between gap-3">
+                {/* Still ONE box and still several examples — the currency only
+                    decides which one is read first. Anything on this list is a
+                    valid answer, including paying a friend in another country. */}
                 <p className="text-xs text-stone-400">
-                  Examples: “UPI: name@bank” · “Venmo: @handle” · “Bank ref: SPLITAB-RAVI” ·
-                  “Cash is fine”. Splitab never handles the money — it only shows this note
-                  and records that you were paid.
+                  Examples: {noteHints.map(h => `“${h}”`).join(' · ')}. Splitab never handles
+                  the money — it only shows this note and records that you were paid.
                 </p>
                 <span className="text-xs text-stone-400 shrink-0 tabular-nums">
                   {paymentNote.length}/{PAYMENT_NOTE_MAX}

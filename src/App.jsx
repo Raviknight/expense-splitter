@@ -2848,6 +2848,13 @@ function SummaryTab({ expenses, settlements, balances, sharedPool, total, people
   const duoFrom = balances.length >= 2 ? (a.net > 0 ? balances[1].name : a.name) : null;
   const duoTo   = balances.length >= 2 ? (a.net > 0 ? a.name : balances[1].name) : null;
 
+  // Everyone who owes ME in the current suggestion set. Used for the single
+  // "add your own payment details" nudge below — computed once here, so three
+  // people owing you still produces exactly ONE prompt, not three.
+  const myPayers = isMulti
+    ? suggestions.filter(s => s.to === myName).map(s => s.from)
+    : (suggestions.length > 0 && duoTo === myName ? [duoFrom] : []);
+
   return (
     <div className="space-y-3">
       <div className="bg-white border border-stone-200 rounded-xl p-4">
@@ -2949,6 +2956,10 @@ function SummaryTab({ expenses, settlements, balances, sharedPool, total, people
             </button>
           </>
         )}
+        {/* Rendered ONCE for the whole card, outside both branches and outside
+            the suggestion loop: one prompt however many people owe you. It
+            hides itself when you already have a note (see the component). */}
+        <OwnPaymentNoteNudge myNote={notes[myName]} payers={myPayers} tone="dark" />
       </div>
 
       {/* ── Export the group (CSV download + printable PDF) ───────────────────
@@ -3819,8 +3830,12 @@ function GroupForm({ group, myName, profile, onSave, onCancel }) {
  * deep link, no API, no button that launches anything. Handling money in-app
  * would make Splitab a regulated payment service (CLAUDE.md §8).
  *
- * Renders NOTHING when the note is missing, empty or whitespace — a member who
- * never wrote one costs no space at all (no stray label, no "undefined").
+ * When the note is EMPTY we say so in one quiet line instead of rendering
+ * nothing. Every call site is already gated on the viewer being the payer, so
+ * inside here "empty" can only mean "the person I owe hasn't set this up" —
+ * and blank space left the payer unable to tell that apart from a broken app.
+ * It is deliberately lighter than a real note (it is an explanation, not an
+ * error) and it never appears to anyone but the person who has to pay.
  *
  * Long notes: these are free text up to 200 chars and can be one unbroken
  * token, so `break-words` lets them wrap inside the row instead of blowing the
@@ -3829,10 +3844,57 @@ function GroupForm({ group, myName, profile, onSave, onCancel }) {
  */
 function PaymentNoteLine({ name, note, tone = 'light' }) {
   const text = typeof note === 'string' ? note.trim() : '';
-  if (!text) return null;
+  // No name = nothing sensible to say (e.g. a 1-person balance list).
+  if (!name) return null;
+  if (!text) {
+    return (
+      <div className={`text-[11px] mt-0.5 leading-snug break-words italic ${tone === 'dark' ? 'text-stone-500' : 'text-stone-400'}`}>
+        {name} hasn't added payment details.
+      </div>
+    );
+  }
   return (
     <div className={`text-[11px] mt-0.5 leading-snug break-words ${tone === 'dark' ? 'text-stone-400' : 'text-stone-500'}`}>
       Pay {name}: <span className="select-all">{text}</span>
+    </div>
+  );
+}
+
+/* ============ "Add your own payment details" nudge ============
+ *
+ * The mirror image of PaymentNoteLine. It is shown to the PAYEE — the person
+ * someone else owes money to — when THEY have not written their own note, so
+ * the payer has nothing to read. Settle-up is the exact moment the feature
+ * would have paid off for them, which is why the prompt lives here instead of
+ * being a generic banner somewhere in Settings.
+ *
+ * Plain text only, on purpose: it names the Profile screen in words rather
+ * than offering navigation or a button. Still no payment integration of any
+ * kind (CLAUDE.md §8).
+ *
+ * ONE per settle-up view: callers render this ONCE, outside the suggestion
+ * loop, and pass every person who owes them. Three debts owed to you is still
+ * one thing to fix, so it is one prompt.
+ *
+ * Renders nothing when the user already has a note, or when nobody in the
+ * current suggestion set owes them.
+ */
+function OwnPaymentNoteNudge({ myNote, payers, tone = 'light' }) {
+  const mine = typeof myNote === 'string' ? myNote.trim() : '';
+  if (mine) return null;                      // already set up — say nothing
+  const names = (payers || []).filter(Boolean);
+  if (names.length === 0) return null;        // nobody owes you right now
+
+  // "Shailja", "Shailja and Amit", "Shailja and 2 others".
+  const who =
+    names.length === 1 ? names[0] :
+    names.length === 2 ? `${names[0]} and ${names[1]}` :
+    `${names[0]} and ${names.length - 1} others`;
+  const verb = names.length === 1 ? 'knows' : 'know';
+
+  return (
+    <div className={`text-[11px] mt-2 leading-snug break-words ${tone === 'dark' ? 'text-stone-400' : 'text-stone-500'}`}>
+      Add your payment details on your Profile so {who} {verb} how to pay you.
     </div>
   );
 }
@@ -3886,6 +3948,14 @@ function SettleModal({ balances, people, entries, paymentNotes, myName, onClose,
               <PaymentNoteLine name={toPerson} note={(paymentNotes || {})[toPerson]} />
             )}
           </div>
+
+          {/* The reverse case: THEY are paying YOU and you never wrote a note,
+              so there is nothing for them to read. One prompt, and only when
+              you're the payee on this single payment. */}
+          <OwnPaymentNoteNudge
+            myNote={(paymentNotes || {})[myName]}
+            payers={toPerson === myName ? [fromPerson] : []}
+          />
 
           <Field label="Amount">
             <div className="relative">
@@ -3953,6 +4023,10 @@ function MultiSettleModal({ people, entries, paymentNotes, myName, onClose, onRe
   const net = computeNetBalances(people, entries || []);
   const suggestions = suggestSettlements(net);
 
+  // Everyone who owes ME in this list — collected once so the "add your own
+  // payment details" prompt below appears at most once per settle-up view.
+  const myPayers = suggestions.filter(s => s.to === myName).map(s => s.from);
+
   const handleRecord = async (s) => {
     const key = `${s.from}->${s.to}:${s.amount}`;
     setBusyKey(key);
@@ -4015,6 +4089,10 @@ function MultiSettleModal({ people, entries, paymentNotes, myName, onClose, onRe
               })}
             </div>
           )}
+
+          {/* ONE nudge for the whole list (outside the map above): if three of
+              these rows pay YOU, that is still a single thing to go and fix. */}
+          <OwnPaymentNoteNudge myNote={notes[myName]} payers={myPayers} />
         </div>
 
         <div className="border-t border-stone-200 px-4 py-3">
