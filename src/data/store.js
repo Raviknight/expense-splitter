@@ -19,6 +19,17 @@
 //   - When the device comes back online the outbox is flushed in order.
 //   - Group creation/rename/delete and adding/removing people are online-only.
 //
+// "How to pay me" notes (db/21):
+//   - Each person's free-text payment note lives in its OWN `payment_notes`
+//     table, not on `profiles` any more. It moved because reads of `profiles`
+//     are granted by a policy that only checks that a `connections` row EXISTS
+//     — it never looks at `status` — so a PENDING (or even DECLINED) request
+//     granted read access. `payment_notes` is readable only by yourself or by
+//     someone you have an ACCEPTED connection with.
+//   - The owner deploys this app BEFORE running db/21, so the read below works
+//     in both states: it queries `payment_notes` first and falls back to the
+//     old `profiles.payment_note` column while the new table is still missing.
+//
 // Usage:
 //   const { groups, activeGroupId, loading, error, online, pendingCount, actions }
 //     = useExpenseStore(userId, profile);
@@ -312,64 +323,96 @@ export function useExpenseStore(userId, profile) {
       // db/08 is run — that's fine, it just stays empty and Avatar shows initials.
       const avatarMap = { [userId]: profile?.avatar_url || null };
 
-      // Parallel map: user_id → payment_note (their free-text "how to pay me"
-      // line — a UPI id, a Venmo handle, "cash is fine"…). We seed it with the
-      // CURRENT user's own note from the `profile` arg, because a settle-up
-      // suggestion can name the signed-in user as the PAYEE and the other
-      // person needs to read it. profile.payment_note is undefined until db/20
-      // is run — that's fine, it just stays empty and nothing is displayed.
-      const paymentNoteMap = { [userId]: profile?.payment_note || null };
+      // Parallel map: user_id → their free-text "how to pay me" note (a UPI id,
+      // a Venmo handle, "cash is fine"…). Filled in by the payment_notes query
+      // further below — NOT from the `profile` arg any more, because db/21
+      // drops profiles.payment_note. Anyone without a note stays absent and
+      // nothing is displayed for them.
+      const paymentNoteMap = {};
 
       if (otherUserIds.length > 0) {
-        // We want avatar_url AND payment_note too, but each of those columns
-        // only exists after its own migration has been run (avatar_url arrives
-        // with db/08, payment_note one migration later with db/20). Asking for
-        // a column that doesn't exist makes PostgREST error and would break the
-        // WHOLE fetch, so we walk a ladder — most complete query first, falling
-        // back one rung at a time:
-        //   1. id, display_name, avatar_url, payment_note  (db/08 + db/20 run)
-        //   2. id, display_name, avatar_url                (db/08 run, db/20 not)
-        //   3. id, display_name                            (neither run)
+        // We want avatar_url too, but that column only exists after db/08 has
+        // been run. Asking for a column that doesn't exist makes PostgREST
+        // error and would break the WHOLE fetch, so we walk a ladder — most
+        // complete query first, falling back one rung at a time:
+        //   1. id, display_name, avatar_url  (db/08 run)
+        //   2. id, display_name              (db/08 not run)
         // Only the LAST rung is allowed to throw. Names therefore keep working
-        // in every case; photos fall back to initials and payment notes are
-        // simply not shown.
+        // in every case; photos simply fall back to initials.
+        //
+        // payment_note is deliberately NOT requested here any more: db/21 moves
+        // it to its own table and DROPS the column, so asking for it would
+        // start erroring the moment the owner runs that migration — and this
+        // ladder would then silently downgrade everyone to name-only.
         let otherProfiles = null;
-        const withNote = await supabase
+        const withAvatar = await supabase
           .from('profiles')
-          .select('id, display_name, avatar_url, payment_note')
+          .select('id, display_name, avatar_url')
           .in('id', otherUserIds);
 
-        if (!withNote.error) {
-          otherProfiles = withNote.data;
+        if (!withAvatar.error) {
+          otherProfiles = withAvatar.data;
         } else {
-          // Most likely the payment_note column doesn't exist yet (db/20 not
-          // run). Retry without it — avatars still work.
-          const withAvatar = await supabase
+          // Most likely the avatar_url column doesn't exist yet (db/08 not
+          // run). Fall back to the original name-only query so reads never break.
+          const nameOnly = await supabase
             .from('profiles')
-            .select('id, display_name, avatar_url')
+            .select('id, display_name')
             .in('id', otherUserIds);
-
-          if (!withAvatar.error) {
-            otherProfiles = withAvatar.data;
-          } else {
-            // Most likely the avatar_url column doesn't exist either (db/08 not
-            // run). Fall back to the original name-only query so reads never break.
-            const nameOnly = await supabase
-              .from('profiles')
-              .select('id, display_name')
-              .in('id', otherUserIds);
-            if (nameOnly.error) throw nameOnly.error;
-            otherProfiles = nameOnly.data;
-          }
+          if (nameOnly.error) throw nameOnly.error;
+          otherProfiles = nameOnly.data;
         }
 
         (otherProfiles || []).forEach(p => {
           profilesMap[p.id] = p.display_name;
           // avatar_url is undefined before db/08 → store null (Avatar shows initials).
           avatarMap[p.id] = p.avatar_url || null;
-          // payment_note is undefined before db/20 → store null (nothing rendered).
-          paymentNoteMap[p.id] = p.payment_note || null;
         });
+      }
+
+      // ── "How to pay me" notes (db/21) ──────────────────────────────────────
+      // ONE query for EVERY user id we care about, including the signed-in
+      // user's own. Their own note matters as much as anyone else's: a settle-up
+      // suggestion can name them as the PAYEE, and App.jsx reads notes[myName]
+      // for the nudge that offers it. It used to be seeded from
+      // `profile.payment_note`, which stops existing once db/21 drops that
+      // column — hence the id goes in this list instead.
+      //
+      // Two rungs, same shape as the profiles ladder above, because the owner
+      // deploys the app BEFORE running the migration:
+      //   1. payment_notes           (db/21 run — profiles.payment_note is gone)
+      //   2. profiles.payment_note   (db/21 not run yet — the table is missing)
+      // NEITHER rung may throw. A missing table or a missing column here must
+      // never take down an otherwise-good fetch: if both fail, the map is left
+      // empty and notes are simply not displayed.
+      const noteUserIds = [userId, ...otherUserIds];
+
+      const notesRes = await supabase
+        .from('payment_notes')
+        .select('user_id, note')
+        .in('user_id', noteUserIds);
+
+      if (!notesRes.error) {
+        (notesRes.data || []).forEach(r => {
+          paymentNoteMap[r.user_id] = r.note || null;
+        });
+      } else {
+        // Most likely the payment_notes table doesn't exist yet (db/21 not
+        // run). Read the old column the pre-db/21 way so notes keep displaying
+        // on an un-migrated database.
+        const legacyNotes = await supabase
+          .from('profiles')
+          .select('id, payment_note')
+          .in('id', noteUserIds);
+
+        if (!legacyNotes.error) {
+          (legacyNotes.data || []).forEach(p => {
+            paymentNoteMap[p.id] = p.payment_note || null;
+          });
+        }
+        // If that failed too (neither db/20 nor db/21 applied, or we're
+        // offline), we deliberately do nothing: an empty map means no notes are
+        // shown, which is exactly the pre-db/20 behaviour. No throw.
       }
 
       // 4. Assemble the UI shape for each group.
@@ -531,7 +574,8 @@ export function useExpenseStore(userId, profile) {
           _memberAvatars: memberAvatars,
           // Per-member "how to pay me" notes for the settle-up UI.
           // Shape: { [displayName]: string|null }. Null for ghosts, for anyone
-          // who hasn't written one, and for everyone before db/20 is run.
+          // who hasn't written one, and for everyone when neither db/20 nor
+          // db/21 has been run (nothing to read from in that case).
           // Display only — the app never touches money (see CLAUDE.md §8).
           _memberPaymentNotes: memberPaymentNotes,
           // "X joined" events for the Activity timeline. Shape:
@@ -580,8 +624,9 @@ export function useExpenseStore(userId, profile) {
       if (watchdogRef.current) { clearTimeout(watchdogRef.current); watchdogRef.current = null; }
       setLoading(false);
     }
-    // Depend on the two FIELDS actually used above (display_name at :306,
-    // avatar_url at :312), not on the `profile` OBJECT. AuthProvider hands us a
+    // Depend on the two FIELDS actually used above (display_name, to seed the
+    // profiles map, and avatar_url, to seed the avatar map) — NOT on the
+    // `profile` OBJECT. AuthProvider hands us a
     // fresh object identity on every profile load, which recreated fetchAll,
     // which re-fired the mount effect that calls it. That churn was invisible
     // before because a failed fetch simply gave up; now that failures schedule

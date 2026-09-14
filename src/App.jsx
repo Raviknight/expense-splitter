@@ -1522,7 +1522,25 @@ export default function App() {
         </div>
       </header>
 
-      <main className="max-w-3xl mx-auto px-4 py-4 pb-32">
+      {/* BOTTOM PADDING MUST CLEAR THE WHOLE FLOATING BUTTON STACK (see below).
+          The stack is `fixed`, so it never moves out of the way — the list has
+          to be able to scroll PAST it. If this padding is too small, the last
+          expense row comes to rest underneath the buttons and its pencil/bin
+          icons become unclickable (the FAB wrapper is z-30; the row is not).
+          That is exactly what happened when a second and third button were
+          added and this was left at pb-32 (128px).
+          Measured height of the stack, bottom of the viewport upward:
+            24px  bottom-6 offset
+          + 56px  Add-expense button (w-14 h-14)
+          + 12px  gap-3
+          + 48px  Import-CSV button (w-12 h-12)
+          + 12px  gap-3
+          + 48px  Scan button (w-12 h-12)
+          = 200px occupied, + 16px breathing room = 216px.
+          Raise this if a button is ever added to that column. Do NOT "fix" an
+          overlap by giving the rows a higher z-index — that just flips the
+          problem and makes the + button unclickable instead. */}
+      <main className="max-w-3xl mx-auto px-4 py-4 pb-[216px]">
         {tab === 'expenses' && (
           <ExpensesTab
             grouped={grouped}
@@ -1915,6 +1933,10 @@ function HomeScreen({
           "Your groups" label below, where it reads as a caption rather than a
           heading. */}
 
+      {/* pb-24 (96px) clears this screen's floating button: 24px bottom-6 offset
+          + 56px button = 80px, leaving 16px of breathing room. Only ONE button
+          floats here, so this is deliberately smaller than the group screen's
+          pb-[216px] — re-check it if a second button is ever added. */}
       <main className="max-w-3xl mx-auto px-4 py-4 pb-24 space-y-4">
 
         {/* At-a-glance balance across shared groups (one chip per currency). */}

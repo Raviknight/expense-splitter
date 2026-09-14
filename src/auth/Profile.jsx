@@ -5,19 +5,32 @@
 //   1. Upload / change / remove their profile photo (avatar).
 //   2. Edit their display name — saved to profiles.display_name.
 //   3. See their email address (read-only) and "member since" date.
-//   4. Write a free-text "how to pay me" note — saved to profiles.payment_note
-//      (db/20). It is SHOWN TO OTHER PEOPLE at settle-up, so the UI says so.
-//      The app never touches money: this is a note the payer reads, nothing
-//      more. No payment SDK, deep link or API — see db/20_payment_note.sql.
+//   4. Write a free-text "how to pay me" note — saved to its own
+//      `payment_notes` table (db/21). It is SHOWN TO OTHER PEOPLE at settle-up,
+//      so the UI says so. The app never touches money: this is a note the payer
+//      reads, nothing more. No payment SDK, deep link or API — see
+//      db/21_payment_notes_table.sql.
+//
+//      WHY ITS OWN TABLE. The note used to be profiles.payment_note (db/20),
+//      but reads of `profiles` are granted by a policy that only checks that a
+//      `connections` row EXISTS — it never looks at `status` — so a PENDING or
+//      even DECLINED request could read it. `payment_notes` is readable only by
+//      yourself or by someone you have an ACCEPTED connection with.
+//
+//      BOTH STATES MUST WORK. The owner deploys this build first and runs
+//      db/21 later, so every read and write here tries `payment_notes` and
+//      falls back to the old `profiles.payment_note` column while the table is
+//      still missing. Querying a missing table (or, after db/21, a missing
+//      column) makes PostgREST error, so neither path may assume one shape.
 //
 // Account-level settings (default currency, appearance, password change, and
 // sign out) now live on the separate Settings screen (src/auth/Settings.jsx),
 // opened from the gear icon in the top bar. This keeps Profile focused on
 // "who am I" and Settings on "how the app behaves".
 //
-// Table: profiles — columns used: id, display_name, email, created_at,
-// avatar_url, payment_note.
-// All names match 01_schema.sql / db/08 / db/20 exactly.
+// Tables: profiles — columns used: id, display_name, email, created_at,
+// avatar_url; payment_notes — columns used: user_id, note, updated_at.
+// All names match 01_schema.sql / db/08 / db/21 exactly.
 //
 // After a successful save we call refreshProfile() from AuthProvider so the
 // new values propagate to the top bar and to store.js.
@@ -32,9 +45,11 @@ import { useAuth } from './AuthProvider.jsx';
 import Avatar from '../ui/Avatar.jsx';
 
 // Longest "how to pay me" note we accept. MUST match the check constraint in
-// db/20_payment_note.sql (profiles_payment_note_len) — if the input let someone
-// type more than the database allows, the save would fail with a constraint
-// error they could do nothing about.
+// db/21_payment_notes_table.sql (payment_notes_len) — and the identical cap the
+// old db/20 column carried (profiles_payment_note_len), since we still write
+// that column before db/21 is run. If the input let someone type more than the
+// database allows, the save would fail with a constraint error they could do
+// nothing about.
 const PAYMENT_NOTE_MAX = 200;
 
 // ── Example payment notes, ordered by the user's preferred currency ─────────
@@ -79,6 +94,28 @@ function paymentHintsFor(currency) {
   return PAYMENT_NOTE_HINTS[code] || PAYMENT_NOTE_HINTS.DEFAULT;
 }
 
+// Does this error mean the `payment_notes` table simply isn't there yet — i.e.
+// db/21 hasn't been run? Used to decide whether to retry a save against the old
+// db/20 column. Deliberately NARROW: it must NOT match a length-constraint
+// violation or an RLS refusal, which are real answers from a table that exists.
+//
+// PostgREST reports an unknown table as 404 with code PGRST205 and a message
+// like: Could not find the table 'public.payment_notes' in the schema cache.
+// Postgres itself uses 42P01 ("relation ... does not exist").
+function looksLikeMissingNotesTable(dbError) {
+  if (!dbError) return false;
+  const m = (dbError.message || '').toLowerCase();
+  return (
+    dbError.code === '42P01' ||
+    dbError.code === 'PGRST205' ||
+    (m.includes('payment_notes') &&
+      (m.includes('does not exist') ||
+       m.includes('schema cache') ||
+       m.includes('could not find'))) ||
+    (m.includes('relation') && m.includes('does not exist'))
+  );
+}
+
 export default function Profile({ onClose }) {
   // Pull what we need from the auth context.
   // refreshProfile re-fetches the profiles row and updates the whole app.
@@ -97,14 +134,21 @@ export default function Profile({ onClose }) {
   const [photoError, setPhotoError] = useState(null);
   const [photoSaved, setPhotoSaved] = useState(false);
 
-  // ── "How to pay me" note state (db/20) ────────────────────────────────────
-  // Kept SEPARATE from the display-name form on purpose: if db/20 hasn't been
-  // run, saving this fails — and it must not take the (working) display-name
-  // save down with it. Same reasoning as the currency section in Settings.jsx.
+  // ── "How to pay me" note state (db/21) ────────────────────────────────────
+  // Kept SEPARATE from the display-name form on purpose: if neither db/20 nor
+  // db/21 has been run, saving this fails — and it must not take the (working)
+  // display-name save down with it. Same reasoning as the currency section in
+  // Settings.jsx.
   //
   // These hooks MUST stay above the `if (!user) return null` guard further
   // down. A hook after a conditional return only runs on some renders, which
   // React rejects with a hook-order error.
+  //
+  // The real value is loaded from the `payment_notes` table by the effect
+  // further down. We still seed from profile?.payment_note so the box is
+  // populated on the very first paint on a database where db/21 hasn't run yet
+  // (AuthProvider's select('*') carries that column while it exists); after
+  // db/21 it is undefined and this is simply ''.
   const [paymentNote, setPaymentNote]   = useState(profile?.payment_note || '');
 
   // Which examples to show, and in what order. Driven by the currency the user
@@ -258,13 +302,46 @@ export default function Profile({ onClose }) {
     if (profile?.display_name) setDisplayName(profile.display_name);
   }, [profile?.display_name]);
 
-  // Same for the payment note. Checked with typeof rather than truthiness so an
-  // intentionally-cleared note ('') still replaces whatever was typed before.
-  // Before db/20 is run the column is missing, so this is undefined and the box
-  // simply stays empty.
+  // Same for the payment note, which now lives in its own `payment_notes` table
+  // (db/21) rather than on the profile row.
+  //
+  // Two rungs, because the owner deploys this build BEFORE running db/21:
+  //   1. payment_notes  — the table exists (db/21 run). `limit(1)` rather than
+  //      single(): a user who has never written a note has NO row, and single()
+  //      turns that ordinary case into an error.
+  //   2. profiles.payment_note — the table is missing, so the note is still on
+  //      the profile row, which AuthProvider already fetched with select('*').
+  //      Checked with typeof rather than truthiness so an intentionally-cleared
+  //      note ('') still replaces whatever was typed before.
+  // If both are unavailable the box just stays as it is — never an error.
+  //
+  // Re-runs when the profile changes underneath us (e.g. after refreshProfile),
+  // preserving the old re-sync behaviour.
   useEffect(() => {
-    if (typeof profile?.payment_note === 'string') setPaymentNote(profile.payment_note);
-  }, [profile?.payment_note]);
+    const uid = user?.id;
+    if (!uid) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data, error } = await supabase
+          .from('payment_notes')            // table added by db/21
+          .select('note')                   // column: note
+          .eq('user_id', uid)               // column: user_id (pk)
+          .limit(1);
+        if (cancelled) return;
+        if (!error) {
+          // No row yet = no note written = empty box.
+          setPaymentNote((data && data[0] && data[0].note) || '');
+          return;
+        }
+        // Table missing (db/21 not run) → fall back to the old column.
+        if (typeof profile?.payment_note === 'string') setPaymentNote(profile.payment_note);
+      } catch {
+        /* offline, or the table isn't there — leave the box as it is */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [user?.id, profile?.payment_note]);
 
   // Guard: if somehow no user, render nothing.
   // ⚠️ Every hook above this line — no hooks below it.
@@ -312,14 +389,20 @@ export default function Profile({ onClose }) {
   }
 
   // ── Save the "how to pay me" note ─────────────────────────────────────────
-  // Writes profiles.payment_note (added by db/20). An empty box saves NULL, so
+  // Writes the `payment_notes` table (db/21). An empty box saves NULL, so
   // clearing the note removes it rather than leaving an empty string that the
   // settle-up screen would have to special-case.
   //
-  // If db/20 hasn't been run the column doesn't exist and PostgREST returns an
-  // error mentioning the column name or "schema cache" — the same shape
-  // Settings.jsx handles for db/04 and db/14. We translate it into a friendly
-  // nudge instead of showing the raw message.
+  // Upsert, not update: the row only exists once you have saved a note, and the
+  // primary key IS the user id, so `onConflict: 'user_id'` means "create it, or
+  // overwrite mine" and can never produce a second row.
+  //
+  // If db/21 hasn't been run the table doesn't exist and PostgREST errors, so we
+  // retry the old db/20 write (profiles.payment_note) and saving keeps working
+  // on an un-migrated database. If THAT errors too, the message mentions the
+  // column name or "schema cache" — the same shape Settings.jsx handles for
+  // db/04 and db/14 — and we translate it into a friendly nudge instead of
+  // showing the raw message.
   async function handleNoteSave(e) {
     e.preventDefault();
     setNoteError(null);
@@ -332,28 +415,57 @@ export default function Profile({ onClose }) {
     }
 
     setNoteSaving(true);
-    const { error: updateErr } = await supabase
-      .from('profiles')
-      .update({ payment_note: trimmedNote || null })   // column: payment_note
-      .eq('id', user.id);                              // column: id
+
+    // Rung 1: the dedicated table (db/21).
+    const upsertRes = await supabase
+      .from('payment_notes')                              // table added by db/21
+      .upsert({
+        user_id:    user.id,                              // column: user_id (pk)
+        note:       trimmedNote || null,                  // column: note (NULL clears it)
+        updated_at: new Date().toISOString(),             // column: updated_at
+      }, { onConflict: 'user_id' });
+
+    let updateErr = upsertRes.error;
+
+    // Rung 2: the table isn't there yet (db/21 not run) — write the old column.
+    // We only retry for a MISSING TABLE. Anything else (a length violation, an
+    // RLS refusal) is a real answer from a table that does exist, and re-sending
+    // it to `profiles` would only replace one true error with a confusing one.
+    if (updateErr && looksLikeMissingNotesTable(updateErr)) {
+      const legacyRes = await supabase
+        .from('profiles')
+        .update({ payment_note: trimmedNote || null })    // column: payment_note (db/20)
+        .eq('id', user.id);                               // column: id
+      updateErr = legacyRes.error;
+    }
+
     setNoteSaving(false);
 
     if (updateErr) {
       const msg = updateErr.message || '';
       const lower = msg.toLowerCase();
-      // Length constraint FIRST: its name (profiles_payment_note_len) contains
-      // "payment_note", so the missing-column test below would swallow it and
-      // tell the user to run a migration that is already applied.
-      if (lower.includes('payment_note_len') || lower.includes('check constraint')) {
+      // Length constraint FIRST: both constraint names (db/20's
+      // profiles_payment_note_len and db/21's payment_notes_len) contain
+      // "payment_note", so the missing-table/column test below would swallow
+      // them and tell the user to run a migration that is already applied.
+      if (
+        lower.includes('payment_notes_len') ||
+        lower.includes('payment_note_len') ||
+        lower.includes('check constraint')
+      ) {
         // The database backstop fired (should be unreachable — the input is capped).
         setNoteError(`Please keep this under ${PAYMENT_NOTE_MAX} characters.`);
       } else if (
-        lower.includes('payment_note') ||
+        lower.includes('payment_note') ||     // also matches "payment_notes"
         lower.includes('schema cache') ||
+        lower.includes('relation') ||
         lower.includes('column')
       ) {
+        // Either the new table is missing, or we fell back and the old column
+        // is missing too (db/20 never ran either). db/21 is the right answer in
+        // both cases: it creates the table from scratch and does not need db/20.
         setNoteError(
-          'Payment details need a one-time database update — run db/20 in Supabase.'
+          'Payment details need a one-time database update — run db/21 in Supabase.'
         );
       } else {
         setNoteError(msg || 'Could not save. Please try again.');
@@ -562,10 +674,10 @@ export default function Profile({ onClose }) {
           </form>
         </section>
 
-        {/* ── How people pay you (profiles.payment_note, db/20) ──
-            Its own section and its own Save button, deliberately: the column
-            may not exist yet (db/20 unrun), and a failure here must not stop
-            the display name above from saving.
+        {/* ── How people pay you (payment_notes, db/21) ──
+            Its own section and its own Save button, deliberately: neither the
+            table nor the old column is guaranteed to exist, and a failure here
+            must not stop the display name above from saving.
 
             The app NEVER moves money. This is a note the other person reads
             before paying you in whatever app they already use — no payment
