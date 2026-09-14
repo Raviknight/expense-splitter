@@ -219,15 +219,33 @@ npm run test:categories   # merchant auto-categorisation tests (no network, no s
 > ⚠️ **Important deploy gotcha:** running the dev server overwrites the production `docs/`
 > build (it writes `bundle.js` instead of the hashed file). **Always run `npm run build`
 > immediately before committing/pushing a deploy**, and don't commit a `docs/bundle.js`.
+>
+> **This warning was already here, and the site was still white-screened by it on
+> 2026-09-14** — live for about three minutes. Worth understanding why, because the
+> lesson is not "read the warning": the failure is *invisible at commit time*.
+> `git status` shows a deleted bundle and a modified `index.html`, which is exactly
+> what a normal build looks like. There is nothing to notice and nothing to catch.
+>
+> So there is now a check instead of a reminder:
+>
+> ```bash
+> npm run check:deploy
+> ```
+>
+> It fails if `docs/index.html` points at the dev bundle, at a file that is missing,
+> or at one `.gitignore` would swallow. **Run it before any commit that touches
+> `docs/`.** A rule you must remember at the moment you are least likely to remember
+> it is not a safeguard.
 
 ### To update the live app
 
 ```bash
 # 1. make your code changes in src/ (or public/)
 npm run build                 # 2. produce the hashed production bundle in docs/
+npm run check:deploy          # 3. refuse to ship a dev bundle (see the warning above)
 git add -A
-git commit -m "your message"  # 3. commit (docs/ IS committed; .env is NOT)
-git push origin main          # 4. push — GitHub Pages redeploys in ~1–2 minutes
+git commit -m "your message"  # 4. commit (docs/ IS committed; .env is NOT)
+git push origin main          # 5. push — GitHub Pages redeploys in ~1–2 minutes
 ```
 
 Verify after ~2 minutes: open the live URL in a private/incognito window (guarantees fresh
