@@ -1017,6 +1017,26 @@ export function useExpenseStore(userId, profile) {
     // Special case: if this is a custom-split expense and db/07 hasn't been run
     // yet, the DB rejects 'custom' / the missing split_detail column. Show the
     // plain "run the migration" instruction instead of a raw Postgres message.
+    // ORDER MATTERS, and getting it wrong made every write failure silent.
+    //
+    // This used to setError(...) and THEN refetch. But fetchAll's first act is
+    // setError(null) — reasonably, since a successful load means whatever went
+    // wrong before is no longer worth showing. So the message was set and then
+    // wiped microseconds later by the very refetch that follows it. The user saw
+    // the row vanish optimistically, reappear when the fetch landed, and no
+    // explanation at any point.
+    //
+    // That is why a refused delete looked like nothing happening. It cost five
+    // rounds of diagnosis: the rule was right, the message was right, the banner
+    // was right — and none of it could ever be seen, because the error was being
+    // erased by the line directly beneath it. Moving the banner to the top of
+    // the viewport (a real improvement in its own right) could not have helped;
+    // there was nothing left to display.
+    //
+    // So: restore authoritative state FIRST, and report only once the refetch
+    // has finished clearing errors. Anything set after this point survives.
+    await fetchRef.current();
+
     setError(
       // A refused delete already carries a sentence meant for the user
       // ("Only the person who paid... can delete this"). Prefixing it with
@@ -1026,7 +1046,6 @@ export function useExpenseStore(userId, profile) {
         : (customSplitSetupMessage(dbError) ||
            ('Could not save: ' + (dbError.message || 'Server error')))
     );
-    await fetchRef.current();
   }
 
   // ── actions ────────────────────────────────────────────────────────────────
