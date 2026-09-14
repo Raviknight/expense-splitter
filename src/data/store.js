@@ -130,6 +130,13 @@ function customSplitSetupMessage(dbError) {
   return null;
 }
 
+// Marks a delete that the database refused, or that had nothing to delete.
+// Its own code so offlineWrite can show the message as-is: these are sentences
+// written for the user, not Postgres errors needing a "Could not save:" prefix.
+// Deliberately NOT shaped like a network error — a network error gets queued in
+// the outbox and retried, and retrying a refusal forever would be pointless.
+const DELETE_REFUSED_CODE = 'SPLITAB_DELETE_REFUSED';
+
 // Write one row to the append-only `expense_deletions` audit log (db/23).
 //
 // This helper NEVER throws and never surfaces an error to the user. Losing an
@@ -1011,8 +1018,13 @@ export function useExpenseStore(userId, profile) {
     // yet, the DB rejects 'custom' / the missing split_detail column. Show the
     // plain "run the migration" instruction instead of a raw Postgres message.
     setError(
-      customSplitSetupMessage(dbError) ||
-      ('Could not save: ' + (dbError.message || 'Server error'))
+      // A refused delete already carries a sentence meant for the user
+      // ("Only the person who paid... can delete this"). Prefixing it with
+      // "Could not save:" would turn a clear explanation into noise.
+      dbError.code === DELETE_REFUSED_CODE
+        ? dbError.message
+        : (customSplitSetupMessage(dbError) ||
+           ('Could not save: ' + (dbError.message || 'Server error')))
     );
     await fetchRef.current();
   }
@@ -1365,7 +1377,39 @@ export function useExpenseStore(userId, profile) {
 
       await offlineWrite(optimisticGroups, op, async () => {
         const table = isSettlement ? 'settlements' : 'expenses';
-        const res = await supabase.from(table).delete().eq('id', expenseId);
+        // `.select('id')` is LOAD-BEARING, not decoration. RLS does not report a
+        // refusal as an error: db/23 narrowed deletes to the payer or the group
+        // owner, and when the policy excludes a row PostgREST simply deletes
+        // NOTHING and returns success. Without asking for the deleted rows back
+        // there is no way to tell "removed" from "silently refused".
+        //
+        // That exact gap shipped and was caught in production: a member deleted
+        // an expense someone else had paid for, the app reported success, wrote
+        // an audit row saying they had deleted it, removed it from the screen —
+        // and the next refetch brought it straight back, because it had never
+        // been deleted at all. The user retried, so it logged four times. The
+        // app was lying in both directions at once.
+        const res = await supabase.from(table).delete().eq('id', expenseId).select('id');
+
+        if (!res.error && (!res.data || res.data.length === 0)) {
+          // Zero rows and no error. Two different causes, and telling someone
+          // the wrong one is its own small betrayal — so find out which. This
+          // costs one extra query, and only ever on the failure path.
+          let stillThere = false;
+          try {
+            const check = await supabase.from(table).select('id').eq('id', expenseId).maybeSingle();
+            stillThere = !!check.data;
+          } catch (e) { /* can't tell — fall through to the permission wording */ }
+
+          return {
+            error: {
+              code: DELETE_REFUSED_CODE,
+              message: stillThere
+                ? 'Only the person who paid, or the group owner, can delete this.'
+                : 'That entry has already been removed.',
+            },
+          };
+        }
 
         // WHY THE AUDIT INSERT LIVES HERE, inside the supabaseCall, after the
         // delete has come back clean:
