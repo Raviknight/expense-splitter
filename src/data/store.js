@@ -30,6 +30,16 @@
 //     in both states: it queries `payment_notes` first and falls back to the
 //     old `profiles.payment_note` column while the new table is still missing.
 //
+// Deletion audit (db/23):
+//   - Deleting an expense or settlement is a hard delete, so it used to leave
+//     no trace at all while moving everyone's balances. `deleteExpense` now
+//     snapshots the row and, ONLY when the server delete actually succeeds,
+//     appends a row to `expense_deletions`. That insert can never fail the
+//     delete — see logDeletion.
+//   - `fetchAll` reads the log back in one query for all groups and attaches it
+//     to each group as `_deletions`. Before db/23 is run the table is missing,
+//     the query errors, and every group simply gets an empty array.
+//
 // Usage:
 //   const { groups, activeGroupId, loading, error, online, pendingCount, actions }
 //     = useExpenseStore(userId, profile);
@@ -118,6 +128,31 @@ function customSplitSetupMessage(dbError) {
     return 'Custom split needs a one-time database update — run db/07_custom_split.sql in Supabase.';
   }
   return null;
+}
+
+// Write one row to the append-only `expense_deletions` audit log (db/23).
+//
+// This helper NEVER throws and never surfaces an error to the user. Losing an
+// audit row is bad; leaving someone unable to delete — or throwing halfway
+// through a delete that already succeeded — is worse. Both failure shapes are
+// covered: PostgREST reports a missing table (db/23 not run) by RETURNING
+// { error }, while a dropped connection makes the fetch THROW.
+//
+// `row` is already in DB column names: { group_id, kind, item_id, description,
+// amount, payer_name, deleted_by, deleted_by_name }. `deleted_at` defaults to
+// now() server-side.
+async function logDeletion(row) {
+  try {
+    const { error } = await supabase.from('expense_deletions').insert(row);
+    if (error) {
+      // Most likely db/23 hasn't been run yet, so the table doesn't exist.
+      console.warn('[store] deletion not logged:', error.message);
+    }
+  } catch (e) {
+    // Offline, or the request never left the device — a thrown fetch, not an
+    // { error } result. Same outcome: carry on without the audit row.
+    console.warn('[store] deletion not logged:', e?.message ?? e);
+  }
 }
 
 // ─── main hook ──────────────────────────────────────────────────────────────
@@ -273,7 +308,7 @@ export function useExpenseStore(userId, profile) {
       //
       // Promise.all rejects on the first failure, matching the previous
       // behaviour where any query error aborted the whole fetch.
-      const [membersRes, expensesRes, settlementsRes] = await Promise.all([
+      const [membersRes, expensesRes, settlementsRes, deletionsRes] = await Promise.all([
         // `created_at` lets the Activity timeline show "X joined". Existing
         // column — no schema change needed.
         supabase
@@ -294,6 +329,24 @@ export function useExpenseStore(userId, profile) {
           .select('id, group_id, from_member, to_member, amount, date, note, created_at')
           .in('group_id', groupIds)
           .order('date', { ascending: false }),
+
+        // The deletion audit log (db/23). ONE query for every group, not one
+        // per group. Wrapped in its own try/catch because this is the only
+        // query here that is allowed to fail harmlessly: until the owner runs
+        // db/23 the table does not exist, and Promise.all would otherwise let a
+        // THROWN failure take down an entire fetch that is fine in every other
+        // respect. A returned { error } is handled below.
+        (async () => {
+          try {
+            return await supabase
+              .from('expense_deletions')
+              .select('id, group_id, kind, item_id, description, amount, payer_name, deleted_by, deleted_by_name, deleted_at')
+              .in('group_id', groupIds)
+              .order('deleted_at', { ascending: false });
+          } catch (delErr) {
+            return { data: null, error: delErr };
+          }
+        })(),
       ]);
 
       const { data: rawMembers, error: mErr }      = membersRes;
@@ -303,6 +356,13 @@ export function useExpenseStore(userId, profile) {
       if (mErr) throw mErr;
       if (eErr) throw eErr;
       if (sErr) throw sErr;
+
+      // Deletions deliberately do NOT throw, unlike the three above. Until the
+      // owner runs db/23 the table does not exist and this query errors on
+      // every single fetch; that must degrade to "no deletions recorded", never
+      // to an empty app. Same graceful-degradation rule as the avatar and
+      // payment-note reads further down.
+      const rawDeletions = deletionsRes?.error ? [] : (deletionsRes?.data || []);
 
       // 3. Collect real user_ids (excluding the current user whose profile we
       //    already have) so we can fetch their display names from profiles.
@@ -542,6 +602,27 @@ export function useExpenseStore(userId, profile) {
           memberPaymentNotes[displayName] = m.user_id ? (paymentNoteMap[m.user_id] || null) : null;
         });
 
+        // Deleted expenses/settlements for the Activity timeline (db/23).
+        // Already newest-first from the query's `deleted_at desc`, and .filter
+        // preserves that order. Every field is a SNAPSHOT taken when the row
+        // was deleted, so nothing here needs the (now absent) original row.
+        //   deletedByName : the name captured at deletion time. Falls back to a
+        //                   profiles lookup for rows written before that column
+        //                   existed, then to 'Someone' — never blank, never
+        //                   "undefined".
+        const deletions = rawDeletions
+          .filter(d => d.group_id === g.id)
+          .map(d => ({
+            id:            d.id,
+            kind:          d.kind === 'settlement' ? 'settlement' : 'expense',
+            itemId:        d.item_id,
+            description:   d.description || '',
+            amount:        d.amount == null ? null : Number(d.amount),
+            payerName:     d.payer_name || '',
+            deletedByName: d.deleted_by_name || profilesMap[d.deleted_by] || 'Someone',
+            deletedAt:     d.deleted_at,
+          }));
+
         // One "joined" event per member for the Activity timeline.
         //   name      : display name (real member's profile name, or ghost name)
         //   isGhost   : true when there's no linked account (no user_id)
@@ -581,6 +662,13 @@ export function useExpenseStore(userId, profile) {
           // "X joined" events for the Activity timeline. Shape:
           // [{ name, isGhost, createdAt }]. One entry per member.
           _memberJoins: memberJoins,
+          // "X deleted Y" events for the Activity timeline (db/23), newest
+          // first. Shape: [{ id, kind, itemId, description, amount, payerName,
+          // deletedByName, deletedAt }]. ALWAYS an array: an empty one when the
+          // group has no deletions, and also when db/23 hasn't been run, so
+          // every consumer can treat "no audit table" and "nothing deleted"
+          // identically and neither renders anything.
+          _deletions: deletions,
         };
       });
 
@@ -1235,16 +1323,65 @@ export function useExpenseStore(userId, profile) {
 
     // ── Delete an expense or settlement ──────────────────────────────────────
     // OFFLINE-CAPABLE.
+    //
+    // Also writes an append-only audit row (db/23) so a deletion stops being
+    // invisible: everyone's balances move, and the Activity tab can now say who
+    // removed what. See the placement note next to the insert below.
     async deleteExpense(groupId, expenseId, isSettlement) {
       const kind    = isSettlement ? 'settlement.delete' : 'expense.delete';
       const payload = { id: expenseId };
       const op      = { opId: crypto.randomUUID(), kind, payload, groupId };
 
+      // SNAPSHOT FIRST. Once the row is gone there is nothing left to read, and
+      // the audit row has to stand on its own: "Ravi deleted 'Hotel', $100.00,
+      // paid by Alex". We take it from the in-memory group, which still holds
+      // the pre-delete state here — applyOpToGroups below returns a NEW array
+      // rather than mutating this one.
+      const group  = findGroup(groupId);
+      const target = (group?.expenses || []).find(e => e.id === expenseId);
+
+      const auditRow = {
+        group_id:    groupId,
+        kind:        isSettlement ? 'settlement' : 'expense',
+        item_id:     expenseId,
+        description: target?.name ?? null,
+        amount:      target?.amount == null ? null : Number(target.amount),
+        // A NAME, not an id — the member row may itself be gone later. For a
+        // settlement the "payer" is the person who sent the money (_settleFrom);
+        // `paidBy` already holds that name too, so it is the fallback.
+        payer_name:  (isSettlement ? (target?._settleFrom ?? target?.paidBy) : target?.paidBy) ?? null,
+        // Must always be the signed-in user: the RLS insert policy checks
+        // `deleted_by = auth.uid()`, and a null there evaluates to NULL and is
+        // refused. The column is nullable only so deleting a profile later can
+        // null it out instead of blocking the account deletion.
+        deleted_by:  userId,
+        // Snapshot of the deleter's name for the same reason as payer_name —
+        // after the profile is removed the id says nothing. This is what the
+        // Activity row displays.
+        deleted_by_name: profile?.display_name || 'Me',
+      };
+
       const optimisticGroups = applyOpToGroups(groups, op);
 
-      await offlineWrite(optimisticGroups, op, () => {
+      await offlineWrite(optimisticGroups, op, async () => {
         const table = isSettlement ? 'settlements' : 'expenses';
-        return supabase.from(table).delete().eq('id', expenseId);
+        const res = await supabase.from(table).delete().eq('id', expenseId);
+
+        // WHY THE AUDIT INSERT LIVES HERE, inside the supabaseCall, after the
+        // delete has come back clean:
+        //   - Outside/above it, the row would be logged even when the delete
+        //     never reached the server — an optimistic offline delete gets
+        //     queued in the outbox, and logging it would claim something
+        //     happened that has not happened yet (and might still be rejected
+        //     by RLS when the outbox flushes).
+        //   - After offlineWrite returns, we can no longer tell the three
+        //     outcomes apart: it reports success, "queued offline" and "rolled
+        //     back" all the same way, by returning undefined.
+        // Here we know the server accepted the delete, and only here.
+        // logDeletion never throws, so `res` is always returned unchanged and
+        // the delete's own behaviour — online or offline — is untouched.
+        if (!res.error) await logDeletion(auditRow);
+        return res;
       });
     },
 

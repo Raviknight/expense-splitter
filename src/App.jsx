@@ -422,9 +422,10 @@ function clearScanDraft(key) {
   try { localStorage.removeItem(key); } catch (e) { /* nothing to do */ }
 }
 
-// Count how many activity items (expenses + settlements + member joins) in a
-// group were created AFTER `since` (a millisecond timestamp). Used for the home
-// card "N new" badge. Rows with a missing/invalid createdAt are ignored.
+// Count how many activity items (expenses + settlements + member joins +
+// deletions) in a group were created AFTER `since` (a millisecond timestamp).
+// Used for the home card "N new" badge. Rows with a missing/invalid createdAt
+// are ignored.
 function countNewActivity(group, since) {
   const after = (iso) => {
     if (!iso) return false;
@@ -434,6 +435,11 @@ function countNewActivity(group, since) {
   let n = 0;
   (group.expenses || []).forEach(e => { if (after(e.createdAt)) n++; });
   (group._memberJoins || []).forEach(m => { if (after(m.createdAt)) n++; });
+  // Deletions (db/23) carry `deletedAt`, not `createdAt`. A removed expense is
+  // exactly the kind of change someone needs to notice — it moves balances and
+  // nothing else on screen explains why. Absent (no deletions, or db/23 not
+  // run) → an empty array → adds nothing.
+  (group._deletions || []).forEach(d => { if (after(d.deletedAt)) n++; });
   return n;
 }
 
@@ -2243,6 +2249,10 @@ function GroupCard({ group, myName, onOpen, pinned = false, onTogglePin }) {
 function ActivityTab({ group }) {
   const expenses    = group?.expenses || [];      // real expenses + settlements
   const memberJoins = group?._memberJoins || [];
+  // Deleted expenses/settlements (db/23). Empty when the group has none AND
+  // when the migration hasn't been run — the store attaches [] in both cases,
+  // so nothing extra renders and the tab looks exactly as it does today.
+  const deletions   = group?._deletions || [];
 
   // Build a flat list of timeline items, each with a sortable timestamp `ts`.
   const items = useMemo(() => {
@@ -2281,6 +2291,27 @@ function ActivityTab({ group }) {
       });
     });
 
+    // Something REMOVED. Every field below is a snapshot taken at deletion
+    // time, so this row still reads correctly long after the expense, and even
+    // the people involved, are gone.
+    deletions.forEach(d => {
+      // Fall back to a generic phrase rather than empty quotes when the
+      // description wasn't captured.
+      const what = d.description
+        ? `"${d.description}"`
+        : (d.kind === 'settlement' ? 'a settlement' : 'an expense');
+      list.push({
+        key:     'del-' + d.id,
+        kind:    'deletion',
+        title:   `${d.deletedByName || 'Someone'} deleted ${what}`,
+        // Who had paid it — the detail that explains whose balance just moved.
+        subtitle: d.payerName ? `was paid by ${d.payerName}` : '',
+        // May be null if the amount wasn't captured; the row then shows no figure.
+        amount:  d.amount,
+        iso:     d.deletedAt,
+      });
+    });
+
     // Newest first. Items with no/invalid date sort to the bottom (ts = 0).
     const ts = (iso) => {
       if (!iso) return 0;
@@ -2290,7 +2321,7 @@ function ActivityTab({ group }) {
     return list
       .map(it => ({ ...it, ts: ts(it.iso) }))
       .sort((a, b) => b.ts - a.ts);
-  }, [expenses, memberJoins]);
+  }, [expenses, memberJoins, deletions]);
 
   if (items.length === 0) {
     return (
@@ -2306,31 +2337,51 @@ function ActivityTab({ group }) {
     <div className="bg-white border border-stone-200 rounded-2xl overflow-hidden divide-y divide-stone-100">
       {items.map(it => (
         <div key={it.key} className="flex items-center gap-3 px-3 py-2.5">
-          {/* Left icon dot — a little colored circle keyed to the item kind. */}
+          {/* Left icon dot — a little colored circle keyed to the item kind.
+              A deletion gets a rose bin so it reads as a REMOVAL at a glance,
+              not as one more thing that was added. */}
           <div className={`shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-sm ${
             it.kind === 'settlement'
               ? 'bg-emerald-50 text-emerald-700'
               : it.kind === 'join'
                 ? 'bg-indigo-50 text-indigo-600'
-                : 'bg-stone-100'
+                : it.kind === 'deletion'
+                  ? 'bg-rose-50 text-rose-600'
+                  : 'bg-stone-100'
           }`}>
             {it.kind === 'settlement'
               ? <Handshake className="w-4 h-4" />
               : it.kind === 'join'
                 ? <User className="w-4 h-4" />
-                : <span>{it.emoji}</span>}
+                : it.kind === 'deletion'
+                  ? <Trash2 className="w-4 h-4" />
+                  : <span>{it.emoji}</span>}
           </div>
 
-          {/* Title + relative time. */}
+          {/* Title + relative time. A deletion also names who had paid the
+              thing that went, on the same line as the time. */}
           <div className="flex-1 min-w-0">
-            <div className="text-sm text-stone-800 truncate">{it.title}</div>
-            <div className="text-[11px] text-stone-400">{timeAgo(it.iso)}</div>
+            <div className={`text-sm truncate ${
+              it.kind === 'deletion' ? 'text-stone-500' : 'text-stone-800'
+            }`}>
+              {it.title}
+            </div>
+            <div className="text-[11px] text-stone-400 truncate">
+              {it.subtitle ? `${it.subtitle} · ${timeAgo(it.iso)}` : timeAgo(it.iso)}
+            </div>
           </div>
 
-          {/* Right-aligned amount (expenses + settlements only). */}
-          {(it.kind === 'expense' || it.kind === 'settlement') && (
+          {/* Right-aligned amount (expenses + settlements, and deletions that
+              captured one). Struck through for a deletion: that money is no
+              longer in the balances. */}
+          {(it.kind === 'expense' || it.kind === 'settlement' ||
+            (it.kind === 'deletion' && it.amount != null)) && (
             <div className={`shrink-0 text-sm font-semibold tabular-nums ${
-              it.kind === 'settlement' ? 'text-emerald-700' : 'text-stone-900'
+              it.kind === 'settlement'
+                ? 'text-emerald-700'
+                : it.kind === 'deletion'
+                  ? 'text-rose-500 line-through'
+                  : 'text-stone-900'
             }`}>
               {fmt(it.amount)}
             </div>
