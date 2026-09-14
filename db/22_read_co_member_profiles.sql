@@ -1,9 +1,12 @@
--- Let people in the same group see each other's names.
+-- Run LAST, after db/21a, db/21b and db/21c. No dollar-quoted blocks: it relies
+-- on the `shares_group_with` helper that db/21a already created.
+--
+-- Lets people in the same group see each other's names.
 --
 -- THE BUG THIS FIXES. In a group of three or more, members who are not
 -- connected to each other showed up as the literal string "Unknown" — in the
 -- member list, in the balances, and in settle-up suggestions ("Unknown pays
--- Ravi $40"). That makes the app unusable for its main purpose: you cannot tell
+-- Ravi 40.00"). That makes the app unusable for its main purpose: you cannot tell
 -- who owes what, or who you owe, if you cannot read their name.
 --
 -- WHY IT HAPPENED. Reads of `profiles` are governed by db/01's "read connected
@@ -38,32 +41,11 @@
 -- of every connection row, including pending ones, so naively requiring
 -- 'accepted' there would blank out the names on your own sent invites.
 --
--- Safe to re-run. Run AFTER db/21. Run once in the Supabase dashboard -> SQL Editor.
+-- Safe to re-run.
 
--- Same helper db/21 defines, repeated verbatim so this file stands alone.
--- `security definer` is what prevents infinite recursion: without it, a policy
--- on `profiles` that reads `group_members` would be filtered by
--- `group_members`'s own policy, which calls `is_member_of`. db/01 uses exactly
--- this pattern for the same reason.
-create or replace function public.shares_group_with(other uuid)
-returns boolean
-language sql
-security definer
-stable
-set search_path = public
-as $fn$
-  select exists (
-    select 1
-      from group_members mine
-      join group_members theirs on theirs.group_id = mine.group_id
-     where mine.user_id   = auth.uid()
-       and theirs.user_id = other
-  );
-$fn$;
-
--- The new read path. Policies are OR'd, so this ADDS to "read own profile" and
--- "read connected profiles" rather than replacing either — nothing that works
--- today stops working.
+-- Policies are OR'd, so this ADDS to "read own profile" and "read connected
+-- profiles" rather than replacing either — nothing that works today stops
+-- working.
 drop policy if exists "read co-member profiles" on public.profiles;
 create policy "read co-member profiles" on public.profiles
   for select using (public.shares_group_with(profiles.id));
