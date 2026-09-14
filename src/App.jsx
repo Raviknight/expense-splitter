@@ -1639,6 +1639,7 @@ export default function App() {
           expense={editing === 'new' ? null : editing}
           people={people}
           isSolo={isSolo}
+          myName={profile?.display_name || 'Me'}
           categoryOverrides={categoryOverrides}
           onRememberCategory={actions.rememberCategory}
           onClose={() => setEditing(null)}
@@ -4129,13 +4130,28 @@ function MultiSettleModal({ people, entries, paymentNotes, myName, onClose, onRe
 
 /* ============ Expense modal ============ */
 
-function ExpenseModal({ expense, people, isSolo, onClose, onSave, categoryOverrides, onRememberCategory }) {
+function ExpenseModal({ expense, people, isSolo, myName, onClose, onSave, categoryOverrides, onRememberCategory }) {
   const isNew = !expense;
   const [name, setName] = useState(expense?.name || '');
   const [amount, setAmount] = useState(expense?.amount?.toString() || '');
   const [date, setDate] = useState(expense?.date || new Date().toISOString().slice(0, 10));
   const [category, setCategory] = useState(expense?.category || 'Other');
-  const [paidBy, setPaidBy] = useState(expense?.paidBy || people[0]);
+  // Who paid. Two very different cases, so the initial value is computed once,
+  // when the form OPENS (lazy useState initialiser — it never re-runs on a
+  // later render, so it can't clobber a choice the user has already made):
+  //   • EDITING an existing expense → keep exactly what that expense says.
+  //     Silently rewriting the payer when someone opens an old expense to fix
+  //     a typo would corrupt balances, so edit mode is untouched here.
+  //   • A NEW expense → default to the signed-in user. You almost always add
+  //     an expense because YOU just paid for it, and a wrong-but-filled-in
+  //     payer is the kind of error nobody re-reads.
+  // Fallback: if the signed-in user isn't a member of this group (a group of
+  // ghosts, or a display-name mismatch), fall back to the old behaviour —
+  // people[0] — so we never end up with an empty or non-member paidBy.
+  const [paidBy, setPaidBy] = useState(() => {
+    if (expense) return expense.paidBy || people[0];
+    return people.includes(myName) ? myName : people[0];
+  });
   const [note, setNote] = useState(expense?.note || '');
   const [splitMode, setSplitMode] = useState(expense?.splitMode || (isSolo ? 'personal' : 'equal'));
   const [catManuallySet, setCatManuallySet] = useState(!isNew);

@@ -2,8 +2,14 @@
 // The login page. Shown whenever nobody is signed in.
 //
 // Three ways to sign in:
-//   1. Magic link (primary) — enter your email, get a one-click link in your inbox.
-//      Uses supabase.auth.signInWithOtp({ email }). No password needed.
+//   1. Email code (primary) — enter your email, get a short code in your inbox
+//      and type it in. Uses supabase.auth.signInWithOtp({ email }) to send and
+//      verifyOtp() to check. No password needed.
+//      It is still Supabase's "magic link" flow underneath, but the EMAIL
+//      TEMPLATE deliberately carries no link — corporate mail scanners open any
+//      URL they find, which spends the single-use token before the user gets to
+//      it, and the link and the code are the same token. See
+//      docs-internal/email-templates/magic-link.html for the evidence.
 //   2. Google (secondary) — one click, uses OAuth redirect.
 //   3. Email + password (collapsible) — traditional sign-up / sign-in.
 //      Works only if you enable the Email provider in Supabase Auth settings.
@@ -333,18 +339,24 @@ function MagicLinkForm({ getCaptchaToken = () => undefined, resetCaptcha = () =>
       <div className="flex flex-col items-center gap-3 py-2 text-center">
         <CheckCircle className="w-10 h-10 text-emerald-500" />
         <p className="font-semibold text-stone-800">Check your email</p>
+        {/* The email contains a CODE and no link at all — see
+            docs-internal/email-templates/magic-link.html for why. This copy
+            used to say "we sent a link, click it", which after that template
+            change described something the user would never find, and sent them
+            hunting for a link that does not exist. The code is now the only
+            route, so it is described as the only route. */}
         <p className="text-sm text-stone-500 max-w-xs">
-          We sent a sign-in link to <strong>{email}</strong>. Click it to continue — no password needed.
+          We sent a sign-in code to <strong>{email}</strong>. Enter it below — no
+          password needed.
         </p>
 
-        <div className="w-full flex items-center gap-3 pt-1">
-          <div className="flex-1 border-t border-stone-100" />
-          <span className="text-xs text-stone-400">or enter the code</span>
-          <div className="flex-1 border-t border-stone-100" />
-        </div>
-
         <form onSubmit={handleVerify} className="w-full flex flex-col gap-2">
-          <div className="flex gap-2">
+          {/* justify-center + a fixed-width field, rather than a flex-1 input
+              that stretches the full card width. An 8-digit code needs about
+              200px; letting it take 260+ left the button looking bolted on at
+              the end of an empty trough. Sized to its content, the pair reads
+              as one control. */}
+          <div className="flex gap-2 justify-center">
             <input
               // inputMode/pattern bring up the numeric keypad on a phone.
               // text-base (16px) stops iOS zooming the page on focus.
@@ -359,7 +371,7 @@ function MagicLinkForm({ getCaptchaToken = () => undefined, resetCaptcha = () =>
               placeholder="12345678"
               value={code}
               onChange={e => setCode(e.target.value)}
-              className="flex-1 rounded-xl border border-stone-200 bg-white px-4 py-3 text-base tracking-[0.3em] text-center text-stone-900 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="w-[200px] shrink-0 rounded-xl border border-stone-200 bg-white px-3 py-3 text-base tracking-[0.25em] text-center text-stone-900 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-indigo-500"
             />
             <button
               type="submit"
@@ -382,9 +394,8 @@ function MagicLinkForm({ getCaptchaToken = () => undefined, resetCaptcha = () =>
               code "always works" sent people to try the one thing that was
               already dead. */}
           <p className="text-xs text-stone-400 text-left">
-            Work email? Company security scanners often open the link before you
-            do, which uses up the code as well. If that happens, ask for a new
-            one and enter the code as soon as it arrives.
+            The code expires in 15 minutes and works only once. If it has run
+            out, ask for a new one.
           </p>
         </form>
 
@@ -424,7 +435,7 @@ function MagicLinkForm({ getCaptchaToken = () => undefined, resetCaptcha = () =>
       </div>
       <ErrorMsg msg={error} />
       <p className="text-xs text-stone-400">
-        We'll email you a one-click sign-in link. No password required.
+        We&rsquo;ll email you a short sign-in code. No password required.
       </p>
     </form>
   );
@@ -640,19 +651,21 @@ function EmailPasswordForm({ getCaptchaToken = () => undefined, resetCaptcha = (
         <div className="flex flex-col items-center gap-3 py-2 text-center">
           <CheckCircle className="w-10 h-10 text-emerald-500" />
           <p className="font-semibold text-stone-800">Check your email</p>
+          {/* Code, not link — matches confirm-signup.html, which carries no URL
+              for a mail scanner to open. Describing a link the email does not
+              contain would send people looking for something that isn't there. */}
           <p className="text-sm text-stone-500 max-w-xs">
-            We sent a confirmation link to <strong>{email}</strong>. Click it to
-            finish setting up your account.
+            We sent a confirmation code to <strong>{email}</strong>. Enter it
+            below to finish setting up your account.
           </p>
 
-          <div className="w-full flex items-center gap-3 pt-1">
-            <div className="flex-1 border-t border-stone-100" />
-            <span className="text-xs text-stone-400">or enter the code</span>
-            <div className="flex-1 border-t border-stone-100" />
-          </div>
-
           <form onSubmit={handleVerifySignup} className="w-full flex flex-col gap-2">
-            <div className="flex gap-2">
+            {/* justify-center + a fixed-width field, rather than a flex-1 input
+              that stretches the full card width. An 8-digit code needs about
+              200px; letting it take 260+ left the button looking bolted on at
+              the end of an empty trough. Sized to its content, the pair reads
+              as one control. */}
+          <div className="flex gap-2 justify-center">
               <input
                 // inputMode/pattern bring up the numeric keypad on a phone.
                 // text-base (16px) stops iOS zooming the page on focus.
@@ -667,7 +680,7 @@ function EmailPasswordForm({ getCaptchaToken = () => undefined, resetCaptcha = (
                 placeholder="12345678"
                 value={code}
                 onChange={e => setCode(e.target.value)}
-                className="flex-1 rounded-xl border border-stone-200 bg-white px-4 py-3 text-base tracking-[0.3em] text-center text-stone-900 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                className="w-[200px] shrink-0 rounded-xl border border-stone-200 bg-white px-3 py-3 text-base tracking-[0.25em] text-center text-stone-900 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-indigo-500"
               />
               <button
                 type="submit"
