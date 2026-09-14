@@ -484,6 +484,21 @@ function EmailPasswordForm({ getCaptchaToken = () => undefined, resetCaptcha = (
   const [resetSent, setResetSent] = useState(false);
   const [resetBusy, setResetBusy] = useState(false);
 
+  // ---- Sign-up confirmation-code state ----
+  // Same problem the magic link has: a corporate mail scanner pre-fetches the
+  // confirmation link and spends the single-use token before the user gets to
+  // it. The same email carries a typed code, which a scanner cannot consume.
+  //
+  // signupSent: true once signUp succeeded AND confirmation is required.
+  // ALL of these hooks live up here with the others, ABOVE every early return
+  // (the first is the `if (resetSent)` block further down). A hook declared
+  // below a return runs on some renders and not others, which changes the hook
+  // order between renders and crashes React.
+  const [signupSent, setSignupSent] = useState(false);
+  const [code, setCode]             = useState('');
+  const [codeErr, setCodeErr]       = useState('');
+  const [verifying, setVerifying]   = useState(false);
+
   async function handleSubmit(e) {
     e.preventDefault();
     setError(''); setSuccess('');
@@ -493,14 +508,26 @@ function EmailPasswordForm({ getCaptchaToken = () => undefined, resetCaptcha = (
     // password reset: the token is frequently not there yet at click time.
     const captchaToken = await getCaptchaToken();
     if (isSignUp) {
-      const { error: err } = await supabase.auth.signUp({
+      const { data, error: err } = await supabase.auth.signUp({
         email: email.trim(), password, options: { captchaToken },
       });
       // Single-use token — burn it so a retry gets a fresh challenge.
       resetCaptcha();
       setBusy(false);
       if (err) { setError(err.message); return; }
-      setSuccess('Account created! Check your email to confirm, then sign in.');
+      // DO NOT "SIMPLIFY" THIS AWAY — the two outcomes of signUp are different.
+      //
+      // If the Supabase project has email confirmation DISABLED, signUp returns
+      // a LIVE SESSION and the user is already signed in. Showing them "enter
+      // the code we emailed you" would be nonsense — no email was sent, no code
+      // exists, and they would be stranded on a screen they can never complete.
+      // In that case do nothing: onAuthStateChange fires and AuthGate swaps to
+      // the app, exactly as this branch behaved before.
+      //
+      // Only when there is NO session is confirmation required — that is the
+      // case where an email went out and the code screen is the right thing.
+      if (data?.session) return;
+      setSignupSent(true);
     } else {
       const { error: err } = await supabase.auth.signInWithPassword({
         email: email.trim(), password, options: { captchaToken },
@@ -512,6 +539,32 @@ function EmailPasswordForm({ getCaptchaToken = () => undefined, resetCaptcha = (
       if (err) { setError(err.message); return; }
       // On success AuthProvider's onAuthStateChange fires and the gate swaps to the app.
     }
+  }
+
+  // handleVerifySignup: confirms a brand-new account with the code from the
+  // confirmation email. Mirrors MagicLinkForm's handleVerify — the one thing
+  // that differs is `type`.
+  async function handleVerifySignup(e) {
+    e.preventDefault();
+    setCodeErr('');
+    const token = code.replace(/\D/g, '');   // tolerate spaces/dashes when pasting
+    // Supabase's OTP length is CONFIGURABLE (Auth → Sign In/Up → OTP length) and
+    // this project issues 8 digits, not the documented default of 6. Hard-coding
+    // 6 here silently truncated the code and every verification failed. Accept
+    // any plausible length instead of pinning it to one project's setting.
+    if (token.length < 6) { setCodeErr('Enter the code from the email.'); return; }
+    setVerifying(true);
+    const { error: err } = await supabase.auth.verifyOtp({
+      email: email.trim(),
+      token,
+      // 'signup' — confirming a NEW account. NOT 'email', which is the sign-in
+      // variant MagicLinkForm uses. The wrong type is rejected as invalid.
+      type: 'signup',
+    });
+    setVerifying(false);
+    // On success, onAuthStateChange fires and AuthGate swaps to the app —
+    // nothing more to do here.
+    if (err) setCodeErr(err.message);
   }
 
   // handleForgotPassword: sends a Supabase password-reset email.
@@ -551,6 +604,86 @@ function EmailPasswordForm({ getCaptchaToken = () => undefined, resetCaptcha = (
     if (err) { setError(err.message); return; }
     // Show the "check your email" confirmation state.
     setResetSent(true);
+  }
+
+  // ---- "Check your email" state for a new sign-up ----
+  // Mirrors MagicLinkForm's sent state: link first, code as the fallback that
+  // survives link scanners. Only reached when confirmation is REQUIRED — see
+  // the comment in handleSubmit.
+  if (signupSent) {
+    return (
+      <div className="flex flex-col gap-3 mt-3">
+        {/* Collapsible header stays visible so the user knows what section this is */}
+        <button
+          onClick={() => setOpen(o => !o)}
+          className="flex items-center justify-between w-full text-sm text-stone-500 hover:text-stone-700 transition py-1"
+        >
+          <span className="flex items-center gap-1.5">
+            <KeyRound className="w-4 h-4" />
+            Email &amp; password
+            <span className="text-[10px] uppercase tracking-widest text-stone-400 ml-1">optional</span>
+          </span>
+          {open ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+        </button>
+        <div className="flex flex-col items-center gap-3 py-2 text-center">
+          <CheckCircle className="w-10 h-10 text-emerald-500" />
+          <p className="font-semibold text-stone-800">Check your email</p>
+          <p className="text-sm text-stone-500 max-w-xs">
+            We sent a confirmation link to <strong>{email}</strong>. Click it to
+            finish setting up your account.
+          </p>
+
+          <div className="w-full flex items-center gap-3 pt-1">
+            <div className="flex-1 border-t border-stone-100" />
+            <span className="text-xs text-stone-400">or enter the code</span>
+            <div className="flex-1 border-t border-stone-100" />
+          </div>
+
+          <form onSubmit={handleVerifySignup} className="w-full flex flex-col gap-2">
+            <div className="flex gap-2">
+              <input
+                // inputMode/pattern bring up the numeric keypad on a phone.
+                // text-base (16px) stops iOS zooming the page on focus.
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                autoComplete="one-time-code"
+                // 10, not 6: the OTP length is a project setting and this one
+                // issues 8 digits. A tight maxLength truncates the pasted code
+                // with no error shown, which is the worst kind of failure.
+                maxLength={10}
+                placeholder="12345678"
+                value={code}
+                onChange={e => setCode(e.target.value)}
+                className="flex-1 rounded-xl border border-stone-200 bg-white px-4 py-3 text-base tracking-[0.3em] text-center text-stone-900 placeholder-stone-300 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              />
+              <button
+                type="submit"
+                disabled={verifying}
+                className="rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-3 text-sm font-medium disabled:opacity-50 transition"
+              >
+                {verifying ? 'Checking…' : 'Confirm'}
+              </button>
+            </div>
+            <ErrorMsg msg={codeErr} />
+            <p className="text-xs text-stone-400 text-left">
+              The same email has a code. Use it if the link doesn&rsquo;t work —
+              work inboxes often open the link for you, which uses it up.
+            </p>
+          </form>
+
+          <button
+            onClick={() => {
+              setSignupSent(false); setEmail(''); setPassword('');
+              setCode(''); setCodeErr(''); setError('');
+            }}
+            className="text-xs text-indigo-600 underline underline-offset-2 mt-1 hover:text-indigo-800 transition"
+          >
+            Use a different email
+          </button>
+        </div>
+      </div>
+    );
   }
 
   // ---- "Check your email" confirmation for the reset link ----
