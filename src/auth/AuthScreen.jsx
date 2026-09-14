@@ -364,15 +364,27 @@ function MagicLinkForm({ getCaptchaToken = () => undefined, resetCaptcha = () =>
             <button
               type="submit"
               disabled={verifying}
-              className="rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-3 text-sm font-medium disabled:opacity-50 transition"
+              // shrink-0 + whitespace-nowrap: without them the flex row squeezes
+              // this button until "Sign in" wraps onto two lines next to a
+              // wide code field. The input is flex-1 and will give up the space.
+              className="shrink-0 whitespace-nowrap rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-3 text-sm font-medium disabled:opacity-50 transition"
             >
               {verifying ? 'Checking…' : 'Sign in'}
             </button>
           </div>
           <ErrorMsg msg={codeError} />
+          {/* This used to end "The code always works." It does not, and the
+              project's own auth logs disproved it: /otp at 08:43:00, then a
+              /verify AND a completed Login at 08:44:04 — a full minute before
+              the email reached the inbox at 08:45. A scanner opened the link
+              and spent the token. The link and the code are the SAME single-use
+              token in Supabase, so burning one kills the other. Promising the
+              code "always works" sent people to try the one thing that was
+              already dead. */}
           <p className="text-xs text-stone-400 text-left">
             Work email? Company security scanners often open the link before you
-            do, which uses it up. The code always works.
+            do, which uses up the code as well. If that happens, ask for a new
+            one and enter the code as soon as it arrives.
           </p>
         </form>
 
@@ -660,7 +672,10 @@ function EmailPasswordForm({ getCaptchaToken = () => undefined, resetCaptcha = (
               <button
                 type="submit"
                 disabled={verifying}
-                className="rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-3 text-sm font-medium disabled:opacity-50 transition"
+                // Same shrink-0 + whitespace-nowrap as the sign-in code button:
+                // the code input is flex-1 and would otherwise squeeze this
+                // until its label wraps onto two lines.
+                className="shrink-0 whitespace-nowrap rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-3 text-sm font-medium disabled:opacity-50 transition"
               >
                 {verifying ? 'Checking…' : 'Confirm'}
               </button>
