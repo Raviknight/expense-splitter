@@ -65,6 +65,29 @@ import {
 const FAST_RETRIES  = 4;       // 2s, 4s, 8s, 16s
 const SLOW_RETRY_MS = 60_000;  // then once a minute, while online and stale
 
+// A token that is VALID but momentarily unusable, rather than a real failure.
+//
+// PGRST303 "JWT issued at future" means PostgREST thinks the token's `iat` is
+// ahead of its own clock. Observed in production on a machine whose clock was
+// verified to match Supabase's to the second — so this is not the user's device
+// being wrong. It is sub-second skew BETWEEN Supabase's own services: the token
+// was minted by the auth service and used by the API a few milliseconds later,
+// and PostgREST checks `iat` with no tolerance at all. The stack showed it
+// firing during _emitInitialSession, i.e. on a token that was brand new.
+//
+// It heals itself within a second or two, so the right response is to retry
+// quietly, exactly as for a network blip. Treating it as a hard error put a
+// dead-end message on screen for a condition that would have fixed itself
+// before the user finished reading it.
+//
+// PGRST301 (expired/invalid JWT) is deliberately NOT included: that needs a
+// token refresh, which auth-js performs on its own, and retrying the same query
+// in a loop would neither help nor say anything useful.
+function isTransientTokenError(err) {
+  return err?.code === 'PGRST303'
+      || /issued at future/i.test(String(err?.message ?? ''));
+}
+
 const NOT_DEPLOYED_MSG =
   "Scanning isn't set up yet — the scan function may need to be deployed.";
 
@@ -747,7 +770,7 @@ export function useExpenseStore(userId, profile) {
       // If this is a network failure AND we already have snapshot data, keep
       // the snapshot silently (the offline banner in App.jsx tells the user).
       // Only show an error when we have NO data at all.
-      if (isNetworkError(err)) {
+      if (isNetworkError(err) || isTransientTokenError(err)) {
         // Stay on snapshot (or empty) — do not wipe what the user can see.
         // No `error` here; the offline banner covers connectivity. But mark it
         // stale so the UI says the figures may be out of date — the offline

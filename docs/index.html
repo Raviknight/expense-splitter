@@ -20,10 +20,22 @@
     <link rel="manifest" href="manifest.json" />
 
     <!-- Apple / iOS home screen support -->
+    <!-- Both, deliberately. `mobile-web-app-capable` is the standard Chrome now
+         warns about missing; `apple-mobile-web-app-capable` is the older Apple
+         spelling that iOS still reads, and dropping it would break the
+         standalone home-screen behaviour this app relies on. -->
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <meta name="apple-mobile-web-app-title" content="Splitab" />
     <link rel="apple-touch-icon" href="icons/icon-180.png" />
+    <!-- Browsers request /favicon.ico from the site root whether or not one is
+         declared, so without this every page load logged a 404. Harmless in
+         itself, but a console with routine noise in it is a console nobody
+         reads carefully — and this session was solved by spotting one real
+         message among the noise. Points at an icon that already exists rather
+         than adding another asset. -->
+    <link rel="icon" href="icons/icon-192.png" type="image/png" />
 
     <!-- Tailwind, compiled at build time to a static stylesheet.
          Previously this was the Play CDN (cdn.tailwindcss.com), which shipped
@@ -70,6 +82,6 @@
   </head>
   <body>
     <div id="root"></div>
-    <script src="bundle-2VZBYOQ4.js"></script>
+    <script src="bundle-T6TYYDIZ.js"></script>
   </body>
 </html>
