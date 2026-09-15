@@ -40,6 +40,18 @@
 //     to each group as `_deletions`. Before db/23 is run the table is missing,
 //     the query errors, and every group simply gets an empty array.
 //
+// Record attribution (db/24):
+//   - Every expense and settlement now records WHO entered it, in `created_by`.
+//     Every insert path goes through `insertAttributed`, which retries without
+//     the column if db/24 has not been run yet — the owner may deploy this build
+//     first, and a missing column must never stop somebody recording a cost.
+//   - Reads carry it back as `createdBy` (the uuid) and `createdByName` (the
+//     name, resolved through the same profilesMap the member names come from).
+//     Both are null when we do not know, and the UI shows nothing rather than
+//     guessing an author.
+//   - `created_by` is set on INSERT only. An edit leaves it alone, so the record
+//     keeps naming whoever actually entered it.
+//
 // Usage:
 //   const { groups, activeGroupId, loading, error, online, pendingCount, actions }
 //     = useExpenseStore(userId, profile);
@@ -191,6 +203,48 @@ async function logDeletion(row) {
     // { error } result. Same outcome: carry on without the audit row.
     console.warn('[store] deletion not logged:', e?.message ?? e);
   }
+}
+
+// Does this error mean the `created_by` column (db/24) is not there yet?
+//
+// The owner may deploy this build BEFORE running db/24, so every write that
+// names the column has to survive its absence. Two different shapes arrive
+// depending on where the column was named, and BOTH have to be caught or the
+// fallback below never fires:
+//   PGRST204 — "Could not find the 'created_by' column of 'expenses' in the
+//              schema cache"   (PostgREST rejects the INSERT body itself)
+//   42703    — "column settlements.created_by does not exist"   (Postgres)
+// Same graceful-degradation rule as avatar_url (db/08) and payment_note (db/20).
+function isMissingCreatedBy(dbError) {
+  if (!dbError) return false;
+  const msg = (dbError.message || '').toLowerCase();
+  return dbError.code === 'PGRST204'
+      || dbError.code === '42703'
+      || msg.includes('created_by');
+}
+
+// Insert an expense or settlement WITH its `created_by` attribution (db/24),
+// falling back to an insert without it when the column is missing.
+//
+// ONE ladder, shared by every insert path — upsertExpense, importExpenses,
+// recordSettlement and the outbox flush — for a single reason: a missing column
+// must NEVER be why somebody cannot record what they spent. The attribution is
+// worth having, but it is worth strictly less than the record itself.
+//   1. insert WITH created_by   (db/24 run — the row says who entered it)
+//   2. insert WITHOUT it        (db/24 not run — the row is simply unattributed,
+//                                exactly what an older build already produced)
+// Accepts a single row or an array (the CSV import inserts in bulk).
+//
+// Only rung 1's { error } is inspected; a THROWN fetch (offline) propagates
+// untouched so offlineWrite still queues the write in the outbox as before.
+async function insertAttributed(table, rowOrRows) {
+  const attributed = await supabase.from(table).insert(rowOrRows);
+  if (!attributed.error || !isMissingCreatedBy(attributed.error)) return attributed;
+
+  // eslint-disable-next-line no-unused-vars
+  const strip = ({ created_by, ...rest }) => rest;
+  const plain = Array.isArray(rowOrRows) ? rowOrRows.map(strip) : strip(rowOrRows);
+  return supabase.from(table).insert(plain);
 }
 
 // ─── main hook ──────────────────────────────────────────────────────────────
@@ -373,18 +427,38 @@ export function useExpenseStore(userId, profile) {
           .in('group_id', groupIds),
 
         // select('*') on purpose: `split_detail` arrives with db/07, so reads
-        // keep working before that script is run.
+        // keep working before that script is run. `created_by` (db/24) rides in
+        // on the same '*' the moment the column exists — nothing to add here,
+        // and nothing to break while it does not.
         supabase
           .from('expenses')
           .select('*')
           .in('group_id', groupIds)
           .order('date', { ascending: false }),
 
-        supabase
-          .from('settlements')
-          .select('id, group_id, from_member, to_member, amount, date, note, created_at')
-          .in('group_id', groupIds)
-          .order('date', { ascending: false }),
+        // Settlements name their columns explicitly, so `created_by` (db/24)
+        // needs the same two-rung ladder as the profiles/avatar read above:
+        //   1. with created_by  (db/24 run)
+        //   2. without it       (db/24 not run — PostgREST errors on the unknown
+        //                        column, and a read that fails must degrade to
+        //                        "no attribution", never to an empty app)
+        // A THROWN failure (offline) is left to propagate exactly as the single
+        // query did before, so Promise.all still rejects and the outer catch
+        // keeps the cached snapshot on screen.
+        (async () => {
+          const BASE = 'id, group_id, from_member, to_member, amount, date, note, created_at';
+          const withCreator = await supabase
+            .from('settlements')
+            .select(`${BASE}, created_by`)
+            .in('group_id', groupIds)
+            .order('date', { ascending: false });
+          if (!withCreator.error) return withCreator;
+          return supabase
+            .from('settlements')
+            .select(BASE)
+            .in('group_id', groupIds)
+            .order('date', { ascending: false });
+        })(),
 
         // The deletion audit log (db/23). ONE query for every group, not one
         // per group. Wrapped in its own try/catch because this is the only
@@ -571,6 +645,16 @@ export function useExpenseStore(userId, profile) {
               // When the expense was recorded — feeds the Activity timeline and
               // the "N new" home badge. Existing column, no schema change.
               createdAt: e.created_at,
+              // WHO recorded it (db/24). Undefined before that migration runs,
+              // and null on every row written before it — normalised to null so
+              // "we do not know" is always one value.
+              createdBy:     e.created_by || null,
+              // The same person as a NAME, because the UI cannot show a uuid. A
+              // creator is always a member of this group, so profilesMap (built
+              // for exactly these members above) already holds the answer. An id
+              // we cannot resolve stays null: rendering nothing is honest,
+              // inventing a name is not.
+              createdByName: (e.created_by && profilesMap[e.created_by]) || null,
             };
 
             // Custom split: the DB stores split_detail as { member_id: amount }.
@@ -627,6 +711,13 @@ export function useExpenseStore(userId, profile) {
             // When the settlement was recorded — feeds the Activity timeline and
             // the "N new" home badge.
             createdAt: s.created_at,
+            // WHO recorded it (db/24), and that person's name. Same rules as on
+            // an expense above: null when the column is absent, null on rows
+            // written before db/24, and null for an id we cannot resolve.
+            // This is the attribution that matters most — a payment someone else
+            // entered on your behalf is the one people query.
+            createdBy:     s.created_by || null,
+            createdByName: (s.created_by && profilesMap[s.created_by]) || null,
             // Keep raw IDs so we can delete from the correct table.
             _settlementId: s.id,
             // Plain from/to display names so the settle-up math can treat a
@@ -830,9 +921,12 @@ export function useExpenseStore(userId, profile) {
         try {
           if (kind === 'expense.insert') {
             // Supply the client-generated id so the insert is idempotent.
-            ({ error: dbError } = await supabase
-              .from('expenses')
-              .insert(payload));
+            // insertAttributed, not a bare insert: a write queued offline still
+            // carries its `created_by` (db/24), and the column may STILL be
+            // missing when the outbox finally flushes. Dropping the op then
+            // would lose the expense outright — the one outcome this file has
+            // spent a lot of effort avoiding.
+            ({ error: dbError } = await insertAttributed('expenses', payload));
 
           } else if (kind === 'expense.update') {
             // Strip the primary key from the update body — use it only in .eq().
@@ -850,9 +944,8 @@ export function useExpenseStore(userId, profile) {
               .eq('id', payload.id));
 
           } else if (kind === 'settlement.insert') {
-            ({ error: dbError } = await supabase
-              .from('settlements')
-              .insert(payload));
+            // Same ladder as expense.insert above, for the same reason.
+            ({ error: dbError } = await insertAttributed('settlements', payload));
 
           } else if (kind === 'settlement.delete') {
             ({ error: dbError } = await supabase
@@ -1247,6 +1340,14 @@ export function useExpenseStore(userId, profile) {
         split_detail: splitDetailForDb,
       };
 
+      // Who recorded this (db/24). INSERT ONLY, deliberately: on an edit the
+      // original author has to stand. Re-stamping it would let whoever last
+      // fixed a typo become the person the record names — an attribution that
+      // quietly rewrites itself is worse than none, which is the whole point of
+      // db/24's `created_by = auth.uid()` guard. The update branch below strips
+      // the id anyway, and the column is simply absent from `row` on an edit.
+      if (!isUpdate) row.created_by = userId;
+
       // Participants: WHO this expense is split among (a list of group_members
       // ids). We decide them in priority order:
       //
@@ -1298,7 +1399,7 @@ export function useExpenseStore(userId, profile) {
           const { id, ...updateFields } = row;
           return supabase.from('expenses').update(updateFields).eq('id', row.id);
         } else {
-          return supabase.from('expenses').insert(row);
+          return insertAttributed('expenses', row);
         }
       });
     },
@@ -1330,11 +1431,13 @@ export function useExpenseStore(userId, profile) {
         paid_by:    paidByMemberId,
         split_mode: splitMode,
         note:       r.note || null,
+        // Who ran the import (db/24). The rows may all be attributed to someone
+        // ELSE as the payer, which is exactly when "recorded by …" earns its
+        // keep — twenty rows nobody remembers adding.
+        created_by: userId,
       }));
 
-      const { error: dbError } = await supabase
-        .from('expenses')
-        .insert(dbRows);
+      const { error: dbError } = await insertAttributed('expenses', dbRows);
 
       if (dbError) {
         setError('Could not import expenses: ' + dbError.message);
@@ -1638,6 +1741,11 @@ export function useExpenseStore(userId, profile) {
         amount:      Number(amount),
         date:        new Date().toISOString().slice(0, 10),
         note:        note || null,
+        // Who recorded this payment (db/24). Load-bearing twice over: the app
+        // shows "recorded by …", and db/24's insert policy refuses any row whose
+        // created_by is set to anyone but the caller, so attribution on a
+        // settlement cannot be forged.
+        created_by:  userId,
       };
 
       const op = {
@@ -1650,7 +1758,7 @@ export function useExpenseStore(userId, profile) {
       const optimisticGroups = applyOpToGroups(groups, op);
 
       await offlineWrite(optimisticGroups, op, () =>
-        supabase.from('settlements').insert(row)
+        insertAttributed('settlements', row)
       );
     },
 

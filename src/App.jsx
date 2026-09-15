@@ -1146,6 +1146,36 @@ export default function App() {
   const DENY_EXPENSE    = 'Only the person who paid, or the group owner, can delete this';
   const DENY_SETTLEMENT = 'Only the two people in this settlement, or the group owner, can delete it';
 
+  // db/24's INSERT rule on settlements, worded for a person rather than a
+  // policy. Same shape as the two above, and no trailing full stop for the same
+  // reason — it is read as a tooltip, and the banner adds one.
+  const DENY_RECORD_SETTLEMENT = 'Only the two people in this payment, or the group owner, can record it';
+
+  // Resolve a member's display NAME to the account behind it. Three answers,
+  // and the third is the one that is easy to miss:
+  //   a uuid    — that member's account
+  //   null      — we know, and there is no account: a ghost, or a name that
+  //               is not a member of this group at all. null never equals
+  //               myUserId (a non-empty string by the time we get here), so
+  //               nobody is ever mistaken for a ghost.
+  //   undefined — we do NOT know. The offline snapshot in localStorage is the
+  //               whole groups array as it was last fetched, so straight after
+  //               this change ships the app renders a snapshot written by the
+  //               PREVIOUS bundle, whose _memberMeta entries have no `userId`
+  //               key at all. Reading that as "no account" would grey out
+  //               everyone's own bin for the second or two until the first
+  //               fetch lands. Unknown means fail open, same as an unknown
+  //               myUserId.
+  // Optional chaining throughout, so a missing map or member cannot throw.
+  //
+  // Shared by both prediction helpers below — they ask the same question of the
+  // same map, and two copies would be two things to keep in step.
+  const accountFor = (name) => {
+    const m = (activeGroup?._memberMeta || {})[name];
+    if (m && !('userId' in m)) return undefined;  // pre-upgrade cached shape
+    return m?.userId ?? null;
+  };
+
   // Returns null when the signed-in user would be allowed to delete `entry`,
   // otherwise the sentence explaining why not.
   const deleteDenyReason = (entry) => {
@@ -1163,29 +1193,15 @@ export default function App() {
     // The group owner may delete anything in the group (db/23, both policies).
     if (activeGroup?.owner_id === myUserId) return null;
 
-    const meta = activeGroup?._memberMeta || {};
-
-    // Resolve a member's display NAME to the account behind it. Three answers,
-    // and the third is the one that is easy to miss:
-    //   a uuid    — that member's account
-    //   null      — we know, and there is no account: a ghost, or a name that
-    //               is not a member of this group at all. null never equals
-    //               myUserId (a non-empty string by the time we get here), so
-    //               nobody is ever mistaken for a ghost.
-    //   undefined — we do NOT know. The offline snapshot in localStorage is the
-    //               whole groups array as it was last fetched, so straight after
-    //               this change ships the app renders a snapshot written by the
-    //               PREVIOUS bundle, whose _memberMeta entries have no `userId`
-    //               key at all. Reading that as "no account" would grey out
-    //               everyone's own bin for the second or two until the first
-    //               fetch lands. Unknown means fail open, same as an unknown
-    //               myUserId.
-    // Optional chaining throughout, so a missing map or member cannot throw.
-    const accountFor = (name) => {
-      const m = meta[name];
-      if (m && !('userId' in m)) return undefined;  // pre-upgrade cached shape
-      return m?.userId ?? null;
-    };
+    // db/24 adds the CREATOR to both delete rules, fixing a limitation noted
+    // when db/23 shipped: someone who entered a record and correctly attributed
+    // it to another person could not then remove their own mis-entry. Leaving
+    // this out would grey the bin out for exactly the person the database is now
+    // willing to let through — this prediction failing CLOSED, which the note
+    // above forbids. `createdBy` is null both on rows written before db/24 and
+    // everywhere until it is run, and null never equals myUserId, so nothing
+    // moves in those states.
+    if (entry.createdBy && entry.createdBy === myUserId) return null;
 
     if (entry.type === 'settlement') {
       // Either party. The row carries display NAMES (_settleFrom / _settleTo).
@@ -1203,6 +1219,45 @@ export default function App() {
     if (payerUserId === undefined) return null;
     if (payerUserId === myUserId) return null;
     return DENY_EXPENSE;
+  };
+
+  /* ----- Who may RECORD a settlement — the same prediction, going in ---------
+   *
+   * ⚠️ Also NOT a security control. Everything in the long note above applies
+   * here verbatim: db/24's "party or owner adds settlements" policy is what
+   * actually decides, this only avoids offering an action certain to fail, and
+   * it fails OPEN.
+   *
+   * This one closes a gap the settle-up UI has always had. The suggestion list
+   * is computed from everyone's balances, so it happily offers "Record" on a
+   * payment between two OTHER people — and until db/24 the database happily
+   * accepted it. Now it will refuse, and a refused settlement insert is worse to
+   * watch than a refused delete: the row appears in the list optimistically,
+   * the balances move, and both silently revert on the next refetch. Recording a
+   * payment that did not happen, or appearing to and not having, are both about
+   * money. So the button says why instead.
+   *
+   * Takes display NAMES (the suggestion rows carry `s.from` / `s.to`), mapped
+   * through the same `accountFor` as the delete rules. A ghost has userId null
+   * and can never match — correct, and deliberate: db/24 leaves ghost-to-ghost
+   * to the group owner because neither side has an account to record it.
+   */
+  const recordDenyReason = (fromName, toName) => {
+    // Unknown signer — fail open, exactly as deleteDenyReason does.
+    if (!myUserId) return null;
+
+    // The group owner may record anything, including between two ghosts.
+    if (activeGroup?.owner_id === myUserId) return null;
+
+    const fromUserId = accountFor(fromName);
+    const toUserId   = accountFor(toName);
+
+    // `undefined` is "we do not know" (a snapshot from an older bundle), not
+    // "no account". Fail open rather than disable a control we cannot judge.
+    if (fromUserId === undefined || toUserId === undefined) return null;
+
+    if (fromUserId === myUserId || toUserId === myUserId) return null;
+    return DENY_RECORD_SETTLEMENT;
   };
 
   /* ----- Derived ----- */
@@ -1364,7 +1419,17 @@ export default function App() {
     setView('home');
   };
 
+  // BELT AND BRACES, the same arrangement as removeExpense above. The Record
+  // buttons are already marked aria-disabled when db/24 would refuse, but
+  // aria-disabled is deliberately still CLICKABLE (that is the point — see the
+  // buttons), so the tap has to land somewhere that answers. Answering here,
+  // before actions.recordSettlement, is what avoids the optimistic insert: that
+  // action adds the row and moves everyone's balances immediately and only
+  // reverts when the refetch lands. The only way not to show a payment that was
+  // never accepted is not to call it.
   const recordSettlement = async ({ from, to, amount, note }) => {
+    const denied = recordDenyReason(from, to);
+    if (denied) { actions.showError(`${denied}.`); return; }
     await actions.recordSettlement(activeGroup.id, { from, to, amount, note });
     setShowSettle(false);
   };
@@ -1373,6 +1438,8 @@ export default function App() {
   // settle-up list so the user can record several payments in a row; balances
   // (and therefore the suggestions) refetch after each one.
   const recordSettlementKeepOpen = async ({ from, to, amount, note }) => {
+    const denied = recordDenyReason(from, to);
+    if (denied) { actions.showError(`${denied}.`); return; }
     await actions.recordSettlement(activeGroup.id, { from, to, amount, note });
   };
 
@@ -1834,6 +1901,7 @@ export default function App() {
           entries={expenses}
           paymentNotes={activeGroup?._memberPaymentNotes || {}}
           myName={profile?.display_name || 'Me'}
+          recordDenyReason={recordDenyReason}
           onClose={() => setShowSettle(false)}
           onConfirm={recordSettlement}
           onRecord={recordSettlementKeepOpen}
@@ -2766,6 +2834,19 @@ function ExpenseRow({ e, onEdit, onDelete, canDelete = true, denyReason = null, 
     ? 'text-stone-400 hover:text-red-600'
     : 'text-stone-300 cursor-not-allowed';
   const binTitle = canDelete ? 'Delete' : denyReason;
+  // "recorded by X" (db/24), shown ONLY when the person who ENTERED the record
+  // is not the person it says PAID. Same-person is the ordinary case — you add
+  // what you spent — and repeating it on every row would be noise on the one
+  // screen people scan fastest.
+  //
+  // Null when we do not know: every row written before db/24, and everything
+  // until the owner runs it. We render nothing rather than "recorded by
+  // someone", which tells the reader less than silence does and reads as a bug.
+  // For a settlement `paidBy` is the person who SENT the money, so the same
+  // comparison asks the right question of both kinds of row.
+  const recordedBy = (e.createdByName && e.createdByName !== e.paidBy)
+    ? e.createdByName
+    : null;
   const meta = catMeta(e.category);
   const mode = e.splitMode || 'equal';
   const modeMeta = SPLIT_MODES.find(m => m.id === mode);
@@ -2781,6 +2862,12 @@ function ExpenseRow({ e, onEdit, onDelete, canDelete = true, denyReason = null, 
           <div className="font-medium text-sm truncate text-emerald-900">{e.name}</div>
           <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
             <span className="text-[10px] px-1.5 py-0.5 rounded border bg-emerald-700 text-white border-emerald-700">Settlement</span>
+            {/* The case this exists for: a payment somebody else entered on your
+                behalf. Quiet and secondary to the amount on the right — it
+                answers "where did this come from", it does not compete. */}
+            {recordedBy && (
+              <span className="text-[10px] text-stone-500 truncate">recorded by {recordedBy}</span>
+            )}
             {e.note && <span className="text-[10px] text-stone-500 truncate">{e.note}</span>}
           </div>
         </button>
@@ -2817,6 +2904,12 @@ function ExpenseRow({ e, onEdit, onDelete, canDelete = true, denyReason = null, 
           <span className={`text-[10px] px-1.5 py-0.5 rounded border ${meta.tone}`}>{e.category}</span>
           {!isSolo && mode !== 'equal' && (
             <span className={`text-[10px] px-1.5 py-0.5 rounded border ${modeTone}`}>{modeMeta.label}</span>
+          )}
+          {/* Only when someone else entered it — an expense attributed to you
+              that you do not remember adding is the same question as above.
+              Never on a solo group, where you are always both. */}
+          {!isSolo && recordedBy && (
+            <span className="text-[10px] text-stone-500 truncate">recorded by {recordedBy}</span>
           )}
           {e.note && <span className="text-[10px] text-stone-500 truncate">{e.note}</span>}
         </div>
@@ -3262,7 +3355,15 @@ function SummaryTab({ expenses, settlements, balances, sharedPool, total, people
             <div key={s.id} className="px-4 py-2.5 text-sm flex items-center justify-between">
               <div className="min-w-0">
                 <div className="font-medium truncate">{s.name}</div>
-                <div className="text-[11px] text-stone-500">{formatDay(s.date)}</div>
+                {/* This list IS the payment ledger, so "who entered it" belongs
+                    here more than anywhere. Appended to the date line — one
+                    muted line, not a second one. Shown only when the recorder is
+                    not the person who sent the money, and never when db/24 has
+                    not run (createdByName is null and we say nothing). */}
+                <div className="text-[11px] text-stone-500">
+                  {formatDay(s.date)}
+                  {s.createdByName && s.createdByName !== s.paidBy && ` · recorded by ${s.createdByName}`}
+                </div>
               </div>
               <div className="font-semibold tabular-nums text-emerald-700 shrink-0">{fmt(s.amount)}</div>
             </div>
@@ -4166,7 +4267,13 @@ function OwnPaymentNoteNudge({ myNote, payers, tone = 'light' }) {
 
 /* ============ Settle modal ============ */
 
-function SettleModal({ balances, people, entries, paymentNotes, myName, onClose, onConfirm, onRecord }) {
+// `recordDenyReason(fromName, toName)` returns null when the signed-in user may
+// record that payment (db/24), or the sentence explaining why not. It defaults
+// to "no reason to refuse" so a caller that forgets to pass it degrades to the
+// old behaviour (every Record button live, the database still deciding) rather
+// than silently blocking everyone — the check is a UX prediction, not a guard.
+// See App().
+function SettleModal({ balances, people, entries, paymentNotes, myName, recordDenyReason = () => null, onClose, onConfirm, onRecord }) {
   // For 3+ members we show a "who pays whom" list instead of a single form.
   if (people.length >= 3) {
     return (
@@ -4175,6 +4282,7 @@ function SettleModal({ balances, people, entries, paymentNotes, myName, onClose,
         entries={entries}
         paymentNotes={paymentNotes}
         myName={myName}
+        recordDenyReason={recordDenyReason}
         onClose={onClose}
         onRecord={onRecord}
       />
@@ -4191,6 +4299,14 @@ function SettleModal({ balances, people, entries, paymentNotes, myName, onClose,
   const [note, setNote] = useState('');
 
   const valid = parseFloat(amount) > 0;
+
+  // db/24's predicted refusal for this one payment. In a two-person group the
+  // signed-in user is normally one of the two, so this is almost always null —
+  // but "almost always" is not "always" (a display name that resolves to no
+  // account, a snapshot written by an older bundle), and a Record button that
+  // silently fails is precisely what is being removed. Fails open like the rest.
+  const denyRecord = recordDenyReason(fromPerson, toPerson);
+  const canRecord  = !denyRecord;
 
   return (
     <div className="fixed inset-0 z-40 flex items-end sm:items-center justify-center bg-stone-900/40 backdrop-blur-sm" onClick={onClose}>
@@ -4258,8 +4374,24 @@ function SettleModal({ balances, people, entries, paymentNotes, myName, onClose,
           </button>
           <button
             onClick={() => onConfirm({ from: fromPerson, to: toPerson, amount: parseFloat(amount), note })}
+            // `disabled` stays for an empty/zero amount: there is nothing to
+            // explain and nothing to record, so an inert control is honest.
             disabled={!valid}
-            className="flex-1 py-2.5 rounded-lg bg-emerald-700 text-white text-sm font-medium hover:bg-emerald-800 disabled:bg-stone-300"
+            // The REFUSAL is aria-disabled, NOT disabled, for the same reason
+            // recorded on the bin buttons: this is a phone-first app, a truly
+            // disabled button cannot be tapped, and with no hover there is no
+            // tooltip — so a blocked user would see a greyed button and be told
+            // NOTHING. Left tappable, the tap routes to recordSettlement, which
+            // refuses and shows the reason. Still no optimistic insert, still no
+            // doomed request.
+            aria-disabled={!canRecord}
+            title={canRecord ? 'Record this payment' : denyRecord}
+            aria-label={canRecord ? 'Record payment' : denyRecord}
+            className={`flex-1 min-h-[44px] py-2.5 rounded-lg text-sm font-medium disabled:bg-stone-300 disabled:text-white ${
+              canRecord
+                ? 'bg-emerald-700 text-white hover:bg-emerald-800'
+                : 'bg-stone-200 text-stone-500 cursor-not-allowed'
+            }`}
           >
             Record payment
           </button>
@@ -4276,7 +4408,7 @@ function SettleModal({ balances, people, entries, paymentNotes, myName, onClose,
  * so the user can clear several debts in a row. After each record the parent
  * refetches, `entries` updates, and the suggestions recompute automatically.
  */
-function MultiSettleModal({ people, entries, paymentNotes, myName, onClose, onRecord }) {
+function MultiSettleModal({ people, entries, paymentNotes, myName, recordDenyReason = () => null, onClose, onRecord }) {
   // display name → "how to pay me" note (from group._memberPaymentNotes).
   // Defaulted here so a caller that hasn't got the map yet can't crash a render.
   const notes = paymentNotes || {};
@@ -4323,6 +4455,13 @@ function MultiSettleModal({ people, entries, paymentNotes, myName, onClose, onRe
               {suggestions.map((s) => {
                 const key = `${s.from}->${s.to}:${s.amount}`;
                 const busy = busyKey === key;
+                // db/24: this list is built from everyone's balances, so it
+                // offers payments between two OTHER people as readily as your
+                // own. Those are the rows the database now refuses. Predict it
+                // here so the button explains itself instead of inserting a row,
+                // moving every balance, and quietly putting it all back.
+                const denyRecord = recordDenyReason(s.from, s.to);
+                const canRecord  = !denyRecord;
                 return (
                   <div
                     key={key}
@@ -4343,8 +4482,25 @@ function MultiSettleModal({ people, entries, paymentNotes, myName, onClose, onRe
                     </div>
                     <button
                       onClick={() => handleRecord(s)}
+                      // `disabled` stays for the mid-write moment only: there is
+                      // nothing to say and a second tap would double-record.
                       disabled={busy}
-                      className="px-4 py-2 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:bg-stone-300 shrink-0 flex items-center gap-1.5"
+                      // The REFUSAL is aria-disabled, NOT disabled, for the same
+                      // reason recorded on the bin buttons: this is a phone-first
+                      // app, a truly disabled button cannot be tapped, and with
+                      // no hover there is no tooltip — so a blocked user would
+                      // see a greyed button and be told NOTHING. Left tappable,
+                      // the tap routes to recordSettlementKeepOpen, which refuses
+                      // and shows the reason. No optimistic insert, no doomed
+                      // request.
+                      aria-disabled={!canRecord}
+                      title={canRecord ? `Record ${s.from} paying ${s.to}` : denyRecord}
+                      aria-label={canRecord ? `Record ${s.from} paying ${s.to}` : denyRecord}
+                      className={`px-4 min-h-[44px] py-2 rounded-lg text-sm font-medium disabled:bg-stone-300 disabled:text-white shrink-0 flex items-center gap-1.5 ${
+                        canRecord
+                          ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                          : 'bg-stone-200 text-stone-500 cursor-not-allowed'
+                      }`}
                     >
                       <Check className="w-4 h-4" />
                       {busy ? 'Saving…' : 'Record'}
