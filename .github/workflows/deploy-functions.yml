@@ -1,0 +1,100 @@
+# Deploy Edge Functions from git (backlog #8).
+#
+# THE PROBLEM THIS SOLVES. Until now every Edge Function was deployed by pasting
+# a file into the Supabase dashboard. The repo and the thing actually running
+# were two separate copies with nothing keeping them in step, and there was no
+# way to tell whether they matched. That drift has already cost real debugging
+# time once: a stale deployed copy produced a "Gemini not active" error that
+# made no sense against the code in the repo.
+#
+# After this, main IS the deployment. A change to supabase/functions/ ships on
+# merge, and what is running is always what is committed.
+#
+# ⚠️ FIRST RUN OVERWRITES THE DASHBOARD. This pushes the repo's version over
+# whatever is live. If the dashboard ever held a newer edit that never made it
+# back to git, that edit is gone. Before enabling this the first time, satisfy
+# yourself that the repo is the good copy — after that the question stops
+# existing, which is the point.
+#
+# DELIBERATELY DOES NOT TOUCH THE DATABASE. No `supabase db push`, no link, no
+# migration handling. Functions hold no data; the database holds all of it, and
+# the CLI has no record of the twenty-five migrations applied by hand. See the
+# warning at the top of supabase/config.toml.
+#
+# SETUP (once):
+#   1. https://supabase.com/dashboard/account/tokens → "Generate new token",
+#      name it something like "github-actions-splitab". Copy it.
+#   2. GitHub → repo → Settings → Secrets and variables → Actions → New secret:
+#        SUPABASE_ACCESS_TOKEN = <that token>
+#      The project ref is NOT secret (it is in every API URL) so it lives in
+#      config.toml rather than in a secret.
+#
+# Function SECRETS (BREVO_API_KEY and friends) are project-level and are NOT
+# touched by a deploy — they survive untouched. Only the code is replaced.
+
+name: deploy-functions
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/functions/**'
+      - 'supabase/config.toml'
+      - '.github/workflows/deploy-functions.yml'
+  # Manual run, for redeploying without a code change.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never let two deploys race. A half-finished deploy overwritten by another is
+# exactly the kind of drift this workflow exists to end.
+concurrency:
+  group: deploy-functions
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Deploy each function
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SUPABASE_ACCESS_TOKEN:-}" ]; then
+            echo "::error::Missing SUPABASE_ACCESS_TOKEN secret. See the setup notes at the top of this file."
+            exit 1
+          fi
+
+          # Read the project ref out of config.toml so it is defined in exactly
+          # one place. Two copies of an id is a future mismatch nobody notices.
+          PROJECT_REF=$(grep -E '^project_id' supabase/config.toml | head -1 | cut -d'"' -f2)
+          if [ -z "${PROJECT_REF}" ]; then
+            echo "::error::Could not read project_id from supabase/config.toml."
+            exit 1
+          fi
+          echo "Deploying to project ${PROJECT_REF}"
+
+          # Deploy every function, one at a time, so the log names the one that
+          # failed. `set -e` stops on the first failure rather than reporting a
+          # green run that only half-deployed.
+          for dir in supabase/functions/*/; do
+            fn=$(basename "${dir}")
+            # Skip shared/helper folders, which are not deployable functions.
+            case "${fn}" in
+              _*|.*) echo "skipping ${fn}"; continue ;;
+            esac
+            echo "::group::deploy ${fn}"
+            supabase functions deploy "${fn}" --project-ref "${PROJECT_REF}"
+            echo "::endgroup::"
+          done
+
+          echo "All functions deployed from $(git rev-parse --short HEAD)."

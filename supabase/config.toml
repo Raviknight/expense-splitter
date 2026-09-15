@@ -1,0 +1,61 @@
+# Supabase CLI config — EDGE FUNCTIONS ONLY.
+#
+# ⚠️ READ THIS BEFORE RUNNING ANY `supabase db ...` COMMAND ⚠️
+#
+# This file exists so Edge Functions can be deployed from git instead of pasted
+# into the dashboard (backlog #8). It does NOT mean this project uses the CLI for
+# database migrations, and it must not be taken as permission to start.
+#
+# Every schema change in db/ — all twenty-five of them — was applied BY HAND in
+# the dashboard SQL editor. The CLI's migration ledger
+# (supabase_migrations.schema_migrations) is therefore EMPTY. That is the cause
+# of the harmless "relation does not exist" errors in the dashboard logs, and it
+# is also why the following are dangerous here:
+#
+#   supabase db push    — would try to apply supabase/migrations/, which does not
+#                         exist, against a schema it has no record of
+#   supabase db reset   — DESTROYS the database and rebuilds from migrations.
+#                         There are none. This would wipe real expense data.
+#   supabase db pull    — safe-ish, but writes a single giant baseline migration
+#                         that silently supersedes the numbered, commented files
+#                         in db/ that explain WHY each change was made.
+#
+# Adopting the CLI for migrations properly means baselining 25 hand-applied
+# files, and it is a separate decision with real risk. It is deliberately NOT
+# part of this change. Functions carry no data; migrations carry all of it.
+
+project_id = "efjzagafhcsygswoojxh"
+
+# ── Per-function settings ────────────────────────────────────────────────────
+# verify_jwt is stated explicitly on every function rather than left to the
+# default, because the default is invisible and a silent flip would break things
+# in ways nobody would connect to a deploy.
+#
+# These values are not assumed — they were MEASURED against production before
+# this file was written, by calling each function with no Authorization header.
+# All four returned the gateway's own UNAUTHORIZED_NO_AUTH_HEADER, which only
+# happens when verification is on. Re-measure the same way if you ever suspect
+# drift; do not infer it from the dashboard UI alone.
+
+[functions.scan-receipt]
+# Called from the browser with the signed-in user's JWT.
+verify_jwt = true
+
+[functions.send-digest]
+# Called by .github/workflows/digests.yml, which sends the anon key as a bearer
+# token — a valid JWT, so verification passes. The REAL authentication is the
+# x-digest-secret header checked inside the function; this only keeps anonymous
+# strangers from reaching it at all.
+verify_jwt = true
+
+[functions.send-invite]
+# Called from the browser; the function forwards the caller's Authorization to
+# auth.getUser() to establish who is inviting.
+verify_jwt = true
+
+[functions.send-welcome]
+# Called by a DATABASE WEBHOOK on insert into profiles, not by the app — so this
+# one deserved checking rather than assuming. It is on, and the webhook works,
+# which means the hook is configured to send an auth header. If welcome emails
+# ever stop after a deploy, this line is the first thing to look at.
+verify_jwt = true
