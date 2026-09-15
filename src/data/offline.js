@@ -213,7 +213,16 @@ export function isNetworkError(err) {
       msg.includes('fetch failed') ||
       msg.includes('network request failed') ||
       msg.includes('networkerror') ||
-      msg.includes('load failed')   // Safari offline
+      msg.includes('load failed') ||   // Safari offline
+      // Our own client-side timeout (supabaseClient.js). It is thrown as a
+      // TypeError, which the check above already catches — but supabase-js
+      // re-wraps errors on some paths, and if the instance is lost the message
+      // is all that survives. A timeout misclassified as a "real" server error
+      // would go to a dead-end banner instead of the retry path, which is
+      // exactly the stuck state this was added to cure.
+      msg.includes('timed out') ||
+      msg.includes('timeout') ||
+      msg.includes('aborted')
     ) return true;
   }
   return false;
