@@ -40,7 +40,7 @@ If it is not in this file, it is not agreed work. If it is done, it leaves this 
 
 | Item | Notes |
 |------|-------|
-| **Flip `SCAN_LIMIT_ENABLED=true`** | Counting is live and enforcing is off, deliberately, so real usage accrues before anyone is blocked. Leave it a few weeks, look at `scan_usage`, then pick a free tier from evidence instead of a guess. |
+| **Flip `SCAN_LIMIT_ENABLED=true`** — DO NOT flip before payments work | Counting is live and enforcing off, deliberately, so a free tier could be set from evidence. **Read 2026-09-15: there is no evidence.** `scan_usage` holds exactly one row — the owner, 9 scans, already premium. Nobody else has scanned once. A sample of one, and that one is the founder, cannot set a limit for anyone. **More importantly, the sequencing recorded here was backwards.** #9 said payments were blocked on enforcement; the reverse dependency is stronger. Enforcement without a checkout means a user who hits the limit is **blocked with no way to continue** — they cannot upgrade because there is nothing to buy, so they simply leave. A wall with no door is worse than no wall. **Correct order: build the payment integration FIRST, flip this in the same week**, so the limit and the escape hatch arrive together. Until then this flag stays `false` and premium stays a manual database toggle, which costs nothing while one person scans. Re-read `db/check_scan_usage.sql` when there is real traffic; the third query answers the only question that matters — how many people a given free tier would actually block. |
 
 ## Infrastructure & risks
 
