@@ -164,8 +164,35 @@ export function AuthProvider({ children }) {
       });
 
     // 2. Subscribe to future sign-in / sign-out events.
+    // ⚠️ THIS CALLBACK MUST NOT BE async, AND MUST NOT AWAIT A SUPABASE CALL.
+    //
+    // auth-js runs this handler WHILE HOLDING its internal auth lock, and it
+    // awaits whatever the handler returns. Every Supabase query begins with
+    // SupabaseClient._getAccessToken() -> auth.getSession(), which needs that
+    // same lock. So an async handler that awaits a query deadlocks:
+    //
+    //     handler waits for the query
+    //       -> query waits for the lock
+    //         -> lock waits for the handler
+    //
+    // and nothing in the app can ever reach the database again.
+    //
+    // This is not theoretical. It is what produced the "Showing saved data"
+    // banner that would not clear, on desktop and iPhone alike. The evidence
+    // that finally identified it, from the owner's DevTools: the token refresh
+    // returned 200, the realtime websocket connected — and there were ZERO
+    // /rest/v1/ requests. Not slow ones, not failing ones. None. The queries
+    // were never issued, because every one of them was queued behind a lock
+    // held by this handler, which was waiting on a query of its own.
+    //
+    // It also explains why three earlier fixes did nothing: better retries,
+    // longer backoff and a fetch timeout are all useless when the request never
+    // reaches the network layer at all.
+    //
+    // So the handler is now SYNCHRONOUS and hands the profile load to a
+    // separate task. It returns immediately, the lock is released, queries flow.
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, s) => {
+      (event, s) => {
         // PASSWORD_RECOVERY fires when the user clicks their reset-link email.
         // Supabase exchanges the one-time token for a temporary session and
         // tells us about it here — BEFORE any normal SIGNED_IN event.
@@ -186,7 +213,20 @@ export function AuthProvider({ children }) {
         // optional to render the app, so it must never gate the spinner.
         setLoading(false);
         clearTimeout(watchdog);
-        await loadProfile(s?.user ?? null);
+
+        // DEFERRED, not awaited — see the block above. setTimeout(…, 0) pushes
+        // the profile load into a later task, so this handler returns straight
+        // away and auth-js releases its lock. By the time loadProfile runs and
+        // asks for a session, the lock is free and the query goes out normally.
+        //
+        // Do not "tidy" this back into `await loadProfile(...)`. It reads like
+        // a pointless indirection and it is the difference between an app that
+        // loads and one that silently never queries the database again.
+        setTimeout(() => {
+          loadProfile(s?.user ?? null).catch((e) => {
+            console.warn('[AuthProvider] deferred profile load failed:', e?.message ?? e);
+          });
+        }, 0);
       }
     );
 
