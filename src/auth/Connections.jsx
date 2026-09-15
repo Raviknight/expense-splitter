@@ -15,7 +15,7 @@
 // Table: profiles     — columns: id, display_name, email
 
 import { useState, useEffect, useCallback } from 'react';
-import { UserPlus, Check, X, Clock, Users, Mail, ChevronDown, ChevronUp } from 'lucide-react';
+import { UserPlus, Check, X, Clock, Users, Mail } from 'lucide-react';
 import { supabase } from '../supabaseClient.js';
 import { useAuth } from './AuthProvider.jsx';
 import { useConnections } from './useConnections.js';
@@ -344,11 +344,11 @@ function IncomingList({ incoming, onAction }) {
 // in the app — no record it happened, no way to chase it, no way to cancel it.
 // Both kinds now sit in one list with a Withdraw action.
 function OutgoingList({ outgoing, currentUserId, sentInvites = [], onChanged }) {
-  const [expanded, setExpanded] = useState(false);
   const [busyId, setBusyId] = useState(null);
-  // Show only non-accepted by default to keep it tidy; let user expand to see all.
-  const pending  = outgoing.filter(c => c.status === 'pending');
-  const others   = outgoing.filter(c => c.status !== 'pending');
+  // `outgoing` is already pending-only (useConnections excludes declined), so
+  // this filter is belt-and-braces rather than a real split — it keeps the list
+  // correct if that ever changes upstream.
+  const pending = outgoing.filter(c => c.status === 'pending');
 
   // Withdrawing DELETES the row so it disappears from the other person's list
   // too — a withdrawn request should leave no trace for them to act on.
@@ -437,22 +437,11 @@ function OutgoingList({ outgoing, currentUserId, sentInvites = [], onChanged }) 
         {pendingInvites.map(inv => <InviteRow key={inv.id} inv={inv} />)}
       </ul>
 
-      {others.length > 0 && (
-        <>
-          <button
-            onClick={() => setExpanded(e => !e)}
-            className="flex items-center gap-1 text-xs text-stone-400 hover:text-stone-600 transition self-start"
-          >
-            {expanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-            {expanded ? 'Hide' : `Show ${others.length} more`}
-          </button>
-          {expanded && (
-            <ul className="flex flex-col gap-2">
-              {others.map(c => <PersonRow key={c.id} c={c} />)}
-            </ul>
-          )}
-        </>
-      )}
+      {/* There used to be a collapsible "show N more" section here holding the
+          DECLINED requests. useConnections now excludes those entirely (see the
+          long note on `outgoing` there), so this list only ever contains
+          pending ones and the section could never render again. Removed rather
+          than left as unreachable code that reads like a missing feature. */}
     </div>
   );
 }

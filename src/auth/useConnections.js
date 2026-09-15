@@ -83,11 +83,25 @@ export function useConnections() {
     c => c.addressee === user?.id && c.status === 'pending'
   );
 
-  // Requests I sent that are NOT yet accepted (pending or declined). Once a
-  // request is accepted the person moves into "My connections" below, so we
-  // drop accepted ones here to avoid showing them in both places.
+  // Requests I sent that are still PENDING. Accepted ones move to "My
+  // connections" below, so they would otherwise appear in two places.
+  //
+  // DECLINED ONES ARE DELIBERATELY EXCLUDED, and that is a product decision as
+  // much as a technical one. This used to be `status !== 'accepted'`, so a
+  // refused request sat in your sent list wearing a red DECLINED pill.
+  //
+  //  * Socially: you are not told you were turned down. That is how every app
+  //    with a request model behaves, and the alternative is a small standing
+  //    reminder of a rejection that the other person has already closed.
+  //  * Technically: db/25 stops a declined connection granting a profile read,
+  //    so the row could no longer render a name anyway — it would have shown
+  //    "Unknown user" beside the pill, which is worse than absent.
+  //
+  // The request is not forgotten. The row stays in `connections` and still
+  // enforces the re-request cool-off — asking again says "you can ask again in
+  // N hours" rather than silently failing (see Connections.jsx).
   const outgoing = connections.filter(
-    c => c.requester === user?.id && c.status !== 'accepted'
+    c => c.requester === user?.id && c.status === 'pending'
   );
 
   // Accepted connections — these are my "friends" in the app.
