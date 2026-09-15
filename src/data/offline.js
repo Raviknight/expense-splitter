@@ -214,15 +214,19 @@ export function isNetworkError(err) {
       msg.includes('network request failed') ||
       msg.includes('networkerror') ||
       msg.includes('load failed') ||   // Safari offline
-      // Our own client-side timeout (supabaseClient.js). It is thrown as a
-      // TypeError, which the check above already catches — but supabase-js
-      // re-wraps errors on some paths, and if the instance is lost the message
-      // is all that survives. A timeout misclassified as a "real" server error
-      // would go to a dead-end banner instead of the retry path, which is
-      // exactly the stuck state this was added to cure.
-      msg.includes('timed out') ||
-      msg.includes('timeout') ||
-      msg.includes('aborted')
+      // OUR OWN client-side timeout (supabaseClient.js), matched on its exact
+      // wording. It is thrown as a TypeError, which the check above already
+      // catches — this is the fallback for paths where supabase-js re-wraps the
+      // error and the instance is lost, leaving only the message.
+      //
+      // DELIBERATELY NARROW. The first version of this matched any message
+      // containing "timeout" or "aborted", which is far too greedy: Postgres
+      // says "canceling statement due to statement timeout" for a slow query,
+      // and that is a REAL error the user needs to see. Classifying it as a
+      // network problem would route it to the silent stale banner instead of an
+      // explanatory message — turning a diagnosable fault into the exact
+      // symptom ("it just shows saved data") this whole thread is about.
+      msg.includes('network request timed out')
     ) return true;
   }
   return false;
