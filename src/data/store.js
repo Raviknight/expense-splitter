@@ -57,6 +57,14 @@ import {
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 // Shown when the scan-receipt Edge Function looks like it hasn't been deployed.
+// How a failed fetch retries. The first few are fast, because the usual cause
+// is a network that is still waking up — on iOS a backgrounded PWA is resumed
+// onto a radio that needs a second or two. After that it slows to a heartbeat
+// and KEEPS GOING: the alternative is giving up while the user is still sitting
+// there looking at stale figures, which is what happened before.
+const FAST_RETRIES  = 4;       // 2s, 4s, 8s, 16s
+const SLOW_RETRY_MS = 60_000;  // then once a minute, while online and stale
+
 const NOT_DEPLOYED_MSG =
   "Scanning isn't set up yet — the scan function may need to be deployed.";
 
@@ -238,9 +246,27 @@ export function useExpenseStore(userId, profile) {
   const scheduleRetry = useCallback(() => {
     if (!navigator.onLine) return;              // genuinely offline: the 'online' listener owns recovery
     if (outboxRef.current.length > 0) return;   // don't stomp optimistic rows; flushOutbox refetches itself
-    if (retryAttemptRef.current >= 4) return;
-    const delay = 2000 * Math.pow(2, retryAttemptRef.current);  // 2s, 4s, 8s, 16s
-    retryAttemptRef.current += 1;
+
+    // KEEP TRYING. This used to stop dead after 4 attempts (~30 seconds), and
+    // `retryAttemptRef` is only reset on SUCCESS — so once those four were
+    // spent, the retry chain was finished for the life of the page. Anyone who
+    // opened the app during a bad thirty seconds was left on the "showing saved
+    // data" banner indefinitely, with no way back except tapping Refresh or
+    // backgrounding and reopening. Reported from a real iPhone as "the app does
+    // not refresh from server", and that is exactly what it did: it tried for
+    // half a minute and then stopped forever while the user sat looking at it.
+    //
+    // A recovery that gives up is not a recovery. So the fast burst stays — it
+    // catches the common case, a waking radio, within seconds — and after that
+    // it settles into a slow heartbeat rather than stopping. One request a
+    // minute, only while something is actually wrong, which is a rounding error
+    // against a fetch that already failed.
+    const n     = retryAttemptRef.current;
+    const delay = n < FAST_RETRIES
+      ? 2000 * Math.pow(2, n)        // 2s, 4s, 8s, 16s — the waking-network case
+      : SLOW_RETRY_MS;               // then once a minute, indefinitely
+    retryAttemptRef.current = n + 1;
+
     if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
     retryTimerRef.current = setTimeout(() => {
       retryTimerRef.current = null;
@@ -955,6 +981,16 @@ export function useExpenseStore(userId, profile) {
       const now = Date.now();
       if (now - lastRun < 3000) return;   // one event; visibilitychange + focus can both fire
       lastRun = now;
+
+      // A fresh budget on every return to the app. Without this, someone who
+      // opened the app during a bad spell burned the fast retries, and coming
+      // back later inherited an exhausted counter — so the one refetch below
+      // was their only chance, and a failure dropped them straight onto the
+      // slow heartbeat. Reopening the app is the clearest possible signal that
+      // a person wants current figures NOW; it should try hard, not shrug.
+      retryAttemptRef.current = 0;
+      if (retryTimerRef.current) { clearTimeout(retryTimerRef.current); retryTimerRef.current = null; }
+
       subscribeRealtime();
       // Nudge the token, but NEVER gate the refetch on it. getSession() awaits a
       // refresh_token POST and @supabase/auth-js ships no fetch timeout, so a
