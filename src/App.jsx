@@ -3629,11 +3629,18 @@ function GroupsModal({ groups, activeGroupId, myName, profile, startView = 'list
                   >
                     <div className="flex items-start gap-2">
                       <button onClick={() => onSwitch(g.id)} className="flex-1 min-w-0 text-left">
-                        <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-stone-500">
+                        {/* stone-600 rather than stone-500 on both secondary lines.
+                            Measured 4.29:1 on the ACTIVE card's pale indigo tint,
+                            under the 4.5:1 AA floor — stone-500 is tuned for white
+                            cards and loses about 0.3 of its ratio on any tint. It is
+                            applied to every card, not just the active one, because
+                            two greys for the same kind of text would be a worse
+                            result than one slightly darker grey. */}
+                        <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-stone-600">
                           {isSolo ? <><User className="w-3 h-3" /> Personal</> : <><Users className="w-3 h-3" /> {g.people.join(' & ')}</>}
                         </div>
                         <div className="font-medium mt-0.5 truncate text-stone-900">{g.name}</div>
-                        <div className="text-xs text-stone-500 mt-0.5 tabular-nums">
+                        <div className="text-xs text-stone-600 mt-0.5 tabular-nums">
                           {expenseCount} {expenseCount === 1 ? 'item' : 'items'} · {fmt(expenseTotal)}
                         </div>
                       </button>
