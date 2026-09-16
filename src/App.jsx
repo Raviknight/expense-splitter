@@ -32,22 +32,50 @@ const PREMIUM_ENFORCED = false;
 
 /* ============ Categories & auto-categorization ============ */
 
+// ORDER IS THE DROPDOWN ORDER, and it is deliberate: everyday spending first,
+// then home/recurring, health, travel, and the rare ones last. The original list
+// was a ROAD-TRIP list — six of its fifteen entries were travel-only, because it
+// grew out of one Niagara trip (db/02) — so someone splitting a flat had to file
+// their rent under "Other". Everyday categories now sit where the thumb lands.
+//
+// ⚠️ 'Other' MUST STAY LAST. `catMeta` falls back to CATEGORIES[length - 1] for
+// any unknown name, so appending a category after 'Other' silently makes THAT
+// one the fallback, and every unrecognised category renders as it.
+//
+// Adding a category is a front-end change only — `expenses.category` is plain
+// `text` with no CHECK constraint (db/01_schema.sql), so nothing needs running
+// in Supabase. But a category with no keywords in RULES below is dead weight:
+// `autoCategorize` can never choose it, so it only ever appears if someone hunts
+// for it by hand.
 const CATEGORIES = [
-  { name: 'Lodging',        emoji: '🏨', tone: 'bg-violet-50 text-violet-800 border-violet-200' },
-  { name: 'Car Rental',     emoji: '🚗', tone: 'bg-blue-50 text-blue-800 border-blue-200' },
-  { name: 'Fuel',           emoji: '⛽', tone: 'bg-amber-50 text-amber-900 border-amber-200' },
-  { name: 'Tolls',          emoji: '🛣️', tone: 'bg-orange-50 text-orange-800 border-orange-200' },
-  { name: 'Parking',        emoji: '🅿️', tone: 'bg-sky-50 text-sky-800 border-sky-200' },
-  { name: 'Attractions',    emoji: '🎫', tone: 'bg-emerald-50 text-emerald-800 border-emerald-200' },
-  { name: 'Restaurants',    emoji: '🍽️', tone: 'bg-rose-50 text-rose-800 border-rose-200' },
-  { name: 'Groceries',      emoji: '🛒', tone: 'bg-lime-50 text-lime-800 border-lime-200' },
-  { name: 'Convenience',    emoji: '🏪', tone: 'bg-yellow-50 text-yellow-800 border-yellow-200' },
-  { name: 'Pharmacy',       emoji: '💊', tone: 'bg-teal-50 text-teal-800 border-teal-200' },
-  { name: 'Transportation', emoji: '🚕', tone: 'bg-indigo-50 text-indigo-800 border-indigo-200' },
-  { name: 'Auto Service',   emoji: '🔧', tone: 'bg-slate-100 text-slate-800 border-slate-200' },
-  { name: 'Government',     emoji: '🏛️', tone: 'bg-stone-100 text-stone-800 border-stone-200' },
-  { name: 'Shopping',       emoji: '🛍️', tone: 'bg-pink-50 text-pink-800 border-pink-200' },
-  { name: 'Other',          emoji: '📌', tone: 'bg-gray-100 text-gray-700 border-gray-200' },
+  // ── Everyday ──────────────────────────────────────────────────────────────
+  { name: 'Restaurants',      emoji: '🍽️', tone: 'bg-rose-50 text-rose-800 border-rose-200' },
+  { name: 'Drinks & Bars',    emoji: '🍻', tone: 'bg-fuchsia-50 text-fuchsia-800 border-fuchsia-200' },
+  { name: 'Groceries',        emoji: '🛒', tone: 'bg-lime-50 text-lime-800 border-lime-200' },
+  { name: 'Convenience',      emoji: '🏪', tone: 'bg-yellow-50 text-yellow-800 border-yellow-200' },
+  { name: 'Shopping',         emoji: '🛍️', tone: 'bg-pink-50 text-pink-800 border-pink-200' },
+  { name: 'Household',        emoji: '🧻', tone: 'bg-cyan-50 text-cyan-800 border-cyan-200' },
+  { name: 'Transportation',   emoji: '🚕', tone: 'bg-indigo-50 text-indigo-800 border-indigo-200' },
+  { name: 'Fuel',             emoji: '⛽', tone: 'bg-amber-50 text-amber-900 border-amber-200' },
+  { name: 'Entertainment',    emoji: '🎬', tone: 'bg-purple-50 text-purple-800 border-purple-200' },
+  // ── Home & recurring ──────────────────────────────────────────────────────
+  { name: 'Rent',             emoji: '🏠', tone: 'bg-green-50 text-green-800 border-green-200' },
+  { name: 'Utilities',        emoji: '💡', tone: 'bg-yellow-100 text-yellow-900 border-yellow-300' },
+  { name: 'Internet & Phone', emoji: '📶', tone: 'bg-zinc-100 text-zinc-800 border-zinc-200' },
+  // ── Health ────────────────────────────────────────────────────────────────
+  { name: 'Health',           emoji: '🏥', tone: 'bg-red-50 text-red-800 border-red-200' },
+  { name: 'Pharmacy',         emoji: '💊', tone: 'bg-teal-50 text-teal-800 border-teal-200' },
+  // ── Travel ────────────────────────────────────────────────────────────────
+  { name: 'Flights',          emoji: '✈️', tone: 'bg-sky-100 text-sky-900 border-sky-300' },
+  { name: 'Lodging',          emoji: '🏨', tone: 'bg-violet-50 text-violet-800 border-violet-200' },
+  { name: 'Car Rental',       emoji: '🚗', tone: 'bg-blue-50 text-blue-800 border-blue-200' },
+  { name: 'Tolls',            emoji: '🛣️', tone: 'bg-orange-50 text-orange-800 border-orange-200' },
+  { name: 'Parking',          emoji: '🅿️', tone: 'bg-sky-50 text-sky-800 border-sky-200' },
+  { name: 'Attractions',      emoji: '🎫', tone: 'bg-emerald-50 text-emerald-800 border-emerald-200' },
+  // ── Occasional ────────────────────────────────────────────────────────────
+  { name: 'Auto Service',     emoji: '🔧', tone: 'bg-slate-100 text-slate-800 border-slate-200' },
+  { name: 'Government',       emoji: '🏛️', tone: 'bg-stone-100 text-stone-800 border-stone-200' },
+  { name: 'Other',            emoji: '📌', tone: 'bg-gray-100 text-gray-700 border-gray-200' },
 ];
 
 const catMeta = (name) => CATEGORIES.find(c => c.name === name) || CATEGORIES[CATEGORIES.length - 1];
@@ -73,7 +101,12 @@ const RULES = [
     'oyo', 'treebo', 'fabhotel', 'lemon tree', 'oberoi', 'itc hotel', 'taj hotel', 'makemytrip', 'make my trip', 'goibibo', 'cleartrip', 'easemytrip', 'yatra.com',
   ] },
   { cat: 'Car Rental',     kws: [
-    'budget car', 'budget rental', 'hertz', 'avis', 'enterprise rent', 'car rental', 'sixt', 'alamo', 'national rent',
+    // 'rent a car' earns its place against the Rent category's ' rent ': on
+    // "HERTZ RENT A CAR" the brand name is only 5 characters, so ' rent ' won
+    // and filed a car hire as housing. Longest-match needs a longer string here
+    // to push back. (The hyphenated "RENT-A-CAR" never matched ' rent ' at all,
+    // which is why only this spelling broke — an easy one to miss by eye.)
+    'budget car', 'budget rental', 'hertz', 'avis', 'enterprise rent', 'car rental', 'rent a car', 'sixt', 'alamo', 'national rent',
     'zoomcar', 'zoom car', 'revv ', 'myles ', 'drivezy',
   ] },
   { cat: 'Auto Service',   kws: [
@@ -87,8 +120,11 @@ const RULES = [
     'indian oil', 'indianoil', 'iocl', 'bharat petroleum', 'bpcl', 'hpcl', 'hindustan petroleum', 'nayara', 'reliance petrol', 'jio-bp', 'petrol pump', 'petrol',
   ] },
   { cat: 'Attractions',    kws: [
+    // Cinemas ('bookmyshow', 'pvr ', 'inox ', 'cinepolis') moved to
+    // Entertainment. This is for sightseeing — places you visit — not a
+    // Friday-night film.
     'amnh', 'museum', 'observatory', 'state park', 'maid of the mist', 'whiteface', 'natl park', 'national park', 'letchworth', 'watkins glen', 'aquarium', 'zoo', 'liberty isl',
-    'bookmyshow', 'book my show', 'pvr ', 'inox ', 'cinepolis', 'taj mahal', 'qutub', 'red fort', 'wonderla', 'essel world',
+    'taj mahal', 'qutub', 'red fort', 'wonderla', 'essel world',
   ] },
   { cat: 'Restaurants',    kws: [
     'subway', 'dunkin', 'starbucks', 'mcdonald', 'chipotle', 'taco bell', 'kitchen', 'tandoori', 'restaurant', 'cafe', 'diner', 'pizza', 'bbq', 'aksharpith', 'panera', 'burger', 'noodle', 'curry', 'biryani',
@@ -105,14 +141,98 @@ const RULES = [
     'apollo pharmacy', 'medplus', 'netmeds', 'pharmeasy', '1mg', 'wellness forever', 'guardian pharmacy',
   ] },
   { cat: 'Transportation', kws: [
+    // Airlines used to live here. They moved to Flights — a keyword can only
+    // belong to ONE category (the test below fails on a duplicate), and an
+    // airline is not local transport.
     'uber', 'lyft', 'taxi', 'amtrak', 'njt', 'nj transit', 'path', 'mta',
     ' ola ', 'olacabs', 'ola cabs', 'rapido', 'namma yatri', 'irctc', 'indian railway', 'redbus', 'red bus', 'blusmart', 'blu smart', 'meru cab',
-    'dmrc', 'bmtc', 'ksrtc', 'msrtc', 'metro rail', 'auto rickshaw', 'goindigo', 'spicejet', 'vistara', 'air india', 'akasa air',
+    'dmrc', 'bmtc', 'ksrtc', 'msrtc', 'metro rail', 'auto rickshaw',
   ] },
   { cat: 'Government',     kws: ['munic', 'dmv', 'court', 'irs', 'usps', 'passport seva', 'income tax', 'challan', 'gstin'] },
   { cat: 'Shopping',       kws: [
-    'walmart', 'wal-mart', 'target', 'costco', 'best buy', 'home depot', 'lowes',
-    'flipkart', 'amazon', 'myntra', 'ajio', 'meesho', 'nykaa', 'croma', 'reliance digital', 'vijay sales', 'pantaloons', 'westside', 'shoppers stop', 'tata cliq', 'decathlon', 'ikea', 'snapdeal', 'firstcry',
+    // 'home depot', 'lowes' and 'ikea' moved to Household — they are where you
+    // buy things FOR the home, which is the whole point of that category.
+    'walmart', 'wal-mart', 'target', 'costco', 'best buy',
+    'flipkart', 'amazon', 'myntra', 'ajio', 'meesho', 'nykaa', 'croma', 'reliance digital', 'vijay sales', 'pantaloons', 'westside', 'shoppers stop', 'tata cliq', 'decathlon', 'snapdeal', 'firstcry',
+  ] },
+
+  // ── The eight categories added 2026-09-16 ─────────────────────────────────
+  // Everything below is new. The guiding rule for each keyword is the same as
+  // above: the most SPECIFIC string that still matches a real statement line.
+
+  { cat: 'Rent',           kws: [
+    // ⚠️ ' rent ' is padded on BOTH sides on purpose. Bare 'rent' is a substring
+    // of "rental", "car rental" and "enterprise rent", so it would quietly steal
+    // every car hire. autoCategorize pads the name with spaces, so ' rent '
+    // matches the whole word "rent" and never "rental".
+    // 'lease' is deliberately ABSENT for the same class of reason: "please" ends
+    // in "lease", so any note saying "please pay" would be filed as Rent.
+    ' rent ', 'house rent', 'rent paid', 'rent payment', 'landlord',
+    'nobroker', 'no broker', 'magicbricks', '99acres', 'housing.com',
+    'society maintenance', 'flat maintenance',
+  ] },
+  { cat: 'Utilities',      kws: [
+    // 'electricity' not bare 'electric': "electrician" is Household work, and
+    // bare 'electric' would take it. (Checked: 'electricity' is not a substring
+    // of 'electrician', so the two live happily in different categories.)
+    'electricity', 'electric bill', 'con edison', 'coned', 'national grid', 'pseg', 'pse&g',
+    'water bill', 'sewer', 'gas bill', 'utility', 'utilities',
+    'tata power', 'bses', 'torrent power', 'msedcl', 'mahadiscom', 'adani power',
+    'lpg', 'indane', 'bharat gas', 'hp gas', 'gail gas',
+  ] },
+  { cat: 'Internet & Phone', kws: [
+    // 'jio' is short and appears inside 'jiomart' (Groceries) and 'jio-bp'
+    // (Fuel). That is safe ONLY because autoCategorize prefers the LONGEST
+    // match: "JIOMART" scores 7 against 3 and stays Groceries. Do not add short
+    // keywords without checking what longer ones already contain them.
+    'comcast', 'xfinity', 'verizon', 'at&t', 'spectrum', 'optimum', 't-mobile',
+    // ⚠️ NOT bare 'recharge'. The test caught it taking "FASTAG RECHARGE NHAI"
+    // off Tolls — in India you recharge a FASTag and a metro card too, not just
+    // a phone. Qualified, it is safe; the carrier names below catch the rest
+    // ("JIO RECHARGE" already matches 'jio').
+    'broadband', 'internet', 'mobile recharge', 'prepaid recharge',
+    'jio', 'airtel', 'vodafone', 'bsnl', 'act fibernet', 'hathway', 'excitel', 'tikona',
+  ] },
+  { cat: 'Health',         kws: [
+    // Distinct from Pharmacy, which is buying medicine. This is seeing someone.
+    // 'apollo hospital' vs Pharmacy's 'apollo pharmacy' — the brand runs both,
+    // so neither may be shortened to bare 'apollo'.
+    'hospital', 'clinic', 'doctor', 'dental', 'dentist', 'physician', 'surgery',
+    'medical center', 'medical centre', 'diagnostic', 'pathology', 'lab test', 'optician',
+    'apollo hospital', 'fortis', 'max healthcare', 'manipal hospital', 'practo',
+    'dr lal path', 'srl diagnostic', 'thyrocare', 'metropolis health',
+  ] },
+  { cat: 'Flights',        kws: [
+    // 'airline' alone also matches "airlines", so both are not needed.
+    // Note: makemytrip / goibibo / cleartrip stay under Lodging — they sell
+    // flights AND hotels, and a keyword cannot be in two categories. Whichever
+    // way that one falls, it is a guess.
+    'airline', 'airfare', 'united air', 'delta air', 'southwest air', 'jetblue',
+    'emirates', 'lufthansa', 'qatar airways', 'british airways', 'etihad', 'air canada',
+    'air india', 'goindigo', 'indigo air', 'spicejet', 'vistara', 'akasa air',
+    'boarding pass', 'excess baggage',
+  ] },
+  { cat: 'Drinks & Bars',  kws: [
+    // ' bar ' is padded: unpadded it sits inside "barbeque" and plenty of Indian
+    // merchant names. Longest-match already protects 'barbeque nation', but the
+    // padding means we are not relying on that alone.
+    ' bar ', 'brewery', 'brewing', ' pub ', 'tavern', 'liquor', 'wine', 'beer',
+    'cocktail', 'distillery', 'taproom', 'tasmac', 'winery',
+  ] },
+  { cat: 'Entertainment',  kws: [
+    // Cinemas moved here out of Attractions, which is for sightseeing.
+    'cinema', 'movie', 'theatre', 'theater', 'imax', 'concert', 'ticketmaster',
+    'netflix', 'spotify', 'hotstar', 'prime video', 'sony liv', 'zee5',
+    'playstation', 'xbox', 'nintendo',
+    'bookmyshow', 'book my show', 'pvr ', 'inox ', 'cinepolis',
+  ] },
+  { cat: 'Household',      kws: [
+    // ' maid ' is padded so it cannot match "mermaid". Lodging's 'maid of the
+    // mist' is longer and wins on any Niagara receipt regardless.
+    'ikea', 'home depot', 'lowes', 'home centre', 'pepperfry', 'urban ladder',
+    'nilkamal', 'godrej interio', 'bed bath', 'container store',
+    'cleaning', 'detergent', 'housekeeping', ' maid ', 'urban company', 'urbanclap',
+    'hardware store', 'plumber', 'electrician', 'carpenter',
   ] },
 ];
 
@@ -149,6 +269,29 @@ function merchantKey(name) {
     .trim();
   if (!cleaned) return '';
   return cleaned.split(' ').slice(0, 2).join(' ');
+}
+
+// Identity of an expense for the purpose of "have I already imported this?".
+//
+// DELIBERATELY STRICT: same date, same amount to the cent, and the same name
+// after nothing more than case-folding and whitespace tidying. It is NOT the
+// fuzzy `merchantKey` above, and that difference matters — `merchantKey` maps
+// "UBER *TRIP 866-576-1" and "UBER *TRIP 901-222-8" to the same token, which is
+// right for learning a category and badly wrong here: those are two different
+// taxi rides and flagging the second as a duplicate would be a false alarm
+// about someone's money.
+//
+// What this catches is the case that actually happens: the same CSV, or an
+// overlapping date range from the same bank, imported twice. Those rows are
+// byte-identical, so an exact comparison finds them.
+//
+// A match is only ever a WARNING. Two identical coffees on one day, two equal
+// tolls, two identical taxi fares are all real, and an app that refused them
+// would be broken in a way that is harder to explain than the duplicates were.
+function duplicateKey(name, amount, date) {
+  const cents = Number.isFinite(Number(amount)) ? Number(amount).toFixed(2) : '?';
+  const clean = String(name || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  return `${String(date || '')}|${cents}|${clean}`;
 }
 
 // `overrides` is the user's own learned map (db/19), merchantKey → category.
@@ -1915,6 +2058,7 @@ export default function App() {
           myName={profile?.display_name || 'Me'}
           myUserId={user?.id}
           categoryOverrides={categoryOverrides}
+          existingExpenses={expenses}
           startMode={importStartMode}
           online={online}
           onClose={() => setShowImport(false)}
@@ -5079,7 +5223,7 @@ function ExpenseModal({ expense, people, isSolo, myName, onClose, onSave, catego
 // `online` defaults to true on purpose: if a future caller forgets to pass it,
 // the modal behaves exactly as it did before rather than locking scanning off
 // for everyone.
-function ImportModal({ people, isSolo, myName, myUserId, categoryOverrides, startMode = 'csv', online = true, onClose, onImport, onScan }) {
+function ImportModal({ people, isSolo, myName, myUserId, categoryOverrides, existingExpenses = [], startMode = 'csv', online = true, onClose, onImport, onScan }) {
   // Which source the user is importing from: 'csv' (a spreadsheet file) or
   // 'scan' (a receipt/statement photo or PDF read by AI vision). Both paths
   // end at the SAME preview + "Paid by"/split defaults + Import button below.
@@ -5102,6 +5246,12 @@ function ImportModal({ people, isSolo, myName, myUserId, categoryOverrides, star
     people.includes(myName) ? myName : (people[0] || '')
   );
   const [splitMode, setSplitMode] = useState(isSolo ? 'personal' : 'equal');
+
+  // Skip rows that already exist in this group. Defaults ON: the common case is
+  // re-importing an overlapping date range from the same bank, where the right
+  // answer is "don't add these again". Anyone who genuinely wants the repeats
+  // can untick it, which is why this is a toggle and not a silent filter.
+  const [skipDuplicates, setSkipDuplicates] = useState(true);
 
   // Outcome state.
   const [importing, setImporting] = useState(false);
@@ -5343,7 +5493,47 @@ function ImportModal({ people, isSolo, myName, myUserId, categoryOverrides, star
     ? headers.length > 0
     : Array.isArray(scanRows) && scanRows.length > 0;
 
-  const canImport = built.expenses.length > 0 && paidByName && !importing;
+  // ── Already-in-this-group detection ────────────────────────────────────────
+  // The store already holds every expense in the group in memory, so this costs
+  // one Set build and no query, no index and no migration.
+  const existingKeys = useMemo(() => {
+    const keys = new Set();
+    for (const e of existingExpenses || []) keys.add(duplicateKey(e.name, e.amount, e.date));
+    return keys;
+  }, [existingExpenses]);
+
+  // Parallel to built.expenses: true where that row already exists.
+  const dupFlags = useMemo(
+    () => built.expenses.map(e => existingKeys.has(duplicateKey(e.name, e.amount, e.date))),
+    [built.expenses, existingKeys]
+  );
+  const dupCount = dupFlags.filter(Boolean).length;
+
+  // What Import will actually send. The preview still shows EVERY row, flagged,
+  // so the skipped ones stay visible rather than vanishing without explanation.
+  const rowsToImport = useMemo(
+    () => (skipDuplicates ? built.expenses.filter((_, i) => !dupFlags[i]) : built.expenses),
+    [built.expenses, dupFlags, skipDuplicates]
+  );
+
+  // One id per row, minted ONCE and reused if the user presses Import again.
+  // This is the client half of the retry fix in store.importExpenses: sending
+  // the same ids means a second attempt collides with the primary key and is
+  // swallowed, instead of inserting a whole second set of rows.
+  //
+  // Keyed on the identity of `rowsToImport`, which is memoised — so it survives
+  // re-renders (including the one from setImporting) and is deliberately
+  // discarded the moment the user changes the mapping, the file, or the skip
+  // toggle, because that is a genuinely different import.
+  const importIdsRef = useRef({ src: null, ids: [] });
+  const withStableIds = (list) => {
+    if (importIdsRef.current.src !== list) {
+      importIdsRef.current = { src: list, ids: list.map(() => crypto.randomUUID()) };
+    }
+    return list.map((e, i) => ({ ...e, _id: importIdsRef.current.ids[i] }));
+  };
+
+  const canImport = rowsToImport.length > 0 && paidByName && !importing;
 
   // Why is Import greyed out? A disabled button with no explanation is a dead
   // end — the user can't tell a missing column from an unreadable file. This
@@ -5355,10 +5545,15 @@ function ImportModal({ people, isSolo, myName, myUserId, categoryOverrides, star
     // Rows are fine, but there's nobody to attribute them to. `paidByName` is
     // seeded once from the group's people, so an empty group can never enable
     // the button — say so rather than leaving an empty dropdown.
-    if (built.expenses.length > 0 && !paidByName) {
+    if (rowsToImport.length > 0 && !paidByName) {
       return 'Add at least one person to this group first — every imported expense needs a payer.';
     }
-    if (built.expenses.length > 0) return null;
+    if (rowsToImport.length > 0) return null;
+    // Every row is already in the group and the skip toggle is filtering them
+    // all out. Without this the button just greys out for no visible reason.
+    if (built.expenses.length > 0 && dupCount === built.expenses.length) {
+      return `All ${built.expenses.length} row${built.expenses.length === 1 ? ' is' : 's are'} already in this group. Untick "Skip rows already in this group" to add them anyway.`;
+    }
     if (mode === 'scan') {
       return scanRows
         ? 'No expenses could be read from that file. Try a sharper photo or a single page.'
@@ -5377,7 +5572,7 @@ function ImportModal({ people, isSolo, myName, myUserId, categoryOverrides, star
     if (!canImport) return;
     setImporting(true);
     setImportError('');
-    const res = await onImport(built.expenses, { paidByName, splitMode });
+    const res = await onImport(withStableIds(rowsToImport), { paidByName, splitMode });
     setImporting(false);
     if (res?.error) {
       setImportError(res.error);
@@ -5427,8 +5622,18 @@ function ImportModal({ people, isSolo, myName, myUserId, categoryOverrides, star
               <div className="w-12 h-12 mx-auto rounded-full bg-emerald-50 border border-emerald-200 flex items-center justify-center mb-3">
                 <Check className="w-6 h-6 text-emerald-600" />
               </div>
-              <div className="font-semibold text-stone-900">Imported {result.inserted} expense{result.inserted === 1 ? '' : 's'}</div>
-              <div className="text-sm text-stone-500 mt-1">Closing…</div>
+              {/* `alreadyPresent` means the PREVIOUS attempt actually committed
+                  and only its response was lost, so this retry was a no-op.
+                  Saying "Imported 40" there would be a lie in the one situation
+                  where the user is already unsure what happened. */}
+              <div className="font-semibold text-stone-900">
+                {result.alreadyPresent
+                  ? `Already saved — ${result.inserted} expense${result.inserted === 1 ? '' : 's'}`
+                  : `Imported ${result.inserted} expense${result.inserted === 1 ? '' : 's'}`}
+              </div>
+              <div className="text-sm text-stone-500 mt-1">
+                {result.alreadyPresent ? 'The earlier attempt went through. Nothing was added twice.' : 'Closing…'}
+              </div>
             </div>
           ) : (
             <>
@@ -5666,8 +5871,15 @@ function ImportModal({ people, isSolo, myName, myUserId, categoryOverrides, star
                               </tr>
                             </thead>
                             <tbody>
+                              {/* `i` is the index in the full list too, because
+                                  slice(0, 8) keeps the original order — so
+                                  dupFlags[i] lines up with this row. */}
                               {built.expenses.slice(0, 8).map((ex, i) => (
-                                <tr key={i} className={`border-t border-stone-100 ${ex._warning ? 'bg-amber-50' : ''}`}>
+                                <tr key={i} className={`border-t border-stone-100 ${
+                                  dupFlags[i] && skipDuplicates ? 'bg-stone-100 text-stone-400 line-through'
+                                  : dupFlags[i] ? 'bg-sky-50'
+                                  : ex._warning ? 'bg-amber-50' : ''
+                                }`}>
                                   {/* `_source` is the filename, set only when a
                                       scan produced this row. With several
                                       receipts scanned at once the preview mixes
@@ -5677,6 +5889,9 @@ function ImportModal({ people, isSolo, myName, myUserId, categoryOverrides, star
                                   <td className="px-2 py-1.5 truncate max-w-[120px]"
                                       title={[ex._source, ex._warning].filter(Boolean).join(' — ')}>
                                     {ex.name}
+                                    {dupFlags[i] && (
+                                      <span className="block text-[10px] text-sky-700 no-underline">already in this group</span>
+                                    )}
                                     {ex._source && (
                                       <span className="block text-[10px] text-stone-400 truncate">{ex._source}</span>
                                     )}
@@ -5689,8 +5904,33 @@ function ImportModal({ people, isSolo, myName, myUserId, categoryOverrides, star
                             </tbody>
                           </table>
                         </div>
+                        {/* ── Already-in-this-group warning + opt-out ────────
+                            Shown only when there is something to warn about.
+                            A duplicate is never blocked: two identical coffees
+                            on one day are a real thing, so the user decides. */}
+                        {dupCount > 0 && (
+                          <div className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2">
+                            <div className="text-[11px] text-sky-900 leading-snug">
+                              <strong>{dupCount}</strong> of these {dupCount === 1 ? 'is' : 'are'} already in this group
+                              — same name, amount and date. This usually means an overlapping date range from the same
+                              file or bank.
+                            </div>
+                            <label className="flex items-center gap-2 mt-1.5 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={skipDuplicates}
+                                onChange={(e) => setSkipDuplicates(e.target.checked)}
+                                className="w-4 h-4 accent-sky-600"
+                              />
+                              <span className="text-[11px] text-sky-900 font-medium">
+                                Skip rows already in this group
+                              </span>
+                            </label>
+                          </div>
+                        )}
                         <div className="text-[11px] text-stone-500">
-                          Importing {built.expenses.length} expense{built.expenses.length === 1 ? '' : 's'}
+                          Importing {rowsToImport.length} expense{rowsToImport.length === 1 ? '' : 's'}
+                          {dupCount > 0 && skipDuplicates && ` (${dupCount} already present, skipped)`}
                           {built.skipped > 0 && ` (${built.skipped} row${built.skipped === 1 ? '' : 's'} skipped — no valid amount)`}.
                           {built.expenses.some(e => e._warning) && (mode === 'scan'
                             ? ' ⚠️ Highlighted rows were unclear — please check them before importing (hover/tap a row for why).'
@@ -5719,7 +5959,7 @@ function ImportModal({ people, isSolo, myName, myUserId, categoryOverrides, star
                 Cancel
               </button>
               <button onClick={doImport} disabled={!canImport} className="flex-1 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 disabled:bg-stone-300">
-                {importing ? 'Importing…' : `Import${built.expenses.length ? ` ${built.expenses.length}` : ''}`}
+                {importing ? 'Importing…' : `Import${rowsToImport.length ? ` ${rowsToImport.length}` : ''}`}
               </button>
             </div>
           </div>

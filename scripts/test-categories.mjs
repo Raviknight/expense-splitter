@@ -133,8 +133,13 @@ const CASES = [
   ['UPI/RAPIDO/TRIP',                   'Transportation'],
   ['IRCTC eTICKET',                     'Transportation'],
   ['NAMMA YATRI RIDE',                  'Transportation'],
-  ['SPICEJET LTD',                      'Transportation'],
-  ['AIR INDIA TICKET',                  'Transportation'],
+  // Airlines moved OUT of Transportation into Flights (2026-09-16), along with
+  // the other six categories added that day. These two expectations were
+  // changed deliberately to follow that decision — they are not a test bent to
+  // fit a bug. Transportation is now local travel; a plane ticket is Flights.
+  ['SPICEJET LTD',                      'Flights'],
+  ['AIR INDIA TICKET',                  'Flights'],
+  ['UNITED AIRLINES 0162',              'Flights'],
 
   // ---- India: fuel & tolls ----
   ['INDIAN OIL PETROL PUMP',            'Fuel'],
@@ -151,7 +156,58 @@ const CASES = [
   ['PHARMEASY ORDER',                   'Pharmacy'],
   ['OYO ROOMS BOOKING',                 'Lodging'],
   ['MAKEMYTRIP INDIA',                  'Lodging'],
-  ['BOOKMYSHOW TICKET',                 'Attractions'],
+  // Cinemas moved out of Attractions into Entertainment on the same date, for
+  // the same reason: Attractions is sightseeing, not a Friday-night film.
+  ['BOOKMYSHOW TICKET',                 'Entertainment'],
+  ['PVR CINEMAS PHOENIX',               'Entertainment'],
+
+  // ---- The eight categories added 2026-09-16 ----
+  ['MONTHLY RENT PAYMENT',              'Rent'],
+  ['NOBROKER RENT PAY',                 'Rent'],
+  ['TATA POWER ELECTRICITY BILL',       'Utilities'],
+  ['INDANE LPG CYLINDER',               'Utilities'],
+  ['AIRTEL BROADBAND',                  'Internet & Phone'],
+  ['ACT FIBERNET MONTHLY',              'Internet & Phone'],
+  ['APOLLO HOSPITAL ENTERPRISE',        'Health'],
+  ['DR LAL PATH LABS',                  'Health'],
+  ['TOIT BREWERY BANGALORE',            'Drinks & Bars'],
+  ['TASMAC WINE SHOP',                  'Drinks & Bars'],
+  ['NETFLIX SUBSCRIPTION',              'Entertainment'],
+  ['IKEA HYDERABAD',                    'Household'],
+  ['HOME DEPOT #4521',                  'Household'],
+  ['URBANCLAP CLEANING',                'Household'],
+
+  // ---- False-positive guards for the new keywords ----
+  // Each of these is a collision the longest-match rule has to resolve, and
+  // every one of them was a REAL failure at some point while writing the list.
+  //
+  // ' rent ' is padded so it cannot match inside "rental". Unpadded, this case
+  // files every car hire under Rent.
+  ['ENTERPRISE RENT-A-CAR',             'Car Rental'],
+  ['HERTZ CAR RENTAL LAX',              'Car Rental'],
+  // 'electrician' is household work; 'electricity' is the bill. Shortening the
+  // Utilities keyword to 'electric' makes this go red.
+  ['ELECTRICIAN HOME VISIT',            'Household'],
+  // In India you recharge a FASTag and a metro card, not just a phone. A bare
+  // 'recharge' keyword in Internet & Phone stole this one — the test caught it.
+  ['FASTAG RECHARGE NHAI',              'Tolls'],
+  // 'jio' (Internet & Phone) is a substring of both of these. They stay put
+  // only because the longer keyword wins.
+  ['JIOMART GROCERY ORDER',             'Groceries'],
+  ['JIO-BP PETROL PUMP',                'Fuel'],
+  // ' maid ' is padded so it cannot match "mermaid"; 'maid of the mist' is
+  // longer than ' maid ' and wins regardless.
+  ['MAID OF THE MIST NIAGARA',          'Attractions'],
+  // ' bar ' (Drinks & Bars) sits inside "barbeque". Longest match keeps this
+  // one a restaurant.
+  ['BARBEQUE NATION GURGAON',           'Restaurants'],
+  // 'prime video' (Entertainment) is longer than 'amazon' (Shopping).
+  ['AMAZON PRIME VIDEO',                'Entertainment'],
+  // …but plain Amazon is still Shopping.
+  ['AMAZON.IN ORDER 402',               'Shopping'],
+  // Apollo runs both hospitals and pharmacies, so neither keyword may be
+  // shortened to bare 'apollo'.
+  ['APOLLO PHARMACY KORAMANGALA',       'Pharmacy'],
 
   // ---- False-positive guards ----
   // ' ola ' is space-padded precisely so it cannot match inside a longer word.

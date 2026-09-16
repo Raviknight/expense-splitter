@@ -66,8 +66,14 @@ If it is not in this file, it is not agreed work. If it is done, it leaves this 
 
 ## Parking lot (not agreed, do not start)
 
-- Recategorise **existing** expenses with the new rules. Risk: overwrites categories the
-  user fixed by hand. Would need to be an explicit, previewable action.
+- Recategorise **existing** expenses with the new rules — still parked in the GENERAL form,
+  for the original reason: re-running the whole rules list over every expense would
+  silently overwrite categories the user fixed by hand. A **narrow** version shipped
+  2026-09-16 as `db/26`, covering only the ~20 merchants whose keyword actually moved
+  between categories, only rows still in the old category, and only merchants absent from
+  `category_overrides`. It is a preview statement plus an update, run by hand. That is the
+  shape any future recategorisation should take: bounded, previewable, and deferring to the
+  user's own corrections.
 - Aggregate merchant corrections **across users** into shared rules. Privacy care needed —
   merchant names are user data.
 - **MCC (merchant category code)** support in CSV import, when a bank export includes it.
@@ -79,6 +85,29 @@ If it is not in this file, it is not agreed work. If it is done, it leaves this 
   project ever upgrades.
 
 ## Done (recent — trim as it grows)
+
+- **Categories widened 15 → 23** (2026-09-16). The old list was a ROAD-TRIP list: six of
+  fifteen entries were travel-only because it grew out of one Niagara trip (db/02), so
+  someone splitting a flat filed their rent under "Other". Added Rent, Utilities,
+  Internet & Phone, Health, Flights, Drinks & Bars, Entertainment, Household; reordered
+  everyday-first; **"Other" pinned last** because `catMeta` uses the final element as its
+  fallback. Front-end only — `expenses.category` is plain `text` with no CHECK constraint.
+  `test:categories` went from 54 to 81 cases and caught four real defects before they
+  shipped, including a bare `'recharge'` keyword stealing "FASTAG RECHARGE NHAI" off Tolls
+  and `' rent '` beating `'hertz'` on "HERTZ RENT A CAR". Airlines moved out of
+  Transportation and cinemas out of Attractions; `db/26` moves existing rows to match.
+- **Duplicate imports** (2026-09-16). Two distinct problems, one ours and one the user's.
+  **Ours:** `importExpenses` minted fresh UUIDs on every call, so a bulk insert that
+  COMMITTED but whose response was lost (30s client abort) showed an error that invited the
+  user to press Import again — producing a complete second set of rows. The manual path
+  never had this because it generates the id once and replays it, so a retry collides with
+  the primary key and is swallowed. Import now does the same: `ImportModal` holds one id
+  per preview row, and `importExpenses` treats 23505 as success (`alreadyPresent: true`,
+  with honest wording rather than a false "Imported 40"). **Theirs:** re-importing an
+  overlapping date range silently doubled rows. The preview now flags rows already in the
+  group (same name + amount + date, exact match — deliberately NOT the fuzzy `merchantKey`,
+  which would call two different Uber trips duplicates) with a skip toggle defaulted on.
+  **Never a hard block:** two identical coffees in one day are real.
 
 - **Per-user category learning** (#5) — `db/19`. A category the user picks by hand is
   remembered against a normalised merchant token, so "UBER *TRIP 866-576-1" and

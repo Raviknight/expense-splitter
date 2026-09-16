@@ -145,10 +145,24 @@ const PROMPT = `You extract expenses from a receipt or bank/card statement for a
 Return ONLY a JSON object: {"expenses":[{"date":"YYYY-MM-DD","description":"string","amount":number,"category":"string","uncertain":boolean,"note":"string"}]}.
 Rules:
 - amount is a positive number (no currency symbols).
-- Ignore subtotals/taxes/tips/balances/running totals UNLESS the document only shows a single total.
-- Itemized receipt: prefer line items; otherwise one expense (merchant as description, final total as amount).
+- FIRST decide which kind of document this is, because it changes everything:
+  * STATEMENT (a bank or card statement: many different merchants, many dates) →
+    return ONE expense PER LINE. That is the whole point of reading a statement.
+  * RECEIPT (a single purchase from ONE merchant, one date, one final total) →
+    return EXACTLY ONE expense: the merchant as description and the FINAL TOTAL
+    as amount. Do NOT list the individual items that were bought.
+- This is a bill-SPLITTING app. The group shares the restaurant bill, not each
+  dish, so a dinner receipt with twelve items is ONE expense of the total. The
+  same goes for a long supermarket receipt: one expense, the amount paid.
+- On a RECEIPT the final total already includes tax, tip and service, so use it
+  as-is; do not add or subtract them and do not emit them as separate rows.
+- On a STATEMENT ignore balances, running totals, opening/closing balances and
+  any payment-to-card lines — they are not purchases.
 - Missing date → use the document date; if none, "".
-- category: short guess (Groceries, Restaurants, Fuel, Lodging, Transportation, Shopping, Other).
+- category: short guess from this list — Restaurants, Drinks & Bars, Groceries,
+  Convenience, Shopping, Household, Transportation, Fuel, Entertainment, Rent,
+  Utilities, Internet & Phone, Health, Pharmacy, Flights, Lodging, Car Rental,
+  Tolls, Parking, Attractions, Auto Service, Government, Other.
 - uncertain: true for any row that was illegible/blurry/low-confidence (put a short reason in note); else false.
 - Return {"expenses":[]} if no purchases, and {"expenses":[],"unreadable":true} if too unclear to read at all.`;
 

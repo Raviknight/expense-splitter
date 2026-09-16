@@ -1421,8 +1421,26 @@ export function useExpenseStore(userId, profile) {
         return { inserted: 0 };
       }
 
+      // ⚠️ THE ROW ID COMES FROM THE CALLER WHEN IT CAN. This looks like a
+      // detail and is actually the whole duplicate-import fix.
+      //
+      // This used to be an unconditional `crypto.randomUUID()`, which meant
+      // every call minted brand-new ids. Consider a 40-row import that COMMITS
+      // on the server but whose response is lost — the client aborts at 30s
+      // (supabaseClient.js) and shows "Could not import expenses: …". The only
+      // sensible thing to do next is press Import again, and with fresh ids
+      // that produced 80 rows. Our own error message walked the user into it.
+      //
+      // The manual add path never had this problem because it generates the id
+      // ONCE and replays the same one (store.js ~1330), so a retry collides
+      // with the primary key and is swallowed as already-done. Import now
+      // borrows that: ImportModal holds an id per preview row and sends it back
+      // unchanged on a retry, so attempt two is a no-op instead of a duplicate.
+      //
+      // The fallback stays for any caller that does not supply ids — losing the
+      // protection is better than throwing.
       const dbRows = rows.map(r => ({
-        id:         crypto.randomUUID(),
+        id:         r._id || crypto.randomUUID(),
         group_id:   groupId,
         name:       r.name,
         amount:     Number(r.amount),
@@ -1440,6 +1458,18 @@ export function useExpenseStore(userId, profile) {
       const { error: dbError } = await insertAttributed('expenses', dbRows);
 
       if (dbError) {
+        // 23505 = these ids are already in the table, i.e. the previous attempt
+        // DID commit and only its response went missing. That is success that
+        // looked like failure, so report it as success.
+        //
+        // PostgREST sends the whole batch as ONE atomic INSERT, so it is all or
+        // nothing: a 23505 here means every row landed, never a partial set.
+        // (Rows carry ids minted once per preview, so a retry replays exactly
+        // the same batch.)
+        if (isUniqueViolation(dbError)) {
+          await fetchRef.current();
+          return { inserted: dbRows.length, alreadyPresent: true };
+        }
         setError('Could not import expenses: ' + dbError.message);
         return { error: dbError.message };
       }

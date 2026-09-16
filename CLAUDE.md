@@ -115,6 +115,14 @@ don't return data).
 | `db/18_scan_burst.sql` | Adds burst-window columns to `scan_usage` so a script can't spend a month's scan allowance in seconds. | Once, after db/16. |
 | `db/19_category_learning.sql` | Adds the per-user `category_overrides` table so the app learns your own merchant→category corrections. | Once. |
 | `db/20_payment_note.sql` | Adds `profiles.payment_note` (free text, ≤200 chars) — the "how to pay me" note shown to others at settle-up. No new RLS policy needed: `profiles` already has "update own profile" + "read connected profiles". | Once. Saving payment details shows a "run db/20" hint until run. |
+| `db/21a_shares_group_with.sql` | Helper function used by the payment-note policies to test "are these two people in a group together". | Once, before 21b. |
+| `db/21b_payment_notes_table.sql` | Moves the payment note into its own table with its own policies, so it is visible only to people you actually share a group with — stricter than the profile column it replaces. | Once, after 21a. |
+| `db/21c_migrate_and_drop_old_column.sql` | Copies existing notes across and drops `profiles.payment_note`. | Once, after 21b, and only after checking 21b worked. |
+| `db/22_read_co_member_profiles.sql` | Lets you read the profile of someone you share a group with, so names render instead of blanks. | Once. |
+| `db/23_expense_deletion_audit.sql` (+ `23b`, `23c`) | Records who deleted which expense. `23b`/`23c` clean up rows the first version wrote wrongly. | Once, in order. |
+| `db/24_record_attribution.sql` | Adds `expenses.created_by` so "recorded by …" can be shown when the payer is someone else. | Once. |
+| `db/25_declined_revokes_profile_access.sql` | Declining a connection request now revokes profile visibility rather than leaving it open. | Once. |
+| `db/26_recategorise_moved_merchants.sql` | **One-time, optional.** Moves EXISTING expenses whose merchant changed category on 2026-09-16 (airlines Transportation→Flights, cinemas Attractions→Entertainment, IKEA/Home Depot Shopping→Household). Preview statement first, update second — run them separately. Skips anything you have re-categorised by hand. | Once, only if you want old rows moved. Nothing breaks if you never run it. |
 
 > `db/02` is personal to the owner. The app itself never seeds anyone's data — new users
 > start empty.
