@@ -3237,16 +3237,48 @@ function InsightsTab({ expenses, onPick }) {
         </div>
       </div>
 
-      {/* Top category highlight */}
-      <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-4 flex items-center gap-3">
+      {/* Top category highlight.
+       *
+       * ⚠️ DARK MODE NEEDS EXPLICIT HANDLING HERE, and the reason is worth
+       * knowing because it applies to every coloured panel in the app.
+       * styles.css remaps the STONE palette for dark mode but deliberately
+       * leaves coloured tints alone, on the reasoning that a chip like
+       * `bg-rose-50 text-rose-800` carries its own matching text colour and
+       * stays readable. True for a chip — but this is a coloured panel using
+       * STONE text, so the background stayed pale indigo while
+       * `.dark .text-stone-900` turned the text near-white. Unreadable, and
+       * reported from a real phone.
+       *
+       * So: darken the panel with `dark:` variants, and lighten the indigo
+       * label to match. `text-stone-900` and `text-stone-500` already flip to
+       * light on their own, which is correct once the panel is dark.
+       *
+       * The amount below also gains `text-stone-900`, which it never had.
+       * NOT because unclassed text is undefined in dark mode — an earlier
+       * version of this comment claimed that and was wrong. The app root
+       * carries `text-stone-900` (see the `min-h-screen` wrappers), and
+       * `.dark .text-stone-900` is `!important`, so unclassed text INHERITS
+       * #f5f5f4 and is light. That is precisely the problem: it inherits a
+       * light colour onto a pale panel and disappears, the same failure as
+       * above arriving by inheritance instead of by class. Stating the colour
+       * here makes the element's contrast legible to whoever reads it next,
+       * instead of depending on a wrapper hundreds of lines away.
+       *
+       * Measured after the fix: 15.47:1 in dark, 15.64:1 in light. Before it,
+       * 1.03:1 — which is what "unreadable" looks like as a number. */}
+      <div className="bg-indigo-50 dark:bg-indigo-950/50 border border-indigo-200 dark:border-indigo-900 rounded-xl p-4 flex items-center gap-3">
         <div className="text-2xl shrink-0">{topMeta.emoji}</div>
         <div className="min-w-0 flex-1">
-          <div className="text-[11px] uppercase tracking-wider text-indigo-700 font-medium">Top category</div>
+          <div className="text-[11px] uppercase tracking-wider text-indigo-700 dark:text-indigo-300 font-medium">Top category</div>
           <div className="font-semibold text-stone-900 truncate">{topCat}</div>
         </div>
         <div className="text-right shrink-0">
-          <div className="font-semibold tabular-nums">{fmt(topAmt)}</div>
-          <div className="text-[10px] text-stone-500 tabular-nums">{topPct.toFixed(1)}% of total</div>
+          <div className="font-semibold tabular-nums text-stone-900">{fmt(topAmt)}</div>
+          {/* stone-600, not stone-500: measured 4.29:1 against this panel's
+              pale indigo, under the 4.5:1 AA floor. stone-500 is tuned for
+              WHITE cards and loses about 0.3 of its ratio on a tint. At 10px
+              the large-text allowance does not apply. */}
+          <div className="text-[10px] text-stone-600 tabular-nums">{topPct.toFixed(1)}% of total</div>
         </div>
       </div>
 
@@ -3588,7 +3620,11 @@ function GroupsModal({ groups, activeGroupId, myName, profile, startView = 'list
                   <div
                     key={g.id}
                     className={`border rounded-xl p-3 transition ${
-                      isActive ? 'border-indigo-600 bg-indigo-50' : 'border-stone-200 bg-white hover:border-stone-400'
+                      // Same dark-mode trap as the Top category card above: a
+                      // coloured panel whose text comes from the stone palette.
+                      // Without dark:bg-indigo-950/50 the ACTIVE group is the
+                      // one card in this list you cannot read at night.
+                      isActive ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-950/50' : 'border-stone-200 bg-white hover:border-stone-400'
                     }`}
                   >
                     <div className="flex items-start gap-2">
@@ -3596,7 +3632,7 @@ function GroupsModal({ groups, activeGroupId, myName, profile, startView = 'list
                         <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-stone-500">
                           {isSolo ? <><User className="w-3 h-3" /> Personal</> : <><Users className="w-3 h-3" /> {g.people.join(' & ')}</>}
                         </div>
-                        <div className="font-medium mt-0.5 truncate">{g.name}</div>
+                        <div className="font-medium mt-0.5 truncate text-stone-900">{g.name}</div>
                         <div className="text-xs text-stone-500 mt-0.5 tabular-nums">
                           {expenseCount} {expenseCount === 1 ? 'item' : 'items'} · {fmt(expenseTotal)}
                         </div>
@@ -5874,11 +5910,18 @@ function ImportModal({ people, isSolo, myName, myUserId, categoryOverrides, exis
                               {/* `i` is the index in the full list too, because
                                   slice(0, 8) keeps the original order — so
                                   dupFlags[i] lines up with this row. */}
+                              {/* Each highlighted row states its text colour
+                                  explicitly, and gets a dark: background.
+                                  `bg-sky-50` / `bg-amber-50` are not remapped
+                                  for dark mode, while text inherits the app
+                                  root's remapped #f5f5f4 — light text, pale
+                                  row, invisible. Measured at 1.02:1 before the
+                                  dark: variants were added, 13.62:1 after. */}
                               {built.expenses.slice(0, 8).map((ex, i) => (
                                 <tr key={i} className={`border-t border-stone-100 ${
                                   dupFlags[i] && skipDuplicates ? 'bg-stone-100 text-stone-400 line-through'
-                                  : dupFlags[i] ? 'bg-sky-50'
-                                  : ex._warning ? 'bg-amber-50' : ''
+                                  : dupFlags[i] ? 'bg-sky-50 dark:bg-sky-950/40 text-stone-900'
+                                  : ex._warning ? 'bg-amber-50 dark:bg-amber-950/40 text-stone-900' : ''
                                 }`}>
                                   {/* `_source` is the filename, set only when a
                                       scan produced this row. With several
@@ -5889,8 +5932,13 @@ function ImportModal({ people, isSolo, myName, myUserId, categoryOverrides, exis
                                   <td className="px-2 py-1.5 truncate max-w-[120px]"
                                       title={[ex._source, ex._warning].filter(Boolean).join(' — ')}>
                                     {ex.name}
+                                    {/* dark:text-sky-300 is not decoration. Darkening this
+                                        row with dark:bg-sky-950/40 dropped text-sky-700 to
+                                        2.50:1 against it — a contrast REGRESSION caused by
+                                        the dark-mode fix itself, measured rather than
+                                        guessed. */}
                                     {dupFlags[i] && (
-                                      <span className="block text-[10px] text-sky-700 no-underline">already in this group</span>
+                                      <span className="block text-[10px] text-sky-700 dark:text-sky-300 no-underline">already in this group</span>
                                     )}
                                     {ex._source && (
                                       <span className="block text-[10px] text-stone-400 truncate">{ex._source}</span>
@@ -5909,8 +5957,8 @@ function ImportModal({ people, isSolo, myName, myUserId, categoryOverrides, exis
                             A duplicate is never blocked: two identical coffees
                             on one day are a real thing, so the user decides. */}
                         {dupCount > 0 && (
-                          <div className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2">
-                            <div className="text-[11px] text-sky-900 leading-snug">
+                          <div className="rounded-lg border border-sky-200 dark:border-sky-900 bg-sky-50 dark:bg-sky-950/40 px-3 py-2">
+                            <div className="text-[11px] text-sky-900 dark:text-sky-200 leading-snug">
                               <strong>{dupCount}</strong> of these {dupCount === 1 ? 'is' : 'are'} already in this group
                               — same name, amount and date. This usually means an overlapping date range from the same
                               file or bank.
@@ -5922,7 +5970,7 @@ function ImportModal({ people, isSolo, myName, myUserId, categoryOverrides, exis
                                 onChange={(e) => setSkipDuplicates(e.target.checked)}
                                 className="w-4 h-4 accent-sky-600"
                               />
-                              <span className="text-[11px] text-sky-900 font-medium">
+                              <span className="text-[11px] text-sky-900 dark:text-sky-200 font-medium">
                                 Skip rows already in this group
                               </span>
                             </label>

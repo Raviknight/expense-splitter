@@ -29,7 +29,43 @@ html, body { background-color: #FAFAF7; }
 
    We intentionally do NOT touch the indigo accent (bg-indigo-600) or the
    emerald / rose / amber semantic chips — those small coloured chips read fine
-   on the dark cards. */
+   on the dark cards.
+
+   ⚠️ THAT LAST SENTENCE HAS A LIMIT, found the hard way on 2026-09-16 when the
+   Insights "Top category" card was reported unreadable in dark mode.
+
+   It holds for a CHIP, which carries its own matching text colour:
+   `bg-rose-50 text-rose-800` — neither is remapped, so the pair keeps its
+   contrast and simply stays light.
+
+   It FAILS for a coloured PANEL that takes its text from the stone palette:
+   `bg-indigo-50` is not remapped and stays pale, while `text-stone-900` below
+   IS remapped to near-white. Light text, light panel, nothing readable.
+
+   Fixing that here is not possible without collateral damage, because
+   `bg-indigo-50` is used BOTH ways — as a panel and as the Transportation
+   category chip / avatar initials. Darkening it globally would fix the panels
+   and break the chips. So the rule is:
+
+     A coloured panel must state its own `dark:` variants in the JSX
+     (`bg-indigo-50 dark:bg-indigo-950/50`), not expect a remap here.
+
+   Second trap, same family: UNCLASSED TEXT IS LIGHT IN DARK MODE, and that is
+   easy to get wrong in both directions. The rule below sets only
+   `background-color` on `.dark body`, so it is tempting to conclude there is
+   no default text colour at all. There is: the app root carries
+   `text-stone-900` (the `min-h-screen` wrappers in App.jsx), and the
+   `.dark .text-stone-900` rule below is `!important`, so every unclassed
+   descendant inherits #f5f5f4.
+
+   Which means an unclassed element on a pale coloured panel is invisible for
+   the same reason a `text-stone-900` one is — it just arrives by inheritance
+   rather than by class, so there is nothing in the markup to notice. State the
+   colour explicitly on text that sits on a tint.
+
+   And do NOT "fix" this with a blanket `.dark body { color: … }`: it would
+   also flip the unclassed text sitting on the light chips this block
+   deliberately leaves alone, trading one invisible-text bug for another. */
 
 /* Page background */
 .dark body, .dark html { background-color: #1c1917 !important; }
