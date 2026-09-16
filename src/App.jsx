@@ -4571,12 +4571,19 @@ function SettleModal({ balances, people, entries, paymentNotes, myName, recordDe
             )}
           </Field>
 
+          {/* The placeholder suggests WHAT THE PAYMENT WAS FOR, not how it was
+              sent. The old one ("e.g. Zelle, cash, Venmo") was both US-only —
+              useless to anyone paying by UPI — and aimed at the less useful
+              half of the question. Months later nobody wonders which app moved
+              the money; they wonder which of several instalments this was, and
+              that is the gap this field exists to close. */}
           <Field label="Note (optional)">
             <input
               type="text"
               value={note}
               onChange={(e) => setNote(e.target.value)}
-              placeholder="e.g. Zelle, cash, Venmo"
+              maxLength={200}
+              placeholder="e.g. Aug rent — instalment 2 of 3"
               className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm focus:outline-none focus:border-indigo-500"
             />
           </Field>
@@ -4587,7 +4594,11 @@ function SettleModal({ balances, people, entries, paymentNotes, myName, recordDe
             Cancel
           </button>
           <button
-            onClick={() => onConfirm({ from: fromPerson, to: toPerson, amount: parseFloat(amount), note })}
+            // .trim() to match MultiSettleModal. Adding trim() there and not
+            // here would have stored "  Aug rent  " untrimmed from one modal
+            // and trimmed from the other — the same field, two behaviours,
+            // depending on how many people are in the group. Caught in review.
+            onClick={() => onConfirm({ from: fromPerson, to: toPerson, amount: parseFloat(amount), note: note.trim() })}
             // `disabled` stays for an empty/zero amount: there is nothing to
             // explain and nothing to record, so an inert control is honest.
             disabled={!valid}
@@ -4629,6 +4640,15 @@ function MultiSettleModal({ people, entries, paymentNotes, myName, recordDenyRea
   // Track which rows are mid-write so we can disable their buttons.
   const [busyKey, setBusyKey] = useState(null);
 
+  // ONE note for the whole settling session, not one per row.
+  //
+  // Per-row inputs were the obvious design and are worse here: this list is
+  // already dense on a phone — two names, an amount, a Record button and
+  // sometimes a refusal reason — and a text field on every row would bury the
+  // thing people came to press. A settle-up is normally one event ("Goa trip,
+  // final split", "August rent"), so one field describes it and is typed once.
+  const [note, setNote] = useState('');
+
   // Recompute net balances + suggestions on every render (entries change after
   // each recorded payment because the parent refetches).
   const net = computeNetBalances(people, entries || []);
@@ -4641,7 +4661,11 @@ function MultiSettleModal({ people, entries, paymentNotes, myName, recordDenyRea
   const handleRecord = async (s) => {
     const key = `${s.from}->${s.to}:${s.amount}`;
     setBusyKey(key);
-    await onRecord({ from: s.from, to: s.to, amount: s.amount, note: 'Settle up' });
+    // Was hardcoded to 'Settle up'. That string was not just unhelpful, it was
+    // NOISE: the expense list renders a settlement's note beneath its row, so
+    // every multi-person settlement carried a caption repeating what the row
+    // already said. An empty note renders nothing, which is the better default.
+    await onRecord({ from: s.from, to: s.to, amount: s.amount, note: note.trim() });
     // Parent refetch will re-render with fresh suggestions; clear busy flag.
     setBusyKey(null);
   };
@@ -4658,6 +4682,23 @@ function MultiSettleModal({ people, entries, paymentNotes, myName, recordDenyRea
           <div className="text-sm text-stone-600">
             The fewest payments that clear everyone's balance:
           </div>
+
+          {/* Only worth showing when there is something to record. */}
+          {suggestions.length > 0 && (
+            <Field label="Note (optional)">
+              <input
+                type="text"
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                maxLength={200}
+                placeholder="e.g. Goa trip — final split"
+                className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm focus:outline-none focus:border-indigo-500"
+              />
+              <div className="text-[11px] text-stone-500 mt-1">
+                Added to each payment you record below, and shown against it later.
+              </div>
+            </Field>
+          )}
 
           {suggestions.length === 0 ? (
             <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4 text-center">
