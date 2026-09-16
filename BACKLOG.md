@@ -86,6 +86,30 @@ If it is not in this file, it is not agreed work. If it is done, it leaves this 
 
 ## Done (recent — trim as it grows)
 
+- **Insights: invisible category bars + blank expense names** (2026-09-16). Both found from
+  one screenshot the owner sent; neither was caused by that day's work. **The bars** were
+  coloured by a helper building `` `bg-${family}-500` `` at runtime, which its own comment
+  called safe because the Tailwind Play CDN compiled from the live DOM. True when written —
+  then the CDN was replaced by a build step (#13) and the comment became false without
+  anything failing. Measured in the shipped CSS: of twenty bar colours requested, **three
+  existed** (violet, amber, indigo, and only because those appear literally elsewhere);
+  seventeen rendered zero-width. `db/26` made it visible by moving airline expenses from
+  Transportation (a colour that worked) to Flights (one that didn't). Colours now live in
+  `CATEGORIES[].bar` as literals. **Never interpolate a Tailwind class name.** **The names**
+  came from `e.description`, but the UI shape uses `name` — `description` is the scan
+  function's key and never reaches the store. Undefined renders as nothing in JSX, so it
+  was silent to the console and the build, and shipped from 2026-06-21 to 2026-09-16.
+- **Dark-mode contrast on coloured panels** (2026-09-16). Reported from a phone: the
+  Insights "Top category" card measured **1.03:1**. `styles.css` remaps the stone palette
+  under `.dark` but leaves coloured tints alone — fine for a *chip* carrying its own text
+  colour, broken for a *panel* using stone text, where the background stays pale and the
+  text turns near-white. Fixed with per-panel `dark:` variants (not a central remap, since
+  `bg-indigo-50` is also the Transportation chip and avatar). Also fixed the active group
+  card, which had the same fault and had never been reported. Verified by measurement, both
+  themes: 15.47:1 dark, 15.64:1 light, with a stripped-class control reproducing the
+  original failure. The measurement caught a **regression the fix itself introduced** (a
+  sub-label at 2.50:1) and an inaccurate explanation in my own code comments.
+
 - **Categories widened 15 → 23** (2026-09-16). The old list was a ROAD-TRIP list: six of
   fifteen entries were travel-only because it grew out of one Niagara trip (db/02), so
   someone splitting a flat filed their rent under "Other". Added Rent, Utilities,
