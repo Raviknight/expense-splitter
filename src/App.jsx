@@ -47,35 +47,55 @@ const PREMIUM_ENFORCED = false;
 // in Supabase. But a category with no keywords in RULES below is dead weight:
 // `autoCategorize` can never choose it, so it only ever appears if someone hunts
 // for it by hand.
+// ⚠️ `bar` MUST BE A LITERAL STRING. It is the solid colour for the Insights
+// "Where it went" bars, and it is spelled out here rather than derived from
+// `tone` for a reason that cost real breakage:
+//
+// A helper used to build it at runtime — `bg-${family}-500` from the tone's
+// text- part — and its comment said that was safe because "Tailwind's Play CDN
+// generates classes from the DOM at runtime, so there is no purge step to
+// miss them". That WAS true. Then the Play CDN was removed (backlog #13) in
+// favour of a compiled stylesheet, and the statement silently became false:
+// Tailwind's scanner only sees class names that appear LITERALLY in the
+// source, so a constructed name is never compiled.
+//
+// The result was an invisible bar for every category whose colour did not
+// happen to be written out somewhere else in the codebase. Only three survived
+// — violet, amber and indigo — so 17 of 23 categories rendered a zero-width
+// bar, and nothing anywhere reported an error. Reported from a real screenshot
+// (Car Rental, Flights and Restaurants showing no bar) months after the CDN
+// change that caused it.
+//
+// So: never interpolate a Tailwind class name. Write it out.
 const CATEGORIES = [
   // ── Everyday ──────────────────────────────────────────────────────────────
-  { name: 'Restaurants',      emoji: '🍽️', tone: 'bg-rose-50 text-rose-800 border-rose-200' },
-  { name: 'Drinks & Bars',    emoji: '🍻', tone: 'bg-fuchsia-50 text-fuchsia-800 border-fuchsia-200' },
-  { name: 'Groceries',        emoji: '🛒', tone: 'bg-lime-50 text-lime-800 border-lime-200' },
-  { name: 'Convenience',      emoji: '🏪', tone: 'bg-yellow-50 text-yellow-800 border-yellow-200' },
-  { name: 'Shopping',         emoji: '🛍️', tone: 'bg-pink-50 text-pink-800 border-pink-200' },
-  { name: 'Household',        emoji: '🧻', tone: 'bg-cyan-50 text-cyan-800 border-cyan-200' },
-  { name: 'Transportation',   emoji: '🚕', tone: 'bg-indigo-50 text-indigo-800 border-indigo-200' },
-  { name: 'Fuel',             emoji: '⛽', tone: 'bg-amber-50 text-amber-900 border-amber-200' },
-  { name: 'Entertainment',    emoji: '🎬', tone: 'bg-purple-50 text-purple-800 border-purple-200' },
+  { name: 'Restaurants',      emoji: '🍽️', tone: 'bg-rose-50 text-rose-800 border-rose-200',             bar: 'bg-rose-500' },
+  { name: 'Drinks & Bars',    emoji: '🍻', tone: 'bg-fuchsia-50 text-fuchsia-800 border-fuchsia-200',     bar: 'bg-fuchsia-500' },
+  { name: 'Groceries',        emoji: '🛒', tone: 'bg-lime-50 text-lime-800 border-lime-200',             bar: 'bg-lime-500' },
+  { name: 'Convenience',      emoji: '🏪', tone: 'bg-yellow-50 text-yellow-800 border-yellow-200',       bar: 'bg-yellow-500' },
+  { name: 'Shopping',         emoji: '🛍️', tone: 'bg-pink-50 text-pink-800 border-pink-200',             bar: 'bg-pink-500' },
+  { name: 'Household',        emoji: '🧻', tone: 'bg-cyan-50 text-cyan-800 border-cyan-200',             bar: 'bg-cyan-500' },
+  { name: 'Transportation',   emoji: '🚕', tone: 'bg-indigo-50 text-indigo-800 border-indigo-200',       bar: 'bg-indigo-500' },
+  { name: 'Fuel',             emoji: '⛽', tone: 'bg-amber-50 text-amber-900 border-amber-200',          bar: 'bg-amber-500' },
+  { name: 'Entertainment',    emoji: '🎬', tone: 'bg-purple-50 text-purple-800 border-purple-200',       bar: 'bg-purple-500' },
   // ── Home & recurring ──────────────────────────────────────────────────────
-  { name: 'Rent',             emoji: '🏠', tone: 'bg-green-50 text-green-800 border-green-200' },
-  { name: 'Utilities',        emoji: '💡', tone: 'bg-yellow-100 text-yellow-900 border-yellow-300' },
-  { name: 'Internet & Phone', emoji: '📶', tone: 'bg-zinc-100 text-zinc-800 border-zinc-200' },
+  { name: 'Rent',             emoji: '🏠', tone: 'bg-green-50 text-green-800 border-green-200',          bar: 'bg-green-500' },
+  { name: 'Utilities',        emoji: '💡', tone: 'bg-yellow-100 text-yellow-900 border-yellow-300',      bar: 'bg-yellow-400' },
+  { name: 'Internet & Phone', emoji: '📶', tone: 'bg-zinc-100 text-zinc-800 border-zinc-200',            bar: 'bg-zinc-500' },
   // ── Health ────────────────────────────────────────────────────────────────
-  { name: 'Health',           emoji: '🏥', tone: 'bg-red-50 text-red-800 border-red-200' },
-  { name: 'Pharmacy',         emoji: '💊', tone: 'bg-teal-50 text-teal-800 border-teal-200' },
+  { name: 'Health',           emoji: '🏥', tone: 'bg-red-50 text-red-800 border-red-200',                bar: 'bg-red-500' },
+  { name: 'Pharmacy',         emoji: '💊', tone: 'bg-teal-50 text-teal-800 border-teal-200',             bar: 'bg-teal-500' },
   // ── Travel ────────────────────────────────────────────────────────────────
-  { name: 'Flights',          emoji: '✈️', tone: 'bg-sky-100 text-sky-900 border-sky-300' },
-  { name: 'Lodging',          emoji: '🏨', tone: 'bg-violet-50 text-violet-800 border-violet-200' },
-  { name: 'Car Rental',       emoji: '🚗', tone: 'bg-blue-50 text-blue-800 border-blue-200' },
-  { name: 'Tolls',            emoji: '🛣️', tone: 'bg-orange-50 text-orange-800 border-orange-200' },
-  { name: 'Parking',          emoji: '🅿️', tone: 'bg-sky-50 text-sky-800 border-sky-200' },
-  { name: 'Attractions',      emoji: '🎫', tone: 'bg-emerald-50 text-emerald-800 border-emerald-200' },
+  { name: 'Flights',          emoji: '✈️', tone: 'bg-sky-100 text-sky-900 border-sky-300',               bar: 'bg-sky-500' },
+  { name: 'Lodging',          emoji: '🏨', tone: 'bg-violet-50 text-violet-800 border-violet-200',       bar: 'bg-violet-500' },
+  { name: 'Car Rental',       emoji: '🚗', tone: 'bg-blue-50 text-blue-800 border-blue-200',             bar: 'bg-blue-500' },
+  { name: 'Tolls',            emoji: '🛣️', tone: 'bg-orange-50 text-orange-800 border-orange-200',       bar: 'bg-orange-500' },
+  { name: 'Parking',          emoji: '🅿️', tone: 'bg-sky-50 text-sky-800 border-sky-200',                bar: 'bg-sky-400' },
+  { name: 'Attractions',      emoji: '🎫', tone: 'bg-emerald-50 text-emerald-800 border-emerald-200',     bar: 'bg-emerald-500' },
   // ── Occasional ────────────────────────────────────────────────────────────
-  { name: 'Auto Service',     emoji: '🔧', tone: 'bg-slate-100 text-slate-800 border-slate-200' },
-  { name: 'Government',       emoji: '🏛️', tone: 'bg-stone-100 text-stone-800 border-stone-200' },
-  { name: 'Other',            emoji: '📌', tone: 'bg-gray-100 text-gray-700 border-gray-200' },
+  { name: 'Auto Service',     emoji: '🔧', tone: 'bg-slate-100 text-slate-800 border-slate-200',         bar: 'bg-slate-500' },
+  { name: 'Government',       emoji: '🏛️', tone: 'bg-stone-100 text-stone-800 border-stone-200',         bar: 'bg-stone-500' },
+  { name: 'Other',            emoji: '📌', tone: 'bg-gray-100 text-gray-700 border-gray-200',            bar: 'bg-gray-400' },
 ];
 
 const catMeta = (name) => CATEGORIES.find(c => c.name === name) || CATEGORIES[CATEGORIES.length - 1];
@@ -3109,16 +3129,16 @@ function ExpenseRow({ e, onEdit, onDelete, canDelete = true, denyReason = null, 
  * We do NOT mutate anything here; it only reads the numbers it is handed.
  */
 
-// The category tones look like "bg-violet-50 text-violet-800 border-violet-200".
-// For a solid bar we want the same colour family at a stronger shade, e.g.
-// "bg-violet-500". We pull the family out of the "text-…" part of the tone and
-// rebuild it. Tailwind's Play CDN generates classes from the DOM at runtime, so
-// these constructed class names render fine (there is no purge step to miss them).
-function barColorFromTone(tone) {
-  const match = (tone || '').match(/text-([a-z]+)-\d{3}/);
-  const family = match ? match[1] : 'stone';
-  return `bg-${family}-500`;
-}
+// DELETED: barColorFromTone(tone), which returned `bg-${family}-500`.
+//
+// It was correct under the Tailwind Play CDN, which compiled classes from the
+// live DOM. Once the CDN was replaced by a build step (backlog #13) the
+// scanner could only see literal strings, so every constructed name vanished
+// from the stylesheet and the bars it coloured silently rendered at zero
+// width. Nothing threw; the markup was there; only the CSS rule was missing.
+//
+// The colour now lives in CATEGORIES[].bar as a literal. If you are tempted to
+// re-derive it to avoid the repetition, this is the note saying don't.
 
 // Turn a "YYYY-MM" key (like "2026-06") into a friendly label ("June 2026").
 // We build it by hand from the year and the month number so we don't need any
@@ -3307,7 +3327,7 @@ function InsightsTab({ expenses, onPick }) {
               </div>
               <div className="h-2 bg-stone-100 rounded-full overflow-hidden">
                 <div
-                  className={`h-full rounded-full transition-all ${barColorFromTone(meta.tone)}`}
+                  className={`h-full rounded-full transition-all ${meta.bar || 'bg-stone-400'}`}
                   style={{ width: `${pct}%` }}
                 />
               </div>
@@ -3325,7 +3345,14 @@ function InsightsTab({ expenses, onPick }) {
             return (
               <div key={i} className="flex items-center gap-2.5 text-sm">
                 <span className="text-base shrink-0">{meta.emoji}</span>
-                <span className="font-medium text-stone-800 truncate flex-1">{e.description}</span>
+                {/* `e.name`, NOT `e.description`. The UI expense shape uses
+                    `name` (store.js builds it that way); `description` is the
+                    key the scan Edge Function returns, and it does not survive
+                    into the store. Reading it here yielded undefined, so every
+                    row in this panel rendered an emoji and an amount with a
+                    blank space between them — visible in a screenshot, silent
+                    in the console, and shipped since June. */}
+                <span className="font-medium text-stone-800 truncate flex-1">{e.name}</span>
                 <span className="font-semibold tabular-nums shrink-0">{fmt(Number(e.amount || 0))}</span>
               </div>
             );
