@@ -728,6 +728,35 @@ export default function Settings({ onClose }) {
           </button>
         </section>
 
+        {/* ── Section 6: Legal & contact ──
+          Deliberately plain text links rather than another card: these are
+          things people look for when they specifically want them (usually
+          "how do I get hold of someone" or "what happens to my data"), not
+          things to compete with the settings above.
+
+          `target="_blank"` because these are static pages OUTSIDE the React
+          app — following them in place would unmount the app and force a full
+          reload to come back. rel="noopener" is the standard companion.
+
+          The contact address matters as much as the policies: until now a user
+          who hit a bug, or wanted their data deleted, had no route to a human
+          anywhere in the app. */}
+        <div className="text-center text-[11px] text-stone-500 leading-relaxed pb-2">
+          <a href="./privacy.html" target="_blank" rel="noopener" className="underline underline-offset-2 hover:text-stone-700">
+            Privacy Policy
+          </a>
+          <span className="mx-2">·</span>
+          <a href="./terms.html" target="_blank" rel="noopener" className="underline underline-offset-2 hover:text-stone-700">
+            Terms of Use
+          </a>
+          <div className="mt-1">
+            Questions, bugs or data requests:{' '}
+            <a href="mailto:hello@splitab.app" className="underline underline-offset-2 hover:text-stone-700">
+              hello@splitab.app
+            </a>
+          </div>
+        </div>
+
       </main>
     </div>
   );

@@ -970,9 +970,34 @@ export default function AuthScreen() {
         <FeatureList className="flex pt-1" />
       </div>
 
-      {/* Footer privacy line */}
+      {/* Footer: privacy reassurance + the actual policies.
+       *
+       * The old line here said "Your data is protected by Row-Level Security",
+       * which is a sentence written for a developer. Someone deciding whether
+       * to hand over their email does not know what that is, and it offers
+       * them nothing they can check. The replacement says the same thing in
+       * words that mean something, and — more importantly — LINKS to the
+       * policies instead of asking to be believed.
+       *
+       * This has to live on the SIGN-IN screen specifically, not only in
+       * Settings: it is the one screen a person sees BEFORE deciding to create
+       * an account, which is exactly when a privacy policy is worth reading.
+       * Google's OAuth terms also expect a reachable privacy policy for an app
+       * offering "Sign in with Google", which this one does.
+       *
+       * target="_blank" keeps the half-filled sign-in form alive rather than
+       * unmounting the app to show a static page. */}
       <p className="text-xs text-stone-400 mt-6 text-center max-w-xs mx-auto">
-        Your data is protected by Row-Level Security. Only you and your accepted connections can see your expenses.
+        Only you and the people you share a group with can see your expenses.
+      </p>
+      <p className="text-xs text-stone-400 mt-1.5 text-center max-w-xs mx-auto">
+        <a href="./privacy.html" target="_blank" rel="noopener" className="underline underline-offset-2 hover:text-stone-600">
+          Privacy Policy
+        </a>
+        <span className="mx-1.5">·</span>
+        <a href="./terms.html" target="_blank" rel="noopener" className="underline underline-offset-2 hover:text-stone-600">
+          Terms of Use
+        </a>
       </p>
 
       </div>

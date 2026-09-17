@@ -25,7 +25,10 @@
 // Bumped to v2: the navigation handler gained a timeout (see RULE 2). The
 // activate handler deletes caches whose name doesn't match, so bumping this is
 // what migrates existing users onto the new behaviour.
-const CACHE_NAME = 'expense-shell-v2';
+// v3: the navigation fallback now prefers the REQUESTED page over index.html.
+// Bumped because the service worker's own logic changed — without a new name
+// the old worker keeps serving from the old cache and the fix never lands.
+const CACHE_NAME = 'expense-shell-v3';
 
 // The minimal app shell we pre-cache on install.
 // We only cache the HTML entry points — NOT the hashed bundle by name,
@@ -115,7 +118,21 @@ self.addEventListener('fetch', event => {
         return res;
       });
 
-      const cached = await cache.match('./index.html');
+      // THE REQUESTED PAGE FIRST, then the app shell.
+      //
+      // This used to be `cache.match('./index.html')` unconditionally, which
+      // was fine while index.html was the only page on the origin. It stopped
+      // being fine when privacy.html and terms.html were added: a request for
+      // /privacy.html that lost the 2.5s race would be answered with the APP,
+      // so someone tapping "Privacy Policy" on a slow phone would land in
+      // Splitab instead of the policy — and a slow phone is exactly when
+      // people tap it.
+      //
+      // Every successful navigation is already cached under its own URL just
+      // above, so asking for the request itself gets the right page when we
+      // have it. index.html stays as the fallback so the app still launches
+      // offline, which is the behaviour this rule exists for.
+      const cached = (await cache.match(request)) || (await cache.match('./index.html'));
 
       // Nothing cached yet (first ever visit) — we have to wait for the network.
       if (!cached) {
