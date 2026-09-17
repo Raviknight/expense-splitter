@@ -4691,7 +4691,13 @@ function MultiSettleModal({ people, entries, paymentNotes, myName, recordDenyRea
                 value={note}
                 onChange={(e) => setNote(e.target.value)}
                 maxLength={200}
-                placeholder="e.g. Goa trip — final split"
+                // Period-based, and deliberately not a holiday. This note covers
+                // a whole settling session, so the example must teach "name the
+                // occasion" — but "Goa trip" only taught it to travellers, in an
+                // app whose category list was widened the same day precisely
+                // because the common case is flatmates, not trips. A month fits
+                // both, and assumes nothing about where the user is.
+                placeholder="e.g. August settle-up"
                 className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm focus:outline-none focus:border-indigo-500"
               />
               <div className="text-[11px] text-stone-500 mt-1">
