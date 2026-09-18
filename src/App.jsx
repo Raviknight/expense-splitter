@@ -4902,14 +4902,41 @@ function MultiSettleModal({ people, entries, paymentNotes, paymentUpiIds, myName
   // payment details" prompt below appears at most once per settle-up view.
   const myPayers = suggestions.filter(s => s.to === myName).map(s => s.from);
 
+  /* ── Partial payments ────────────────────────────────────────────────────
+   *
+   * Each suggested amount is EDITABLE. Until now this modal could only record
+   * the exact figure it suggested, so "I'll give you ₹2,000 now and the rest
+   * later" was impossible in any group of three or more — which is most groups,
+   * and an ordinary way people actually pay. The two-person modal has allowed
+   * it all along; only this one did not.
+   *
+   * Nothing in the model needed changing: `recordSettlement` takes any amount,
+   * and a settlement simply reduces the net balance. This was a missing input,
+   * not a missing capability.
+   *
+   * Keyed by row, and the key contains the suggested amount, so once a partial
+   * payment is recorded the suggestion changes, the key changes, and the next
+   * render starts from the new remaining figure rather than the number the user
+   * just typed. The edits clean up after themselves.
+   */
+  const [amounts, setAmounts] = useState({});
+  const amountFor = (key, suggested) =>
+    amounts[key] !== undefined ? amounts[key] : suggested.toFixed(2);
+
   const handleRecord = async (s) => {
     const key = `${s.from}->${s.to}:${s.amount}`;
+    const typed = Number(amountFor(key, s.amount));
+    // Guarded rather than trusted: the field is free text, and recording a zero
+    // or a NaN would write a settlement that moves no money while looking like
+    // one that did.
+    if (!Number.isFinite(typed) || typed <= 0) return;
     setBusyKey(key);
     // Was hardcoded to 'Settle up'. That string was not just unhelpful, it was
     // NOISE: the expense list renders a settlement's note beneath its row, so
     // every multi-person settlement carried a caption repeating what the row
     // already said. An empty note renders nothing, which is the better default.
-    await onRecord({ from: s.from, to: s.to, amount: s.amount, note: note.trim() });
+    // `typed`, not s.amount — the whole point of the change.
+    await onRecord({ from: s.from, to: s.to, amount: typed, note: note.trim() });
     // Parent refetch will re-render with fresh suggestions; clear busy flag.
     setBusyKey(null);
   };
@@ -4960,6 +4987,12 @@ function MultiSettleModal({ people, entries, paymentNotes, paymentUpiIds, myName
               {suggestions.map((s) => {
                 const key = `${s.from}->${s.to}:${s.amount}`;
                 const busy = busyKey === key;
+                // A blank or zero amount. `disabled` is right here — unlike the
+                // permission refusal below, there is nothing to explain that the
+                // field itself does not already show, and the fix is visible and
+                // one tap away.
+                const typedAmt = Number(amountFor(key, s.amount));
+                const amountOk = Number.isFinite(typedAmt) && typedAmt > 0;
                 // db/24: this list is built from everyone's balances, so it
                 // offers payments between two OTHER people as readily as your
                 // own. Those are the rows the database now refuses. Predict it
@@ -4976,20 +5009,54 @@ function MultiSettleModal({ people, entries, paymentNotes, paymentUpiIds, myName
                       <div className="font-medium text-sm truncate">
                         {s.from} pays {s.to}
                       </div>
-                      <div className="text-lg font-semibold tabular-nums">{fmt(s.amount)}</div>
+                      {/* The amount IS the input. It is not an extra control
+                          added to an already dense row — the figure was always
+                          displayed here, it is simply editable now, so the row
+                          gains no height and reads the same at a glance.
+                          `step="0.01"` and inputMode decimal give a phone the
+                          numeric keypad. */}
+                      <div className="relative w-36 mt-0.5">
+                        <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-stone-400 text-sm">{currencySymbol}</span>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          inputMode="decimal"
+                          value={amountFor(key, s.amount)}
+                          onChange={(e) => setAmounts(a => ({ ...a, [key]: e.target.value }))}
+                          aria-label={`Amount ${s.from} pays ${s.to}`}
+                          className="w-full pl-6 pr-2 py-1 rounded-lg border border-stone-300 text-lg font-semibold tabular-nums focus:outline-none focus:border-indigo-500"
+                        />
+                      </div>
+                      {/* Same wording as the two-person modal, deliberately —
+                          it is the same situation and should not read like a
+                          different feature. Shown only once the figure actually
+                          differs, so a normal full settlement says nothing. */}
+                      {Math.abs(Number(amountFor(key, s.amount)) - s.amount) > 0.005 && (
+                        <div className="text-[11px] text-amber-700 mt-0.5">
+                          Partial settlement — full balance is {fmt(s.amount)}.
+                        </div>
+                      )}
                       {/* Only on the row where YOU are the payer — that's the
                           row you have to act on. On a row between two other
                           people, showing a third party's payment handle would
-                          be needless exposure, so we don't. */}
+                          be needless exposure, so we don't.
+                          The UPI link carries the TYPED amount, so paying a
+                          part-amount hands off the part-amount. */}
                       {s.from === myName && (
-                        <PaymentNoteLine name={s.to} note={notes[s.to]} upiId={(upiIds || {})[s.to]} amount={s.amount} />
+                        <PaymentNoteLine
+                          name={s.to}
+                          note={notes[s.to]}
+                          upiId={(upiIds || {})[s.to]}
+                          amount={Number(amountFor(key, s.amount))}
+                        />
                       )}
                     </div>
                     <button
                       onClick={() => handleRecord(s)}
-                      // `disabled` stays for the mid-write moment only: there is
-                      // nothing to say and a second tap would double-record.
-                      disabled={busy}
+                      // `disabled` for the mid-write moment (a second tap would
+                      // double-record) and for an empty or zero amount.
+                      disabled={busy || !amountOk}
                       // The REFUSAL is aria-disabled, NOT disabled, for the same
                       // reason recorded on the bin buttons: this is a phone-first
                       // app, a truly disabled button cannot be tapped, and with
