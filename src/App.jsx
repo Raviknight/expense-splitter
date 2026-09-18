@@ -4548,9 +4548,16 @@ function PaymentNoteLine({ name, note, tone = 'light', amount }) {
               browser, and an app can be missing or refuse the URI. If this
               were the ONLY way to see the handle, those cases would leave the
               payer with no way to pay at all. */}
+          {/* The button needs its OWN BLOCK. It was `mt-1 inline-flex` sitting
+              directly after the note text, so it flowed inline and landed on
+              top of the handle — `mt-1` does nothing to an inline box, and the
+              note above it wraps, so the collision only appeared once the text
+              was long enough to reach the button. Wrapping it in a block div
+              puts it on its own line at every width. */}
+          <div className="mt-1.5">
           <a
             href={buildUpiUri({ vpa, payeeName: name, amount, note: 'Splitab settle-up' })}
-            className={`mt-1 inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition ${
+            className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition ${
               tone === 'dark'
                 ? 'bg-white text-stone-900 hover:bg-stone-100'
                 : 'bg-indigo-600 text-white hover:bg-indigo-700'
@@ -4564,6 +4571,7 @@ function PaymentNoteLine({ name, note, tone = 'light', amount }) {
               ? `Pay ${fmt(amount)} with UPI`
               : 'Pay with UPI'}
           </a>
+          </div>
           <div className={`mt-0.5 ${tone === 'dark' ? 'text-stone-500' : 'text-stone-400'}`}>
             Opens your UPI app. Splitab never moves the money — you still confirm it there,
             and mark it done here afterwards.
