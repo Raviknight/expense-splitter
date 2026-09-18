@@ -43,6 +43,7 @@ import {
 import { supabase } from '../supabaseClient.js';
 import { useAuth } from './AuthProvider.jsx';
 import Avatar from '../ui/Avatar.jsx';
+import { reportSetupError, genericSaveFailure } from '../data/errors.js';
 
 // Longest "how to pay me" note we accept. MUST match the check constraint in
 // db/21_payment_notes_table.sql (payment_notes_len) — and the identical cap the
@@ -237,7 +238,11 @@ export default function Profile({ onClose }) {
         // If the bucket doesn't exist yet (db/08 not run), guide the owner.
         const m = (uploadErr.message || '').toLowerCase();
         if (m.includes('bucket') || m.includes('not found') || m.includes('does not exist')) {
-          setPhotoError('Photos need a one-time setup — run db/08_avatars.sql in Supabase.');
+          setPhotoError(reportSetupError({
+            userMessage: genericSaveFailure('your photo'),
+            devHint: 'avatars storage bucket missing — run db/08_avatars.sql.',
+            error: uploadErr,
+          }));
         } else {
           setPhotoError(uploadErr.message || 'Could not upload photo. Please try again.');
         }
@@ -257,7 +262,11 @@ export default function Profile({ onClose }) {
       if (updateErr) {
         const m = (updateErr.message || '').toLowerCase();
         if (m.includes('avatar_url') || m.includes('schema cache') || m.includes('column')) {
-          setPhotoError('Photos need a one-time setup — run db/08_avatars.sql in Supabase.');
+          setPhotoError(reportSetupError({
+            userMessage: genericSaveFailure('your photo'),
+            devHint: 'profiles.avatar_url missing — run db/08_avatars.sql.',
+            error: updateErr,
+          }));
         } else {
           setPhotoError(updateErr.message || 'Could not save photo. Please try again.');
         }
@@ -455,20 +464,32 @@ export default function Profile({ onClose }) {
       ) {
         // The database backstop fired (should be unreachable — the input is capped).
         setNoteError(`Please keep this under ${PAYMENT_NOTE_MAX} characters.`);
-      } else if (
-        lower.includes('payment_note') ||     // also matches "payment_notes"
-        lower.includes('schema cache') ||
-        lower.includes('relation') ||
-        lower.includes('column')
-      ) {
-        // Either the new table is missing, or we fell back and the old column
-        // is missing too (db/20 never ran either). db/21 is the right answer in
-        // both cases: it creates the table from scratch and does not need db/20.
-        setNoteError(
-          'Payment details need a one-time database update — run db/21 in Supabase.'
-        );
       } else {
-        setNoteError(msg || 'Could not save. Please try again.');
+        // ⚠️ THIS BRANCH USED TO GUESS, AND GUESSED WRONG.
+        //
+        // It tested `lower.includes('payment_note')` and announced "run db/21".
+        // But "payment_note" is a SUBSTRING OF "payment_notes", which appears
+        // in the text of every error Postgres raises about that table — an RLS
+        // refusal, a foreign-key violation, a serialisation failure. So a
+        // perfectly present table producing a perfectly real error was
+        // reported as a missing migration. Verified against production on
+        // 2026-09-18: payment_notes, its user_id/note/updated_at columns, its
+        // primary key and all five policies were present and correct while the
+        // screen insisted db/21 had not been run.
+        //
+        // `column` and `relation` were just as loose — both words turn up in
+        // errors that have nothing to do with a missing migration.
+        //
+        // So it no longer tries to tell them apart. The user gets one honest
+        // sentence, and the RAW error goes to the console, which is both more
+        // useful to a developer than a guessed migration number and incapable
+        // of being wrong.
+        setNoteError(reportSetupError({
+          userMessage: genericSaveFailure('your payment details'),
+          devHint: 'payment_notes write failed. If this is a fresh project, check db/21a-c have run; ' +
+                   'otherwise read the error below — it is the real one, not a missing migration.',
+          error: updateErr,
+        }));
       }
       return;
     }
@@ -574,7 +595,8 @@ export default function Profile({ onClose }) {
             )}
           </div>
 
-          {/* Photo error (may include the "run db/08" hint) */}
+          {/* Photo error. Always plain language now — the migration hint it
+              used to carry goes to the console instead (data/errors.js). */}
           {photoError && (
             <div className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600">
               <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
@@ -736,7 +758,8 @@ export default function Profile({ onClose }) {
               </div>
             </div>
 
-            {/* Error — may include the "run db/20" hint */}
+            {/* Error. Plain language only; the db/21 hint it used to show the
+                USER now goes to the console (data/errors.js). */}
             {noteError && (
               <div className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600">
                 <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />

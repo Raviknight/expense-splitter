@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '../supabaseClient.js';
 import { useAuth } from './AuthProvider.jsx';
+import { reportSetupError, genericSaveFailure } from '../data/errors.js';
 
 // ── Supported currencies ──────────────────────────────────────────────────────
 // Each entry: { code, symbol, label } used to build the <select> options.
@@ -188,7 +189,11 @@ export default function Settings({ onClose }) {
       const msg = (e?.message || '').toLowerCase();
       setNotifError(
         msg.includes('column') || msg.includes('schema cache')
-          ? 'Email preferences need a one-time database update — run db/14.'
+          ? reportSetupError({
+              userMessage: genericSaveFailure('your email preferences'),
+              devHint: 'notify_* columns missing — run db/14_email_prefs.sql.',
+              error: e,
+            })
           : (e?.message || 'Could not save. Please try again.')
       );
     } finally {
@@ -221,9 +226,11 @@ export default function Settings({ onClose }) {
         msg.toLowerCase().includes('schema cache') ||
         msg.toLowerCase().includes('column')
       ) {
-        setCurrencyError(
-          'Currency needs a one-time database update — ask to run db/04.'
-        );
+        setCurrencyError(reportSetupError({
+          userMessage: genericSaveFailure('your default currency'),
+          devHint: 'profiles.preferred_currency missing — run db/04_add_preferred_currency.sql.',
+          error: e,
+        }));
       } else {
         setCurrencyError(msg || 'Could not save currency. Please try again.');
       }
@@ -421,7 +428,8 @@ export default function Settings({ onClose }) {
               </p>
             </div>
 
-            {/* Currency error — may include the "run db/04" hint */}
+            {/* Currency error. Plain language only — the db/04 hint goes to
+                the console instead (data/errors.js). */}
             {currencyError && (
               <div className="flex items-start gap-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-600">
                 <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />

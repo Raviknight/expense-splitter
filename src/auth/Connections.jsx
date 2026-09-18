@@ -20,6 +20,7 @@ import { supabase } from '../supabaseClient.js';
 import { useAuth } from './AuthProvider.jsx';
 import { useConnections } from './useConnections.js';
 import Avatar from '../ui/Avatar.jsx';
+import { reportSetupError } from '../data/errors.js';
 
 // ---- Small shared UI pieces ----
 
@@ -136,7 +137,12 @@ function SendRequestForm({ onSent, currentUserId, inviterName }) {
         m.includes('not found');
       setMessage({
         text: missingFn
-          ? 'Connection lookup needs a one-time setup — run db/03_find_profile_by_email.sql in Supabase.'
+          ? reportSetupError({
+              userMessage: "Couldn't look that person up just now. This is a problem on our side, " +
+                           'not yours — please try again, and email hello@splitab.app if it keeps happening.',
+              devHint: 'find_profile_by_email() missing — run db/03_find_profile_by_email.sql.',
+              error: lookupErr,
+            })
           : ('Lookup failed: ' + (lookupErr.message || 'please try again.')),
         type: 'error',
       });

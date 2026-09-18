@@ -65,6 +65,7 @@ import {
   applyOpToGroups,
   isNetworkError, isUniqueViolation,
 } from './offline.js';
+import { reportSetupError, genericSaveFailure } from './errors.js';
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -144,7 +145,11 @@ function currencySetupMessage(dbError) {
     (msg.includes('currency') && msg.includes('column')) ||
     (msg.includes('currency') && msg.includes('does not exist'));
   if (looksLikeMissingColumn) {
-    return 'Currency needs a one-time database update — run db/06_add_group_currency.sql in Supabase.';
+    return reportSetupError({
+      userMessage: genericSaveFailure("this group's currency"),
+      devHint: "groups.currency is missing — run db/06_add_group_currency.sql.",
+      error: dbError,
+    });
   }
   return null;
 }
@@ -168,7 +173,11 @@ function customSplitSetupMessage(dbError) {
     msg.includes('split_mode_check') ||
     msg.includes('violates check');
   if (looksLikeCustomSplit) {
-    return 'Custom split needs a one-time database update — run db/07_custom_split.sql in Supabase.';
+    return reportSetupError({
+      userMessage: genericSaveFailure('this custom split'),
+      devHint: 'custom split rejected — run db/07_custom_split.sql.',
+      error: dbError,
+    });
   }
   return null;
 }
@@ -1911,7 +1920,8 @@ export function useExpenseStore(userId, profile) {
 
       if (dbError) {
         // RLS/permission errors (code 42501 or message text) mean the owner
-        // hasn't run db/05_link_ghost_policy.sql yet. Give a clear instruction.
+        // hasn't run db/05_link_ghost_policy.sql yet. The user gets plain
+        // language; the migration name goes to the console (data/errors.js).
         const isRlsError =
           dbError.code === '42501' ||
           (dbError.message || '').toLowerCase().includes('policy') ||
@@ -1920,9 +1930,11 @@ export function useExpenseStore(userId, profile) {
           (dbError.message || '').toLowerCase().includes('violates row');
 
         if (isRlsError) {
-          setError(
-            'Linking needs a one-time database update — run db/05_link_ghost_policy.sql in Supabase.'
-          );
+          setError(reportSetupError({
+            userMessage: genericSaveFailure('that link'),
+            devHint: 'link-ghost refused by RLS — run db/05_link_ghost_policy.sql.',
+            error: dbError,
+          }));
         } else {
           setError('Could not link member: ' + (dbError.message || 'Server error'));
         }
