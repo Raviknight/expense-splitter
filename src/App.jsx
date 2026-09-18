@@ -3213,6 +3213,18 @@ function ExpenseRow({ e, onEdit, onDelete, canDelete = true, denyReason = null, 
           {!isSolo && recordedBy && (
             <span className="text-[10px] text-stone-500 truncate">recorded by {recordedBy}</span>
           )}
+          {/* What was actually paid, when it was not this group's currency
+              (db/28). THIS IS THE SECOND OF TWO expense rows in this file and
+              it was missed the first time: the edit was applied with
+              replace-all against an indented string, the two rows are indented
+              differently, so only one matched and the tool still reported
+              success. Anything added to one of these rows needs checking
+              against the other. */}
+          {e.originalCurrency && (
+            <span className="text-[10px] text-stone-500 truncate">
+              {symbolFor(e.originalCurrency)}{Number(e.originalAmount).toFixed(2)} at {e.fxRate}
+            </span>
+          )}
           {e.note && <span className="text-[10px] text-stone-500 truncate">{e.note}</span>}
         </div>
       </button>
