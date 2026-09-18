@@ -891,9 +891,20 @@ function csvField(value) {
 }
 
 // Build the CSV text for a group's REAL expenses (settlements excluded).
-// Columns: Date, Name, Category, Amount, Paid By, Split, Note.
+// Columns: Date, Name, Category, Amount, Original Amount, Original Currency,
+// Rate, Paid By, Split, Note.
+//
+// The three original-currency columns (db/28) are always present, and empty for
+// an expense entered in the group's own currency. Storing the original and then
+// dropping it from the export would defeat the point of keeping it: the export
+// is what someone reconciles against their receipts and card statement, and
+// that is precisely where "1,500 THB at 2.34" is the useful line and "₹3,510"
+// is not. Always-present rather than conditional so the column layout does not
+// change shape between two exports of the same group.
 function buildExpensesCsv(realExpenses) {
-  const header = ['Date', 'Name', 'Category', 'Amount', 'Paid By', 'Split', 'Note'];
+  const header = ['Date', 'Name', 'Category', 'Amount',
+                  'Original Amount', 'Original Currency', 'Rate',
+                  'Paid By', 'Split', 'Note'];
   const lines = [header.map(csvField).join(',')];
   // Newest first to match the on-screen ordering.
   const rows = [...realExpenses].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
@@ -905,6 +916,12 @@ function buildExpensesCsv(realExpenses) {
       csvField(e.category),
       // Plain number (no currency symbol) so the CSV imports cleanly into Excel.
       csvField(Number(e.amount || 0).toFixed(2)),
+      // Blank, not "0" or "-", when the expense was already in the group's
+      // currency: an empty cell is unambiguous in a spreadsheet, whereas a zero
+      // would be read as a real converted amount of nothing.
+      csvField(e.originalAmount == null ? '' : Number(e.originalAmount).toFixed(2)),
+      csvField(e.originalCurrency || ''),
+      csvField(e.fxRate == null ? '' : String(e.fxRate)),
       csvField(e.paidBy),
       csvField(modeLabel),
       csvField(e.note || ''),
@@ -3142,6 +3159,15 @@ function ExpenseRow({ e, onEdit, onDelete, canDelete = true, denyReason = null, 
             {recordedBy && (
               <span className="text-[10px] text-stone-500 truncate">recorded by {recordedBy}</span>
             )}
+            {/* What was actually paid, when it was not this group's currency
+                (db/28). Without this the row shows only the converted figure
+                and there is nothing to check a receipt against — the original
+                would be stored but invisible, which is the same as lost. */}
+            {e.originalCurrency && (
+              <span className="text-[10px] text-stone-500 truncate">
+                {symbolFor(e.originalCurrency)}{Number(e.originalAmount).toFixed(2)} at {e.fxRate}
+              </span>
+            )}
             {e.note && <span className="text-[10px] text-stone-500 truncate">{e.note}</span>}
           </div>
         </button>
@@ -4993,7 +5019,39 @@ function MultiSettleModal({ people, entries, paymentNotes, myName, recordDenyRea
 function ExpenseModal({ expense, people, isSolo, myName, onClose, onSave, categoryOverrides, onRememberCategory }) {
   const isNew = !expense;
   const [name, setName] = useState(expense?.name || '');
-  const [amount, setAmount] = useState(expense?.amount?.toString() || '');
+
+  /* ── Foreign-currency entry (db/28) ──────────────────────────────────────
+   *
+   * `amount` below is ALWAYS what the user typed, in whatever currency they
+   * chose. It is converted to the group's currency at save time, once. What
+   * reaches the database as `amount` is the converted figure, so every balance
+   * and settle-up downstream keeps seeing exactly one currency.
+   *
+   * When EDITING an expense that was entered in a foreign currency, the form
+   * reopens showing the ORIGINAL amount and currency — not the converted one.
+   * Reopening a 1,500 THB dinner as "₹3,510" would be a quietly destructive
+   * edit: save it unchanged and the original figure is gone, along with the
+   * ability to check it against the receipt.
+   */
+  const [curr, setCurr] = useState(expense?.originalCurrency || currencyCode);
+  // The rate, as text, so a half-typed "2." does not become NaN mid-keystroke.
+  const [rate, setRate] = useState(
+    expense?.fxRate != null ? String(expense.fxRate) : ''
+  );
+  const [amount, setAmount] = useState(
+    (expense?.originalAmount != null ? expense.originalAmount : expense?.amount)?.toString() || ''
+  );
+
+  // Is this expense in a currency other than the group's?
+  const foreign = curr !== currencyCode;
+  const rateNum = Number(rate);
+  const rateOk  = Number.isFinite(rateNum) && rateNum > 0;
+  const amtNum  = Number(amount);
+  // What will actually be stored as `amount`. Rounded to 2dp here, at the point
+  // of decision, so the number saved is the number the user was shown.
+  const convertedAmount = foreign && rateOk && Number.isFinite(amtNum)
+    ? Math.round(amtNum * rateNum * 100) / 100
+    : amtNum;
   const [date, setDate] = useState(expense?.date || new Date().toISOString().slice(0, 10));
   const [category, setCategory] = useState(expense?.category || 'Other');
   // Who paid. Two very different cases, so the initial value is computed once,
@@ -5163,6 +5221,12 @@ function ExpenseModal({ expense, people, isSolo, myName, onClose, onSave, catego
 
   const valid =
     name.trim() && parseFloat(amount) > 0 && date &&
+    // A foreign-currency expense is not saveable without a rate. db/28 refuses
+    // a half-filled triple anyway, but the database rejecting a save is a bad
+    // way for someone to find out — and without a rate there is no honest
+    // value to put in `amount`, since that column must be in the group's
+    // currency.
+    (!foreign || rateOk) &&
     // For a custom split the per-person values must add up correctly.
     customComplete &&
     // For equal/full at least one participant must be picked.
@@ -5178,7 +5242,16 @@ function ExpenseModal({ expense, people, isSolo, myName, onClose, onSave, catego
       // Flag so the store knows this is definitely a DB row (not a client temp id).
       _isExistingDbRow: !isNew,
       name: name.trim(),
-      amount: parseFloat(amount),
+      // ALWAYS the group-currency figure — the same number shown in the "Saved
+      // as" preview a moment ago. Everything downstream (balances, settle-up,
+      // insights, export) reads this and stays single-currency.
+      amount: convertedAmount,
+      // The original, only when there was one. Undefined otherwise, so the
+      // store omits the columns entirely and a same-currency expense still
+      // saves on a project where db/28 has not been run.
+      originalAmount:   foreign ? parseFloat(amount) : undefined,
+      originalCurrency: foreign ? curr : undefined,
+      fxRate:           foreign ? rateNum : undefined,
       date,
       category,
       paidBy: isSolo ? people[0] : paidBy,
@@ -5256,17 +5329,33 @@ function ExpenseModal({ expense, people, isSolo, myName, onClose, onSave, catego
 
           <div className="grid grid-cols-2 gap-3">
             <Field label="Amount">
-              <div className="relative">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400 text-sm">{currencySymbol}</span>
-                <input
-                  type="number"
-                  step="0.01"
-                  inputMode="decimal"
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                  placeholder="0.00"
-                  className="w-full pl-7 pr-3 py-2.5 rounded-lg border border-stone-300 text-sm tabular-nums focus:outline-none focus:border-indigo-500"
-                />
+              <div className="flex gap-1.5">
+                <div className="relative flex-1 min-w-0">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-stone-400 text-sm">{symbolFor(curr)}</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    inputMode="decimal"
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                    placeholder="0.00"
+                    className="w-full pl-7 pr-2 py-2.5 rounded-lg border border-stone-300 text-sm tabular-nums focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+                {/* The currency sits ON the amount, not in a separate section.
+                    It is a property of the number you are typing — a receipt is
+                    "1,500 baht", one thing — and separating them invites
+                    entering the figure and forgetting the currency, which is
+                    silently wrong by a factor of forty. */}
+                <select
+                  value={curr}
+                  onChange={(e) => setCurr(e.target.value)}
+                  className="w-[5.5rem] shrink-0 px-1.5 py-2.5 rounded-lg border border-stone-300 text-sm bg-white focus:outline-none focus:border-indigo-500"
+                >
+                  {Object.keys(CURRENCIES).map(code => (
+                    <option key={code} value={code}>{code}</option>
+                  ))}
+                </select>
               </div>
             </Field>
             <Field label="Date">
@@ -5278,6 +5367,41 @@ function ExpenseModal({ expense, people, isSolo, myName, onClose, onSave, catego
               />
             </Field>
           </div>
+
+          {/* ── Exchange rate, only when the currency differs ────────────────
+              Appears the moment a foreign currency is picked and vanishes when
+              it is not, so a same-currency expense — still the overwhelming
+              majority — is exactly as simple as it was before this feature.
+
+              The converted figure is shown BEFORE saving, deliberately: the
+              rate is converted once and then fixed forever, so this preview is
+              the user's only chance to notice a rate typed as 2.34 instead of
+              0.234. Showing the arithmetic is what makes that catchable. */}
+          {foreign && (
+            <div className="rounded-lg border border-sky-200 dark:border-sky-900 bg-sky-50 dark:bg-sky-950/40 px-3 py-2.5 space-y-2">
+              <Field label={`Rate — 1 ${curr} in ${currencyCode}`}>
+                <input
+                  type="number"
+                  step="any"
+                  inputMode="decimal"
+                  value={rate}
+                  onChange={(e) => setRate(e.target.value)}
+                  placeholder="e.g. 2.34"
+                  className="w-full px-3 py-2.5 rounded-lg border border-stone-300 text-sm tabular-nums focus:outline-none focus:border-indigo-500"
+                />
+              </Field>
+              <div className="text-[11px] text-sky-900 dark:text-sky-200 leading-snug">
+                {rateOk && Number.isFinite(amtNum) && amtNum > 0 ? (
+                  <>
+                    Saved as <strong className="tabular-nums">{fmt(convertedAmount)}</strong>{' '}
+                    ({symbolFor(curr)}{amount} × {rate}). Balances use this figure; the original stays on the record.
+                  </>
+                ) : (
+                  <>Enter the rate your bank or card actually used — it is fixed at this value and never recalculated.</>
+                )}
+              </div>
+            </div>
+          )}
 
           <Field label="Category">
             <select

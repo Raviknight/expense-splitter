@@ -651,6 +651,18 @@ export function useExpenseStore(userId, profile) {
               paidBy:    memberIdToName[e.paid_by] || 'Unknown',
               splitMode: e.split_mode,     // DB uses snake_case; UI uses camelCase
               note:      e.note || '',
+              // What was ACTUALLY paid, when it was not the group's currency
+              // (db/28). All three are null together, and null means "this is
+              // already in the group's currency" — so an expense entered
+              // normally is indistinguishable from one recorded before db/28,
+              // which is exactly right.
+              //
+              // `amount` above is untouched and still the group-currency value.
+              // These are for DISPLAY and for editing the expense again; no
+              // balance, settle-up or insight reads them.
+              originalAmount:   e.original_amount == null ? null : Number(e.original_amount),
+              originalCurrency: e.original_currency || null,
+              fxRate:           e.fx_rate == null ? null : Number(e.fx_rate),
               // When the expense was recorded — feeds the Activity timeline and
               // the "N new" home badge. Existing column, no schema change.
               createdAt: e.created_at,
@@ -1348,6 +1360,25 @@ export function useExpenseStore(userId, profile) {
         // Per-person amounts for a custom split (or null for the other modes).
         split_detail: splitDetailForDb,
       };
+
+      // Foreign-currency columns (db/28) are attached ONLY when the expense was
+      // actually entered in another currency.
+      //
+      // Two reasons for the condition rather than always sending nulls. It
+      // keeps an ordinary same-currency expense working on a project where
+      // db/28 has not been run — PostgREST rejects the whole insert for an
+      // unknown column, so sending them unconditionally would break every
+      // expense to support a feature most groups never touch. And the db/28
+      // constraint requires all three or none, so they must travel together.
+      //
+      // `amount` is already the converted, group-currency value; the UI does
+      // the arithmetic so the number saved is the number the user was shown
+      // before saving.
+      if (uiExpense.originalCurrency && uiExpense.fxRate) {
+        row.original_amount   = Number(uiExpense.originalAmount);
+        row.original_currency = uiExpense.originalCurrency;
+        row.fx_rate           = Number(uiExpense.fxRate);
+      }
 
       // Who recorded this (db/24). INSERT ONLY, deliberately: on an edit the
       // original author has to stand. Re-stamping it would let whoever last
