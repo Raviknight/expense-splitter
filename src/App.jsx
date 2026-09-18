@@ -460,6 +460,33 @@ function buildUpiUri({ vpa, payeeName, amount, note }) {
   return `upi://pay?${params.toString().replace(/\+/g, '%20')}`;
 }
 
+// Is this device one that could plausibly have a UPI app?
+//
+// WHY THIS CHECK EXISTS. A `upi://` URI only does something if an application
+// has registered that scheme. On a desktop OS nothing has, so the browser
+// silently discards the navigation: no app opens, no error, nothing. The first
+// version shipped a button that was simply DEAD on desktop — it looked
+// pressable, it was pressable, and pressing it did nothing at all, which is
+// worse than not offering it.
+//
+// `(pointer: coarse)` is the honest question to ask. It means "the primary
+// input is a finger", which is true of phones and tablets and false of a mouse
+// — and unlike sniffing the user agent it does not need a list of devices that
+// goes stale. It is not a guarantee a UPI app is installed; nothing in a
+// browser can tell you that. It is only a filter for the case we CAN rule out.
+//
+// Wrapped in try/catch and defaulting to false: if the query cannot be run we
+// fall back to the copy button, which works everywhere.
+function hasTouchPointer() {
+  try {
+    return typeof window !== 'undefined' &&
+           typeof window.matchMedia === 'function' &&
+           window.matchMedia('(pointer: coarse)').matches;
+  } catch {
+    return false;
+  }
+}
+
 // A balance smaller than one cent counts as SETTLED.
 //
 // Why not a tighter value: shares rarely land on whole cents. Splitting 100
@@ -4522,6 +4549,10 @@ function GroupForm({ group, myName, profile, onSave, onCancel }) {
  */
 function PaymentNoteLine({ name, note, tone = 'light', amount }) {
   const text = typeof note === 'string' ? note.trim() : '';
+  // Feedback for the copy fallback. Declared before the early returns below
+  // because a hook must run on every render of this component, in the same
+  // order, or React's hook state gets attributed to the wrong call.
+  const [copied, setCopied] = useState(false);
   // No name = nothing sensible to say (e.g. a 1-person balance list).
   if (!name) return null;
   if (!text) {
@@ -4537,6 +4568,11 @@ function PaymentNoteLine({ name, note, tone = 'light', amount }) {
   // else falls through to the plain text line this component has always shown,
   // so nobody outside India sees a change.
   const vpa = currencyCode === 'INR' ? findUpiId(text) : null;
+  // Decides which control to offer, not whether to offer one. A phone gets the
+  // deep link; anything else gets a copy button, because a upi:// link on a
+  // desktop is silently discarded and a button that does nothing is worse than
+  // no button.
+  const touch = hasTouchPointer();
 
   return (
     <div className={`text-[11px] mt-0.5 leading-snug break-words ${tone === 'dark' ? 'text-stone-400' : 'text-stone-500'}`}>
@@ -4555,26 +4591,51 @@ function PaymentNoteLine({ name, note, tone = 'light', amount }) {
               was long enough to reach the button. Wrapping it in a block div
               puts it on its own line at every width. */}
           <div className="mt-1.5">
-          <a
-            href={buildUpiUri({ vpa, payeeName: name, amount, note: 'Splitab settle-up' })}
-            className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition ${
-              tone === 'dark'
-                ? 'bg-white text-stone-900 hover:bg-stone-100'
-                : 'bg-indigo-600 text-white hover:bg-indigo-700'
-            }`}
-          >
-            {/* Guarded: a call site that has no amount to hand (or a
-                half-typed one) must not render "Pay ₹NaN with UPI". The URI
-                omits the amount in the same case, so the payer types it in
-                their own app instead of being shown nonsense. */}
-            {Number.isFinite(Number(amount)) && Number(amount) > 0
-              ? `Pay ${fmt(amount)} with UPI`
-              : 'Pay with UPI'}
-          </a>
+            {touch ? (
+              <a
+                href={buildUpiUri({ vpa, payeeName: name, amount, note: 'Splitab settle-up' })}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition ${
+                  tone === 'dark'
+                    ? 'bg-white text-stone-900 hover:bg-stone-100'
+                    : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                }`}
+              >
+                {/* Guarded: a call site with no amount (or a half-typed one)
+                    must not render "Pay ₹NaN with UPI". The URI omits the
+                    amount in the same case, so the payer types it in their own
+                    app rather than being shown nonsense. */}
+                {Number.isFinite(Number(amount)) && Number(amount) > 0
+                  ? `Pay ${fmt(amount)} with UPI`
+                  : 'Pay with UPI'}
+              </a>
+            ) : (
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(vpa);
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 2000);
+                  } catch {
+                    // Clipboard denied or unavailable. The handle is still
+                    // right above this button and is select-all, so there is
+                    // nothing to rescue — just don't claim it was copied.
+                  }
+                }}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition ${
+                  tone === 'dark'
+                    ? 'bg-white text-stone-900 hover:bg-stone-100'
+                    : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                }`}
+              >
+                {copied ? 'Copied' : 'Copy UPI ID'}
+              </button>
+            )}
           </div>
           <div className={`mt-0.5 ${tone === 'dark' ? 'text-stone-500' : 'text-stone-400'}`}>
-            Opens your UPI app. Splitab never moves the money — you still confirm it there,
-            and mark it done here afterwards.
+            {touch
+              ? 'Opens your UPI app. Splitab never moves the money — you still confirm it there, and mark it done here afterwards.'
+              : 'UPI apps only open on a phone. Copy this and pay from your phone, then mark it done here.'}
           </div>
         </>
       )}
