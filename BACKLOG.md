@@ -34,6 +34,7 @@ If it is not in this file, it is not agreed work. If it is done, it leaves this 
 
 | # | Item | Notes |
 |---|------|-------|
+| 30 | **A 3+ person group cannot record a partial settlement** | Spotted by the owner 2026-09-18 and confirmed. The **2-person** modal has an editable amount and a "Partial settlement — full balance is X" hint. `MultiSettleModal` has no amount field at all: each suggested row records the exact suggested figure or nothing. So "I'll give you ₹2,000 now and the rest later" is impossible in any group of three or more — which is most groups, and a normal way people actually pay. The store already supports it (`recordSettlement` takes any amount, and partial settlements simply reduce the balance), so this is a UI gap, not a model one. |
 | 9 | **No way for a user to pay for premium** | Set by hand in Supabase today (`profiles.is_premium`, db/11); `PREMIUM_ENFORCED` is still `false`. Needs a payment-provider decision (a business/tax question — merchant-of-record handles cross-border sales tax, a direct gateway does not). Ask any provider whether they issue **India-format FIRA** before integrating. Blocked on flipping `SCAN_LIMIT_ENABLED` — no point selling a limit that isn't enforced. |
 
 ## Decisions pending (not work — just choices)
@@ -86,6 +87,37 @@ If it is not in this file, it is not agreed work. If it is done, it leaves this 
   project ever upgrades.
 
 ## Done (recent — trim as it grows)
+
+- **Per-expense currency** (2026-09-18) — `db/28`. A group had ONE currency, so a trip
+  crossing borders could not be recorded without converting every receipt by hand and
+  losing the original figure. An expense can now be entered in any of 37 currencies and is
+  converted **once, at entry**, with a rate the user supplies. **`amount` did not change
+  meaning** — it is still the group-currency value, so balances, settle-up, insights, export
+  and the offline outbox never learned this feature exists. That was the point: the
+  settle-up rounding took 17 tested scenarios and re-deriving balances from mixed
+  currencies would put all of it back in play. Rejected alternatives, recorded: converting
+  at **display** time with a live rate (a balance settled today reopens tomorrow when the
+  rate moves — the phantom-1-cent bug again, with large amounts no payment can clear), and
+  rate-at-first-settlement (no answer for the *second* settlement, after which one expense
+  carries two rates). **The rate is typed, not fetched** — the true rate for the payer is
+  what their own bank charged, which no API knows, and an API is a dependency that fails
+  silently. The converted figure is shown before saving so a rate typed as 2.34 instead of
+  0.234 is catchable; editing reopens the **original**, not the converted value.
+- **Currency list 7 → 37, and one source of truth** (2026-09-18). Seven could not describe
+  India → Thailand → Malaysia → Singapore. **The duplicate list was the bigger problem:**
+  a map in `App.jsx` formatted every amount and a separate array in `Settings.jsx` built
+  the picker, with nothing keeping them in step — a currency in one and not the other would
+  be selectable and then rendered with the wrong symbol. They matched by luck. Both now
+  import `src/data/currencies.js`. Also fixed the unknown-code fallback, which was `|| '$'`
+  and formatted an unrecognised currency **as US dollars** — silently wrong about money.
+- **UPI hand-off** (2026-09-18) — `db/29`. A one-tap pay button at settle-up, **INR groups
+  only**, gated on the group's currency rather than geography. **Reverses the "no deep
+  link" decision in CLAUDE.md §8 with the owner's explicit agreement** — a `upi://` URI does
+  not move money, it opens the payer's own app, and UPI is the one country where a single
+  URI format covers every provider. A structured `upi_id` column followed, because parsing
+  the free-text note could not tell which handle was meant when someone writes two. On
+  desktop the button becomes **Copy UPI ID**: `upi://` has no handler there and the first
+  version shipped a control that silently did nothing.
 
 - **Payment notes could be set once and never edited** (2026-09-18) — `db/27`. A live bug
   affecting every user, found because the owner tried to put a UPI id in his note and got a
