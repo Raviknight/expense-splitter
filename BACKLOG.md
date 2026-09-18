@@ -87,6 +87,23 @@ If it is not in this file, it is not agreed work. If it is done, it leaves this 
 
 ## Done (recent — trim as it grows)
 
+- **Payment notes could be set once and never edited** (2026-09-18) — `db/27`. A live bug
+  affecting every user, found because the owner tried to put a UPI id in his note and got a
+  red box telling him to run a migration that had already run. Two separate faults. **The
+  visible one:** nine places in the app printed developer instructions ("run db/21 in
+  Supabase") to users who cannot reach a database — now plain language on screen and the
+  migration hint to the console (`src/data/errors.js`). **The one underneath:** the
+  payment-note error tested `includes('payment_note')`, a *substring of `payment_notes`*,
+  so every Postgres error mentioning that table — RLS refusals included — was reported as a
+  missing migration. That branch no longer guesses. **The actual cause**, found only once
+  the real error reached the console: `payment_notes` has four of its six policies. db/21b
+  creates them in order and exactly the first four exist, the signature of a script that
+  aborted partway — the same failure as the `42710` "policy already exists" abort seen the
+  same morning. No UPDATE policy means Postgres refuses the update arm of the app's upsert,
+  so a first save worked and every edit after it failed. **A partially-run SQL script looks
+  identical to a successful one**, which is the lesson worth keeping; db/27 verifies by
+  listing `pg_policies` rather than assuming.
+
 - **Settlement notes** (2026-09-16). The cheap half of the problem raised in ~~#27~~ — *"paid
   in instalments over months, you would never know which expense a payment was for"* — which
   the owner correctly declined to solve by allocating payments across specific expenses.

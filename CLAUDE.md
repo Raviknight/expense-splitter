@@ -122,6 +122,7 @@ don't return data).
 | `db/23_expense_deletion_audit.sql` (+ `23b`, `23c`) | Records who deleted which expense. `23b`/`23c` clean up rows the first version wrote wrongly. | Once, in order. |
 | `db/24_record_attribution.sql` | Adds `expenses.created_by` so "recorded by …" can be shown when the payer is someone else. | Once. |
 | `db/25_declined_revokes_profile_access.sql` | Declining a connection request now revokes profile visibility rather than leaving it open. | Once. |
+| `db/27_fix_payment_notes_write_policies.sql` | **Fixes a live bug: a payment note could be set once and never edited.** `payment_notes` was missing its UPDATE and DELETE policies — db/21b creates six policies and only the first four exist, the signature of a script that aborted partway. With RLS on and no UPDATE policy, Postgres refuses the update arm of the app's upsert with `42501 … (USING expression)`. Adds the two missing policies and verifies by listing `pg_policies`. | **Run this.** Editing a payment note fails for everyone until it is applied. |
 | `db/26_recategorise_moved_merchants.sql` | **One-time, optional.** Moves EXISTING expenses whose merchant changed category on 2026-09-16 (airlines Transportation→Flights, cinemas Attractions→Entertainment, IKEA/Home Depot Shopping→Household). Preview statement first, update second — run them separately. Skips anything you have re-categorised by hand. | Once, only if you want old rows moved. Nothing breaks if you never run it. |
 
 > `db/02` is personal to the owner. The app itself never seeds anyone's data — new users
