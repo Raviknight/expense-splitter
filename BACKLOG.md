@@ -34,7 +34,6 @@ If it is not in this file, it is not agreed work. If it is done, it leaves this 
 
 | # | Item | Notes |
 |---|------|-------|
-| 30 | **A 3+ person group cannot record a partial settlement** | Spotted by the owner 2026-09-18 and confirmed. The **2-person** modal has an editable amount and a "Partial settlement — full balance is X" hint. `MultiSettleModal` has no amount field at all: each suggested row records the exact suggested figure or nothing. So "I'll give you ₹2,000 now and the rest later" is impossible in any group of three or more — which is most groups, and a normal way people actually pay. The store already supports it (`recordSettlement` takes any amount, and partial settlements simply reduce the balance), so this is a UI gap, not a model one. |
 | 9 | **No way for a user to pay for premium** | Set by hand in Supabase today (`profiles.is_premium`, db/11); `PREMIUM_ENFORCED` is still `false`. Needs a payment-provider decision (a business/tax question — merchant-of-record handles cross-border sales tax, a direct gateway does not). Ask any provider whether they issue **India-format FIRA** before integrating. Blocked on flipping `SCAN_LIMIT_ENABLED` — no point selling a limit that isn't enforced. |
 
 ## Decisions pending (not work — just choices)
@@ -87,6 +86,18 @@ If it is not in this file, it is not agreed work. If it is done, it leaves this 
   project ever upgrades.
 
 ## Done (recent — trim as it grows)
+
+- **Partial settlements in groups of 3+** (#30, 2026-09-18). The 2-person modal always
+  allowed an edited amount; `MultiSettleModal` had no amount field at all, so "I'll give
+  you ₹2,000 now and the rest later" was impossible in most groups. **Nothing in the model
+  needed changing** — `recordSettlement` already took any amount and a settlement simply
+  reduces the net balance. A missing input, not a missing capability. The suggested figure
+  is now editable **in place**, so the row gains no height on a phone where it already
+  carries two names, an amount, a button and sometimes a refusal reason. Edits are keyed by
+  row with the *suggested* amount in the key, so recording a partial changes the key and
+  the next render starts from the new remaining figure — the state cleans itself up. The
+  UPI link carries the **typed** amount, so a part payment hands off the part amount rather
+  than the full balance.
 
 - **Per-expense currency** (2026-09-18) — `db/28`. A group had ONE currency, so a trip
   crossing borders could not be recorded without converting every receipt by hand and
