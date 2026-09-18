@@ -2067,6 +2067,7 @@ export default function App() {
             people={people}
             entries={expenses}
             paymentNotes={activeGroup?._memberPaymentNotes || {}}
+            paymentUpiIds={activeGroup?._memberUpiIds || {}}
             myName={profile?.display_name || 'Me'}
             onSettle={() => setShowSettle(true)}
             onExportCsv={exportCsv}
@@ -2190,6 +2191,7 @@ export default function App() {
           people={people}
           entries={expenses}
           paymentNotes={activeGroup?._memberPaymentNotes || {}}
+          paymentUpiIds={activeGroup?._memberUpiIds || {}}
           myName={profile?.display_name || 'Me'}
           recordDenyReason={recordDenyReason}
           onClose={() => setShowSettle(false)}
@@ -3524,9 +3526,12 @@ function InsightsTab({ expenses, onPick }) {
   );
 }
 
-function SummaryTab({ expenses, settlements, balances, sharedPool, total, people, entries, paymentNotes, myName, onSettle, onExportCsv, onExportPdf }) {
+function SummaryTab({ expenses, settlements, balances, sharedPool, total, people, entries, paymentNotes, paymentUpiIds, myName, onSettle, onExportCsv, onExportPdf }) {
   // display name → "how to pay me" note (from group._memberPaymentNotes).
   const notes = paymentNotes || {};
+  // Structured UPI ids (db/29), defaulted here for the same reason as `notes`:
+  // a caller that has not got the map yet must not crash a render.
+  const upiIds = paymentUpiIds || {};
   const a = balances[0];
   const settleAmt = Math.abs(a.net);
   const personalTotal = total - sharedPool;
@@ -3616,7 +3621,7 @@ function SummaryTab({ expenses, settlements, balances, sharedPool, total, people
                     {/* Same rule as the settle modal: only the row where YOU
                         are the payer, because that's the one you must act on. */}
                     {s.from === myName && (
-                      <PaymentNoteLine name={s.to} note={notes[s.to]} tone="dark" amount={s.amount} />
+                      <PaymentNoteLine name={s.to} note={notes[s.to]} upiId={(upiIds || {})[s.to]} tone="dark" amount={s.amount} />
                     )}
                   </div>
                   <span className="font-semibold tabular-nums shrink-0">{fmt(s.amount)}</span>
@@ -3641,7 +3646,7 @@ function SummaryTab({ expenses, settlements, balances, sharedPool, total, people
               <div className="text-3xl font-semibold tabular-nums">{fmt(settleAmt)}</div>
               {/* Only when YOU are the payer — see the multi-person list above. */}
               {duoFrom === myName && (
-                <PaymentNoteLine name={duoTo} note={notes[duoTo]} tone="dark" amount={settleAmt} />
+                <PaymentNoteLine name={duoTo} note={notes[duoTo]} upiId={(upiIds || {})[duoTo]} tone="dark" amount={settleAmt} />
               )}
             </div>
             <button
@@ -4568,7 +4573,7 @@ function GroupForm({ group, myName, profile, onSave, onCancel }) {
  * layout out sideways. It stays inline text (NOT a `title` tooltip, which is
  * useless on a phone) and `select-all` makes one tap grab the whole handle.
  */
-function PaymentNoteLine({ name, note, tone = 'light', amount }) {
+function PaymentNoteLine({ name, note, tone = 'light', amount, upiId }) {
   const text = typeof note === 'string' ? note.trim() : '';
   // Feedback for the copy fallback. Declared before the early returns below
   // because a hook must run on every render of this component, in the same
@@ -4584,11 +4589,19 @@ function PaymentNoteLine({ name, note, tone = 'light', amount }) {
     );
   }
 
-  // THREE conditions, all required. The note must contain something that is
-  // unambiguously a VPA, and the group must be settling in rupees. Anything
-  // else falls through to the plain text line this component has always shown,
-  // so nobody outside India sees a change.
-  const vpa = currencyCode === 'INR' ? findUpiId(text) : null;
+  // The group must be settling in rupees, and we must know WHICH handle to pay.
+  //
+  // The structured `upi_id` (db/29) is preferred over parsing the note, and the
+  // difference matters: a note reading "pay me at xyz@ybl or abc@hdfc" has two
+  // handles and `findUpiId` silently takes the first. A guess is not acceptable
+  // when the result is a payment link with an amount already filled in.
+  //
+  // Parsing remains as a FALLBACK so the several people who wrote a VPA into
+  // their note before this column existed keep a working button. Filling in the
+  // field is an upgrade, not a migration anyone has to perform.
+  const vpa = currencyCode === 'INR'
+    ? (upiId || findUpiId(text))
+    : null;
   // Decides which control to offer, not whether to offer one. A phone gets the
   // deep link; anything else gets a copy button, because a upi:// link on a
   // desktop is silently discarded and a button that does nothing is worse than
@@ -4711,7 +4724,7 @@ function OwnPaymentNoteNudge({ myNote, payers, tone = 'light' }) {
 // old behaviour (every Record button live, the database still deciding) rather
 // than silently blocking everyone — the check is a UX prediction, not a guard.
 // See App().
-function SettleModal({ balances, people, entries, paymentNotes, myName, recordDenyReason = () => null, onClose, onConfirm, onRecord }) {
+function SettleModal({ balances, people, entries, paymentNotes, paymentUpiIds, myName, recordDenyReason = () => null, onClose, onConfirm, onRecord }) {
   // For 3+ members we show a "who pays whom" list instead of a single form.
   if (people.length >= 3) {
     return (
@@ -4719,6 +4732,7 @@ function SettleModal({ balances, people, entries, paymentNotes, myName, recordDe
         people={people}
         entries={entries}
         paymentNotes={paymentNotes}
+        paymentUpiIds={paymentUpiIds}
         myName={myName}
         recordDenyReason={recordDenyReason}
         onClose={onClose}
@@ -4767,7 +4781,7 @@ function SettleModal({ balances, people, entries, paymentNotes, myName, recordDe
                 payer edit it for a partial payment, and the UPI link must
                 carry what they are actually about to send. */}
             {fromPerson === myName && (
-              <PaymentNoteLine name={toPerson} note={(paymentNotes || {})[toPerson]} amount={parseFloat(amount)} />
+              <PaymentNoteLine name={toPerson} note={(paymentNotes || {})[toPerson]} upiId={(paymentUpiIds || {})[toPerson]} amount={parseFloat(amount)} />
             )}
           </div>
 
@@ -4860,10 +4874,13 @@ function SettleModal({ balances, people, entries, paymentNotes, myName, recordDe
  * so the user can clear several debts in a row. After each record the parent
  * refetches, `entries` updates, and the suggestions recompute automatically.
  */
-function MultiSettleModal({ people, entries, paymentNotes, myName, recordDenyReason = () => null, onClose, onRecord }) {
+function MultiSettleModal({ people, entries, paymentNotes, paymentUpiIds, myName, recordDenyReason = () => null, onClose, onRecord }) {
   // display name → "how to pay me" note (from group._memberPaymentNotes).
   // Defaulted here so a caller that hasn't got the map yet can't crash a render.
   const notes = paymentNotes || {};
+  // Structured UPI ids (db/29), defaulted here for the same reason as `notes`:
+  // a caller that has not got the map yet must not crash a render.
+  const upiIds = paymentUpiIds || {};
   // Track which rows are mid-write so we can disable their buttons.
   const [busyKey, setBusyKey] = useState(null);
 
@@ -4965,7 +4982,7 @@ function MultiSettleModal({ people, entries, paymentNotes, myName, recordDenyRea
                           people, showing a third party's payment handle would
                           be needless exposure, so we don't. */}
                       {s.from === myName && (
-                        <PaymentNoteLine name={s.to} note={notes[s.to]} amount={s.amount} />
+                        <PaymentNoteLine name={s.to} note={notes[s.to]} upiId={(upiIds || {})[s.to]} amount={s.amount} />
                       )}
                     </div>
                     <button

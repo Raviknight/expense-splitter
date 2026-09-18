@@ -528,6 +528,11 @@ export function useExpenseStore(userId, profile) {
       // drops profiles.payment_note. Anyone without a note stays absent and
       // nothing is displayed for them.
       const paymentNoteMap = {};
+      // Structured UPI ids (db/29), kept as a SEPARATE map rather than turning
+      // paymentNoteMap's values into objects. Changing that map's shape would
+      // mean touching every consumer of `_memberPaymentNotes` for no benefit;
+      // a parallel map keyed the same way costs one line and breaks nothing.
+      const paymentUpiMap = {};
 
       if (otherUserIds.length > 0) {
         // We want avatar_url too, but that column only exists after db/08 has
@@ -586,14 +591,24 @@ export function useExpenseStore(userId, profile) {
       // empty and notes are simply not displayed.
       const noteUserIds = [userId, ...otherUserIds];
 
+      // `select('*')`, NOT an explicit column list. Naming `upi_id` (db/29)
+      // explicitly would make the whole query fail with a 400 on any project
+      // where that migration has not been run — PostgREST rejects the request
+      // for one unknown column — and the code would then fall through to the
+      // legacy rung below and quietly stop showing ANY payment notes. A
+      // wildcard returns whatever columns exist, so a missing one is simply
+      // absent rather than fatal.
       const notesRes = await supabase
         .from('payment_notes')
-        .select('user_id, note')
+        .select('*')
         .in('user_id', noteUserIds);
 
       if (!notesRes.error) {
         (notesRes.data || []).forEach(r => {
           paymentNoteMap[r.user_id] = r.note || null;
+          // Undefined (column absent) and null (column present, not set) both
+          // normalise to null, so "no UPI id" is one value downstream.
+          paymentUpiMap[r.user_id] = r.upi_id || null;
         });
       } else {
         // Most likely the payment_notes table doesn't exist yet (db/21 not
@@ -772,6 +787,7 @@ export function useExpenseStore(userId, profile) {
         // because the settle-up UI works in names, not user ids. Ghosts have no
         // account and therefore no note.
         const memberPaymentNotes = {};
+        const memberUpiIds = {};
         members.forEach(m => {
           const displayName = memberDisplayName(m, profilesMap);
           memberMeta[displayName] = {
@@ -785,6 +801,7 @@ export function useExpenseStore(userId, profile) {
           };
           memberAvatars[displayName] = m.user_id ? (avatarMap[m.user_id] || null) : null;
           memberPaymentNotes[displayName] = m.user_id ? (paymentNoteMap[m.user_id] || null) : null;
+          memberUpiIds[displayName]       = m.user_id ? (paymentUpiMap[m.user_id]  || null) : null;
         });
 
         // Deleted expenses/settlements for the Activity timeline (db/23).
@@ -846,6 +863,10 @@ export function useExpenseStore(userId, profile) {
           // db/21 has been run (nothing to read from in that case).
           // Display only — the app never touches money (see CLAUDE.md §8).
           _memberPaymentNotes: memberPaymentNotes,
+          // Structured UPI ids (db/29). Shape: { [displayName]: string|null }.
+          // The UPI button prefers this over parsing the free-text note above,
+          // which cannot tell which handle was meant when someone writes two.
+          _memberUpiIds: memberUpiIds,
           // "X joined" events for the Activity timeline. Shape:
           // [{ name, isGhost, createdAt }]. One entry per member.
           _memberJoins: memberJoins,

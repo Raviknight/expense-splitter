@@ -158,6 +158,9 @@ export default function Profile({ onClose }) {
   // recomputed on render, so changing the currency in Settings is reflected
   // the next time this screen renders.
   const noteHints = paymentHintsFor(profile?.preferred_currency);
+  // The structured UPI id (db/29), separate from the free-text note above.
+  // Loaded by the same effect that loads the note.
+  const [upiId, setUpiId]               = useState('');
   const [noteSaving, setNoteSaving]     = useState(false);
   const [noteSaved, setNoteSaved]       = useState(false);
   const [noteError, setNoteError]       = useState(null);
@@ -334,13 +337,18 @@ export default function Profile({ onClose }) {
       try {
         const { data, error } = await supabase
           .from('payment_notes')            // table added by db/21
-          .select('note')                   // column: note
+          // `*` rather than naming columns: `upi_id` (db/29) may not exist yet,
+          // and PostgREST fails the WHOLE query for one unknown column — which
+          // would drop us into the legacy branch below and wipe the box the
+          // user is looking at. A wildcard returns whatever is there.
+          .select('*')
           .eq('user_id', uid)               // column: user_id (pk)
           .limit(1);
         if (cancelled) return;
         if (!error) {
           // No row yet = no note written = empty box.
           setPaymentNote((data && data[0] && data[0].note) || '');
+          setUpiId((data && data[0] && data[0].upi_id) || '');
           return;
         }
         // Table missing (db/21 not run) → fall back to the old column.
@@ -423,6 +431,25 @@ export default function Profile({ onClose }) {
       return;
     }
 
+    // Validate the UPI id BEFORE sending it. db/29's constraint would refuse a
+    // malformed one anyway, but a database rejection arrives as an error box
+    // that cannot say which field was wrong — and the shape rule is the only
+    // thing standing between a typo and a payment link pointing nowhere.
+    //
+    // The rule is the same one the app's parser uses: handle@provider, with no
+    // dot in the provider. That absent dot is what separates a VPA from an
+    // email address, and it is the single most likely thing to be typed here by
+    // mistake.
+    const trimmedUpi = upiId.trim();
+    if (trimmedUpi && !/^[a-zA-Z0-9][a-zA-Z0-9._-]{1,100}@[a-zA-Z][a-zA-Z0-9]{1,63}$/.test(trimmedUpi)) {
+      setNoteError(
+        trimmedUpi.includes('@') && /\.[a-zA-Z]{2,}$/.test(trimmedUpi)
+          ? 'That looks like an email address. A UPI ID ends in something like @okhdfcbank or @ybl.'
+          : 'That does not look like a UPI ID. It should be something like name@okhdfcbank.'
+      );
+      return;
+    }
+
     setNoteSaving(true);
 
     // Rung 1: the dedicated table (db/21).
@@ -431,6 +458,7 @@ export default function Profile({ onClose }) {
       .upsert({
         user_id:    user.id,                              // column: user_id (pk)
         note:       trimmedNote || null,                  // column: note (NULL clears it)
+        upi_id:     trimmedUpi || null,                   // column: upi_id (db/29)
         updated_at: new Date().toISOString(),             // column: updated_at
       }, { onConflict: 'user_id' });
 
@@ -727,6 +755,46 @@ export default function Profile({ onClose }) {
                   Anyone in your groups can see this at settle-up. Don’t put anything
                   private here — no passwords, card numbers or full account numbers.
                 </span>
+              </p>
+
+              {/* ── UPI ID: the one STRUCTURED payment field ─────────────────
+                  Separate from the note below because it is the only thing the
+                  app ACTS on rather than merely displays — it becomes a
+                  tappable payment link with the amount filled in. Parsing that
+                  out of free text could not be done safely: "pay me at
+                  xyz@ybl or abc@hdfc" has two handles and no way to tell which
+                  was meant, and guessing wrong points a payment at the wrong
+                  account.
+
+                  Deliberately NOT the start of a field-per-app list. Venmo,
+                  PayPal and the rest stay in the free-text note below, because
+                  the app only ever prints those — and a field for each is the
+                  endless maintenance tail CLAUDE.md §8 rejected. Structure
+                  belongs only where the code acts. */}
+              <label htmlFor="upi-id" className="text-xs font-medium text-stone-600">
+                UPI ID <span className="font-normal text-stone-400">(optional, India)</span>
+              </label>
+              <input
+                id="upi-id"
+                type="text"
+                inputMode="email"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                value={upiId}
+                onChange={e => {
+                  setUpiId(e.target.value);
+                  setNoteError(null);
+                  setNoteSaved(false);
+                }}
+                placeholder="name@okhdfcbank"
+                maxLength={120}
+                className="rounded-xl border border-stone-200 bg-white px-4 py-2.5 text-base focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-stone-400"
+              />
+              <p className="text-xs text-stone-400">
+                Adds a one-tap “Pay with UPI” button for people settling with you in a
+                rupee group. Splitab never moves the money — the payment happens in your
+                own UPI app.
               </p>
 
               {/* text-base = 16 px — prevents iOS zoom on focus */}
