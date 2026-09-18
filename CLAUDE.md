@@ -525,6 +525,33 @@ Supabase auth rate limits (see §3), which sit at the layer that actually matter
   wrote and records that a payment happened elsewhere. The note is visible to everyone you
   are connected to (the existing "read connected profiles" RLS policy), which the Profile
   screen states plainly next to the field.
+
+  > **AMENDED 2026-09-18 — a UPI deep link is now allowed, in INR groups only.** The
+  > decision above ended with "there is deliberately no payment SDK, deep link or API",
+  > and that conclusion reached further than either reason given for it.
+  >
+  > Reason (2) was that moving money in-app makes Splitab a regulated payment service.
+  > **That is still true and still respected** — a `upi://` URI does not move money. It
+  > opens the payer's own UPI app with the fields prefilled; they authenticate and
+  > authorise inside their bank's app. Splitab holds nothing, transfers nothing, and
+  > still only records that a payment happened elsewhere.
+  >
+  > Reason (1) was the maintenance tail of a field per payment app per country. That is
+  > the strong objection, and **UPI is the specific exception to it**: one URI format is
+  > honoured by GPay, PhonePe, Paytm and BHIM alike. One integration, not one per app.
+  > The same is NOT true of Venmo, PayPal or Revolut, whose links differ by provider and
+  > by country — so nothing equivalent is offered outside India, and that is deliberate
+  > rather than unfinished.
+  >
+  > Gated on the **group's currency being INR**, not on geography — no IP lookup, no
+  > locale sniffing. An Indian user splitting a holiday in EUR correctly gets no button,
+  > because a UPI payment cannot settle a euro balance. The free-text note is unchanged
+  > and still shown above the button, because UPI links do nothing on desktop.
+  >
+  > Evidence that prompted the change: in r/roommates "Splitwise alternatives", the
+  > payment hand-off was the one thing every app was asked for and none provided, and
+  > the reason given each time was that deep links are per-provider and region-locked.
+  > That constraint does not apply in India.
 - **Bank linking — DECIDED: skip.** Regulated (Plaid/aggregators), real cost, compliance/liability
   for bank data. CSV import + receipt scanning cover "get transactions in" without the burden.
   Revisit only if this becomes a funded commercial product.

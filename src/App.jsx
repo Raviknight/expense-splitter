@@ -366,12 +366,99 @@ const CURRENCIES = {
 // without every component needing to thread the symbol through props.
 let currencySymbol = '$';
 
+// The active group's currency CODE, kept beside the symbol and set from the
+// same place. `fmt` only ever needed the symbol; the UPI hand-off below needs
+// to know it is specifically INR, and '₹' is not a safe proxy for that.
+let currencyCode = 'USD';
+
 // Format a number as money. By default it uses the active group's symbol
 // (the module-level `currencySymbol`). Pass an explicit `sym` to override —
 // the home dashboard does this so each group card can print in its OWN
 // currency even though several cards are on screen at once.
 const fmt = (n, sym = currencySymbol) =>
   sym + Number(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+
+/* ============ UPI hand-off (India only) ============
+ *
+ * ⚠️ THIS REVERSES A RECORDED DECISION, deliberately and with the owner's
+ * explicit agreement on 2026-09-18. CLAUDE.md §8 and the comment on
+ * PaymentNoteLine both said there would be NO deep link of any kind, on the
+ * grounds that touching money would make Splitab a regulated payment service.
+ *
+ * That conclusion reached further than its own reasoning. Two objections were
+ * recorded, and each has a specific answer:
+ *
+ *  1. "Actually moving the money makes this a regulated payment service."
+ *     True, and still true — which is why this does NOT move money. A upi://
+ *     URI is a LINK. It opens the payer's own UPI app with the fields filled
+ *     in; they authenticate and authorise inside their bank's app. Splitab is
+ *     never in the funds flow, holds nothing, and settles nothing. The app
+ *     still only RECORDS that a payment happened elsewhere.
+ *  2. "A field per payment app, per country is an endless maintenance tail."
+ *     The strong objection, and UPI is the exception that motivates this: ONE
+ *     URI format is honoured by GPay, PhonePe, Paytm, BHIM and the rest. Not a
+ *     field per app — one, for a whole country. This is exactly why it is
+ *     worth doing in India and not worth doing in the US or Europe, where the
+ *     deep links are per-provider and change by country.
+ *
+ * SCOPED TO INR ON PURPOSE. Gated on the GROUP's currency, not on geography:
+ * no IP lookup, no locale sniffing, nothing to get wrong about where someone
+ * is. A group settling in rupees gets the button; every other group in the
+ * world sees exactly what it saw before. That also means an Indian user
+ * splitting a holiday in EUR correctly gets no UPI button, because a UPI
+ * payment cannot settle a euro balance.
+ */
+
+// Does this token look like a UPI VPA (`name@bank`) rather than an email?
+//
+// The discriminator is the DOT. A VPA's handle is a bare provider token —
+// okhdfcbank, ybl, paytm, upi, axl — with no dot in it. An email address
+// effectively always has one (gmail.com). So: letters and digits only after
+// the '@', to the end of the token.
+//
+// This is tested against a WHOLE whitespace-delimited token, never searched
+// inside a longer string. That matters: a loose search for "@" followed by
+// letters would match the "gmail" inside "someone@gmail.com" and cheerfully
+// offer to pay it, which is precisely the kind of quiet wrongness that is
+// hard to notice and involves someone's money.
+const UPI_VPA = /^[a-zA-Z0-9][a-zA-Z0-9.\-_]{1,100}@[a-zA-Z][a-zA-Z0-9]{1,63}$/;
+
+// Pull the first VPA out of a free-text payment note, or null.
+//
+// The note is whatever the person typed — "UPI: ravi@okhdfcbank", "GPay
+// 9876543210@ybl, or cash". So it is split on whitespace and each token is
+// stripped of surrounding punctuation before being tested in full.
+function findUpiId(note) {
+  if (typeof note !== 'string') return null;
+  for (const raw of note.split(/\s+/)) {
+    const token = raw.replace(/^[^a-zA-Z0-9]+/, '').replace(/[^a-zA-Z0-9]+$/, '');
+    if (UPI_VPA.test(token)) return token;
+  }
+  return null;
+}
+
+// Build the upi:// URI. Every value is encoded — a payee name with a space or
+// an ampersand would otherwise corrupt the query string.
+//
+// `am` is fixed to 2 decimals because UPI apps reject odd precision, and `cu`
+// is always INR since this is only ever reachable from an INR group. `tn` is
+// the transaction note the payer will see in their bank app; it is kept short
+// because several UPI apps silently truncate it.
+function buildUpiUri({ vpa, payeeName, amount, note }) {
+  const params = new URLSearchParams();
+  params.set('pa', vpa);
+  if (payeeName) params.set('pn', payeeName);
+  const amt = Number(amount);
+  if (Number.isFinite(amt) && amt > 0) params.set('am', amt.toFixed(2));
+  params.set('cu', 'INR');
+  if (note) params.set('tn', String(note).slice(0, 40));
+  // URLSearchParams uses FORM encoding, where a space becomes '+'. That is
+  // correct for a form body and wrong for a URI: a strict parser reads '+' as
+  // a literal plus, so "Ravi Sharma" can reach the UPI app as "Ravi+Sharma".
+  // Only the payee name and the note can contain spaces, and both are shown to
+  // the payer while they confirm the payment, so it is worth getting right.
+  return `upi://pay?${params.toString().replace(/\+/g, '%20')}`;
+}
 
 // A balance smaller than one cent counts as SETTLED.
 //
@@ -1027,6 +1114,7 @@ export default function App() {
   // single symbol — each GroupCard formats with its own group's currency.)
   const activeGroupForCurrency = groups.find(g => g.id === activeGroupId) || groups[0];
   currencySymbol = CURRENCIES[activeGroupForCurrency?.currency] || '$';
+  currencyCode   = activeGroupForCurrency?.currency || 'USD';
 
   const [tab, setTab] = useState('expenses');
   const [search, setSearch] = useState('');
@@ -3480,7 +3568,7 @@ function SummaryTab({ expenses, settlements, balances, sharedPool, total, people
                     {/* Same rule as the settle modal: only the row where YOU
                         are the payer, because that's the one you must act on. */}
                     {s.from === myName && (
-                      <PaymentNoteLine name={s.to} note={notes[s.to]} tone="dark" />
+                      <PaymentNoteLine name={s.to} note={notes[s.to]} tone="dark" amount={s.amount} />
                     )}
                   </div>
                   <span className="font-semibold tabular-nums shrink-0">{fmt(s.amount)}</span>
@@ -3505,7 +3593,7 @@ function SummaryTab({ expenses, settlements, balances, sharedPool, total, people
               <div className="text-3xl font-semibold tabular-nums">{fmt(settleAmt)}</div>
               {/* Only when YOU are the payer — see the multi-person list above. */}
               {duoFrom === myName && (
-                <PaymentNoteLine name={duoTo} note={notes[duoTo]} tone="dark" />
+                <PaymentNoteLine name={duoTo} note={notes[duoTo]} tone="dark" amount={settleAmt} />
               )}
             </div>
             <button
@@ -4405,10 +4493,20 @@ function GroupForm({ group, myName, profile, onSave, onCancel }) {
  *
  * Shows the PAYEE's own free-text payment note (a UPI id, a Venmo handle,
  * "cash is fine"…) to the person who owes them, so they know where to send
- * the money. It is a plain, selectable string and nothing more:
- * **the app never touches money** — no payment SDK, no upi:// or venmo://
- * deep link, no API, no button that launches anything. Handling money in-app
- * would make Splitab a regulated payment service (CLAUDE.md §8).
+ * the money.
+ *
+ * **The app still never touches money** — no payment SDK, no API, nothing that
+ * holds or transfers funds. That part of the original rule is unchanged and
+ * should stay that way: it is what keeps Splitab out of being a regulated
+ * payment service.
+ *
+ * ⚠️ WHAT DID CHANGE (2026-09-18): this used to say "no upi:// or venmo://
+ * deep link" as well, and that went further than the reasoning behind it. A
+ * deep link does not move money — it opens the payer's own app with the fields
+ * filled in, and they authorise it there. An INR-only UPI button is now
+ * rendered below when the note contains a real VPA. See the long note on
+ * UPI_VPA / buildUpiUri above for why UPI specifically, and why nothing
+ * equivalent is offered for Venmo or anything else.
  *
  * When the note is EMPTY we say so in one quiet line instead of rendering
  * nothing. Every call site is already gated on the viewer being the payer, so
@@ -4422,7 +4520,7 @@ function GroupForm({ group, myName, profile, onSave, onCancel }) {
  * layout out sideways. It stays inline text (NOT a `title` tooltip, which is
  * useless on a phone) and `select-all` makes one tap grab the whole handle.
  */
-function PaymentNoteLine({ name, note, tone = 'light' }) {
+function PaymentNoteLine({ name, note, tone = 'light', amount }) {
   const text = typeof note === 'string' ? note.trim() : '';
   // No name = nothing sensible to say (e.g. a 1-person balance list).
   if (!name) return null;
@@ -4433,9 +4531,45 @@ function PaymentNoteLine({ name, note, tone = 'light' }) {
       </div>
     );
   }
+
+  // THREE conditions, all required. The note must contain something that is
+  // unambiguously a VPA, and the group must be settling in rupees. Anything
+  // else falls through to the plain text line this component has always shown,
+  // so nobody outside India sees a change.
+  const vpa = currencyCode === 'INR' ? findUpiId(text) : null;
+
   return (
     <div className={`text-[11px] mt-0.5 leading-snug break-words ${tone === 'dark' ? 'text-stone-400' : 'text-stone-500'}`}>
       Pay {name}: <span className="select-all">{text}</span>
+      {vpa && (
+        <>
+          {/* The raw note stays above, deliberately. The button is a
+              convenience, not a replacement: UPI links do nothing on a desktop
+              browser, and an app can be missing or refuse the URI. If this
+              were the ONLY way to see the handle, those cases would leave the
+              payer with no way to pay at all. */}
+          <a
+            href={buildUpiUri({ vpa, payeeName: name, amount, note: 'Splitab settle-up' })}
+            className={`mt-1 inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition ${
+              tone === 'dark'
+                ? 'bg-white text-stone-900 hover:bg-stone-100'
+                : 'bg-indigo-600 text-white hover:bg-indigo-700'
+            }`}
+          >
+            {/* Guarded: a call site that has no amount to hand (or a
+                half-typed one) must not render "Pay ₹NaN with UPI". The URI
+                omits the amount in the same case, so the payer types it in
+                their own app instead of being shown nonsense. */}
+            {Number.isFinite(Number(amount)) && Number(amount) > 0
+              ? `Pay ${fmt(amount)} with UPI`
+              : 'Pay with UPI'}
+          </a>
+          <div className={`mt-0.5 ${tone === 'dark' ? 'text-stone-500' : 'text-stone-400'}`}>
+            Opens your UPI app. Splitab never moves the money — you still confirm it there,
+            and mark it done here afterwards.
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -4539,8 +4673,11 @@ function SettleModal({ balances, people, entries, paymentNotes, myName, recordDe
             {/* Only when YOU are the one paying: you need to know where to send
                 it. Showing one other person's payment handle to a third party
                 would be needless exposure. */}
+            {/* amount is the LIVE field, not settleAmt: this modal lets the
+                payer edit it for a partial payment, and the UPI link must
+                carry what they are actually about to send. */}
             {fromPerson === myName && (
-              <PaymentNoteLine name={toPerson} note={(paymentNotes || {})[toPerson]} />
+              <PaymentNoteLine name={toPerson} note={(paymentNotes || {})[toPerson]} amount={parseFloat(amount)} />
             )}
           </div>
 
@@ -4738,7 +4875,7 @@ function MultiSettleModal({ people, entries, paymentNotes, myName, recordDenyRea
                           people, showing a third party's payment handle would
                           be needless exposure, so we don't. */}
                       {s.from === myName && (
-                        <PaymentNoteLine name={s.to} note={notes[s.to]} />
+                        <PaymentNoteLine name={s.to} note={notes[s.to]} amount={s.amount} />
                       )}
                     </div>
                     <button
