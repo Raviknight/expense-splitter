@@ -31,17 +31,11 @@ import { useAuth } from './AuthProvider.jsx';
 import { reportSetupError, genericSaveFailure } from '../data/errors.js';
 
 // ── Supported currencies ──────────────────────────────────────────────────────
-// Each entry: { code, symbol, label } used to build the <select> options.
-// Codes stored in profiles.preferred_currency must match these exactly.
-const CURRENCIES = [
-  { code: 'USD', symbol: '$',   label: '$ USD'  },
-  { code: 'EUR', symbol: '€',   label: '€ EUR'  },
-  { code: 'GBP', symbol: '£',   label: '£ GBP'  },
-  { code: 'INR', symbol: '₹',   label: '₹ INR'  },
-  { code: 'CAD', symbol: 'CA$', label: 'CA$ CAD' },
-  { code: 'AUD', symbol: 'A$',  label: 'A$ AUD'  },
-  { code: 'JPY', symbol: '¥',   label: '¥ JPY'  },
-];
+// This was a second hardcoded list, duplicating the one in App.jsx that formats
+// every amount. Nothing kept them in step: a currency added here but not there
+// would be selectable and then rendered with the wrong symbol. They now come
+// from one place — see src/data/currencies.js.
+import { CURRENCY_OPTIONS } from '../data/currencies.js';
 
 // A real (working) on/off switch for one email preference.
 // role="switch" + aria-checked so it is announced correctly by screen readers;
@@ -419,7 +413,7 @@ export default function Settings({ onClose }) {
                 }}
                 className="rounded-xl border border-stone-200 bg-white px-4 py-2.5 text-base text-stone-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
               >
-                {CURRENCIES.map(c => (
+                {CURRENCY_OPTIONS.map(c => (
                   <option key={c.code} value={c.code}>{c.label}</option>
                 ))}
               </select>

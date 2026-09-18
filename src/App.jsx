@@ -9,6 +9,7 @@ import { useAuth } from './auth/AuthProvider.jsx';
 import { useConnections } from './auth/useConnections.js';
 import { useExpenseStore } from './data/store.js';
 import { parseCsv, PROVIDER_PRESETS, buildExpenses } from './data/csv.js';
+import { CURRENCIES, symbolFor } from './data/currencies.js';
 import Avatar from './ui/Avatar.jsx';
 
 // Feature flag: receipt/statement scanning. ON now that the scan-receipt Edge
@@ -350,15 +351,9 @@ const SPLIT_MODES = [
 // Map of currency code → the symbol we show in front of amounts.
 // This is SYMBOL-ONLY: we never convert money between currencies, we just
 // swap which symbol is printed. Anything missing falls back to '$' (USD).
-const CURRENCIES = {
-  USD: '$',
-  EUR: '€',
-  GBP: '£',
-  INR: '₹',
-  CAD: 'CA$',
-  AUD: 'A$',
-  JPY: '¥',
-};
+// Moved to src/data/currencies.js so this list and the picker in Settings.jsx
+// cannot drift apart — they were two hardcoded copies of the same thing, kept
+// identical by luck. Imported at the top of this file.
 
 // The symbol currently in use. App sets this from the ACTIVE GROUP's currency
 // on every render (see below). It lives at module scope so the shared `fmt`
@@ -1140,7 +1135,7 @@ export default function App() {
   // (The home dashboard shows many groups at once, so it does NOT rely on this
   // single symbol — each GroupCard formats with its own group's currency.)
   const activeGroupForCurrency = groups.find(g => g.id === activeGroupId) || groups[0];
-  currencySymbol = CURRENCIES[activeGroupForCurrency?.currency] || '$';
+  currencySymbol = symbolFor(activeGroupForCurrency?.currency);
   currencyCode   = activeGroupForCurrency?.currency || 'USD';
 
   const [tab, setTab] = useState('expenses');
@@ -2444,7 +2439,7 @@ function HomeScreen({
             ) : (
               <div className="flex flex-wrap gap-2">
                 {balanceChips.map(([code, v]) => {
-                  const sym = CURRENCIES[code] || '$';
+                  const sym = symbolFor(code);
                   const owed = v > 0;
                   return (
                     <span
@@ -2588,7 +2583,7 @@ function GroupCard({ group, myName, onOpen, pinned = false, onTogglePin }) {
   // This card must print in THIS group's own currency — several cards are on
   // screen at once, so we can't rely on the single module-level symbol. We pass
   // this symbol explicitly to fmt() below.
-  const sym = CURRENCIES[group.currency] || '$';
+  const sym = symbolFor(group.currency);
 
   // Up to 4 avatar circles, then a "+N" overflow bubble.
   const shown = people.slice(0, 4);
