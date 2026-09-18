@@ -419,6 +419,42 @@ only path.
 - **Custom domain + branded email** — live at **https://splitab.app** (GitHub Pages custom domain
   via `public/CNAME`; Cloudflare DNS). Email sends from `hello@splitab.app` via Resend (domain
   verified), so magic link / reset / invites reach any address.
+
+  **Receiving** was added 2026-09-18 via **Cloudflare Email Routing**, which forwards
+  `hello@splitab.app` to the owner's personal inbox. Until then that address could only
+  send — the privacy policy, the terms and every error message told users to write to a
+  mailbox that silently discarded their mail.
+
+  ⚠️ **THE SPF RECORD AT THE ROOT IS MERGED BY HAND. Do not let anything "fix" it.**
+  Cloudflare's Email Routing setup screen offers two buttons, and **both are destructive
+  here**: "Add missing records" adds a SECOND `v=spf1` record (a domain may have only one —
+  two make SPF fail outright), and "Delete", shown next to the existing record labelled
+  *Conflicting*, removes the one authorising Brevo and Amazon SES. Either breaks
+  authentication on sign-in emails, silently, over days.
+
+  The correct root record — one record, three includes:
+
+  ```
+  v=spf1 include:spf.brevo.com include:amazonses.com include:_spf.mx.cloudflare.net ~all
+  ```
+
+  **Cloudflare's dashboard still reports "Email DNS records misconfigured" and that is a
+  false alarm**: its checker compares against its own exact string and does not recognise a
+  merged record. Forwarding does not use the domain's SPF at all — inbound needs only the
+  MX records, a verified destination and a routing rule. Verified working end to end;
+  ignore the banner rather than trading working email for a green tick.
+
+  **Do not touch** `send.splitab.app` (Resend's own SPF — that is where mail actually sends
+  from, which is why the root record is not what authorises Resend),
+  `resend._domainkey.splitab.app` (DKIM), or `_dmarc.splitab.app`.
+
+  To check the whole setup from outside the dashboard, which is the only way to get an
+  answer that does not depend on Cloudflare's opinion:
+
+  ```bash
+  curl -s "https://dns.google/resolve?name=splitab.app&type=MX"
+  curl -s "https://dns.google/resolve?name=splitab.app&type=TXT" | grep -o 'v=spf1' | wc -l   # must be 1
+  ```
 - **Ghost email-invite with AUTO-CONNECT** — `MembersPanel` "Invite by email" → `inviteGhostByEmail`
   (passes groupId + ghostMemberId) → `send-invite` Edge Function creates an `invites` row (db/09)
   with a token and emails a `?invite=<token>` link via Resend. On open, `main.jsx` stashes the token
