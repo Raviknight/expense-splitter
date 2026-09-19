@@ -432,14 +432,54 @@ function findUpiId(note) {
   return null;
 }
 
-// Build the upi:// URI. Every value is encoded — a payee name with a space or
+/* The UPI apps offered at settle-up, and why there is a list at all.
+ *
+ * ⚠️ WE PICK THE APP, BECAUSE iOS WILL NOT. On Android a `upi://` link fires an
+ * implicit intent and the OS shows a chooser — the user picks, and it works.
+ * iOS has no equivalent: a custom URL scheme is claimed by an app at install
+ * time, there is NO chooser, no way for the user to reassign it, and when two
+ * apps declare the same scheme (WhatsApp and BHIM both declare `upi://`) which
+ * one wins is UNDEFINED. Reported from a real iPhone: the link opened a
+ * WhatsApp chat, and no setting on the device can change that.
+ *
+ * So the chooser moves into the app. Every major UPI app registers its OWN
+ * scheme as well as the generic one, and those are claimed by exactly one app
+ * each — nothing left to disambiguate. The query string is IDENTICAL in all of
+ * them; only the prefix differs.
+ *
+ * IS THIS THE "field per payment app" CLAUDE.md §8 REJECTED? Partly, and it is
+ * worth being honest rather than reinterpreting the rule. What was rejected was
+ * storing a handle per app per country — an open-ended list of user data. That
+ * has NOT happened: exactly one value is stored, the user's UPI ID. What has a
+ * list is the LAUNCH MECHANISM, four prefixes around an identical payload, for
+ * one country's single payment standard. Bounded, and nothing to maintain per
+ * user. It is still per-app code where the rule said there would be none, so it
+ * is an amendment and not a loophole.
+ *
+ * ⚠️ THESE SCHEME STRINGS ARE THE FRAGILE PART. A wrong one produces a button
+ * that silently does nothing, which is exactly the failure mode that cost two
+ * days here. They are listed individually so each can be tested on its own, and
+ * "Other" plus the Copy button below mean there is always a path that cannot
+ * fail. If one is reported dead, correct or remove that single entry.
+ */
+const UPI_APPS = [
+  { id: 'gpay',    label: 'GPay',    scheme: 'tez://upi/pay'  },
+  { id: 'phonepe', label: 'PhonePe', scheme: 'phonepe://pay'  },
+  { id: 'paytm',   label: 'Paytm',   scheme: 'paytmmp://pay'  },
+  { id: 'bhim',    label: 'BHIM',    scheme: 'bhim://pay'     },
+  // The generic scheme. On Android this is the one that shows the OS chooser,
+  // so it is genuinely useful there rather than only a fallback.
+  { id: 'other',   label: 'Other',   scheme: 'upi://pay'      },
+];
+
+// Build the payment URI. Every value is encoded — a payee name with a space or
 // an ampersand would otherwise corrupt the query string.
 //
 // `am` is fixed to 2 decimals because UPI apps reject odd precision, and `cu`
 // is always INR since this is only ever reachable from an INR group. `tn` is
 // the transaction note the payer will see in their bank app; it is kept short
 // because several UPI apps silently truncate it.
-function buildUpiUri({ vpa, payeeName, amount, note }) {
+function buildUpiUri({ vpa, payeeName, amount, note, scheme = 'upi://pay' }) {
   const params = new URLSearchParams();
   params.set('pa', vpa);
   if (payeeName) params.set('pn', payeeName);
@@ -452,7 +492,7 @@ function buildUpiUri({ vpa, payeeName, amount, note }) {
   // a literal plus, so "Ravi Sharma" can reach the UPI app as "Ravi+Sharma".
   // Only the payee name and the note can contain spaces, and both are shown to
   // the payer while they confirm the payment, so it is worth getting right.
-  return `upi://pay?${params.toString().replace(/\+/g, '%20')}`;
+  return `${scheme}?${params.toString().replace(/\+/g, '%20')}`;
 }
 
 // Is this device one that could plausibly have a UPI app?
@@ -4638,22 +4678,60 @@ function PaymentNoteLine({ name, note, tone = 'light', amount, upiId }) {
               puts it on its own line at every width. */}
           <div className="mt-1.5">
             {touch ? (
-              <a
-                href={buildUpiUri({ vpa, payeeName: name, amount, note: 'Splitab settle-up' })}
-                className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition ${
-                  tone === 'dark'
-                    ? 'bg-white text-stone-900 hover:bg-stone-100'
-                    : 'bg-indigo-600 text-white hover:bg-indigo-700'
-                }`}
-              >
+              <>
                 {/* Guarded: a call site with no amount (or a half-typed one)
-                    must not render "Pay ₹NaN with UPI". The URI omits the
-                    amount in the same case, so the payer types it in their own
-                    app rather than being shown nonsense. */}
-                {Number.isFinite(Number(amount)) && Number(amount) > 0
-                  ? `Pay ${fmt(amount)} with UPI`
-                  : 'Pay with UPI'}
-              </a>
+                    must not render "Pay ₹NaN". The URI omits the amount in the
+                    same case, so the payer types it in their own app rather
+                    than being shown nonsense. */}
+                <div className={`mb-1 ${tone === 'dark' ? 'text-stone-400' : 'text-stone-500'}`}>
+                  {Number.isFinite(Number(amount)) && Number(amount) > 0
+                    ? <>Pay <strong className="tabular-nums">{fmt(amount)}</strong> with</>
+                    : 'Pay with'}
+                </div>
+                {/* One button per app, wrapped, because five in a row does not
+                    fit a phone. Each is an independent link to a scheme claimed
+                    by exactly one app, so nothing here depends on the OS
+                    choosing correctly — which is the entire point. */}
+                <div className="flex flex-wrap gap-1.5">
+                  {UPI_APPS.map(app => (
+                    <a
+                      key={app.id}
+                      href={buildUpiUri({ vpa, payeeName: name, amount, note: 'Splitab settle-up', scheme: app.scheme })}
+                      className={`inline-flex items-center rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition ${
+                        tone === 'dark'
+                          ? 'bg-white text-stone-900 hover:bg-stone-100'
+                          : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                      }`}
+                    >
+                      {app.label}
+                    </a>
+                  ))}
+                  {/* Copy is offered on PHONES TOO, not only on desktop.
+                      The scheme strings above are the fragile part of this
+                      feature — a wrong one produces a button that silently
+                      does nothing, which is precisely the failure that cost
+                      two days here. This is the path that cannot fail, and it
+                      needs to be reachable at the moment one of the others
+                      disappoints, not after hunting for it. */}
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        await navigator.clipboard.writeText(vpa);
+                        setCopied(true);
+                        setTimeout(() => setCopied(false), 2000);
+                      } catch { /* denied; the handle is still selectable above */ }
+                    }}
+                    className={`inline-flex items-center rounded-lg px-2.5 py-1.5 text-[11px] font-medium border transition ${
+                      tone === 'dark'
+                        ? 'border-stone-600 text-stone-300 hover:bg-stone-800'
+                        : 'border-stone-300 text-stone-600 hover:bg-stone-50'
+                    }`}
+                  >
+                    {copied ? 'Copied' : 'Copy ID'}
+                  </button>
+                </div>
+              </>
             ) : (
               <button
                 type="button"
@@ -4680,7 +4758,7 @@ function PaymentNoteLine({ name, note, tone = 'light', amount, upiId }) {
           </div>
           <div className={`mt-0.5 ${tone === 'dark' ? 'text-stone-500' : 'text-stone-400'}`}>
             {touch
-              ? 'Opens your UPI app. Splitab never moves the money — you still confirm it there, and mark it done here afterwards.'
+              ? 'Opens that app with the amount filled in. Splitab never moves the money — you confirm it there, then mark it done here. If an app does not open, it is probably not installed; use Copy ID.'
               : 'UPI apps only open on a phone. Copy this and pay from your phone, then mark it done here.'}
           </div>
         </>
